@@ -26,7 +26,6 @@ export function configProblems(yaml: string): Promise<readonly Problem[]> {
   return problemsOf("acme", { [CONFIG]: yaml });
 }
 
-/** The part of a problem a user navigates by: the data path and the source position. */
 export function located(problems: readonly Problem[]) {
   return problems.map(({ where, at }) => ({ where, at }));
 }

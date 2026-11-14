@@ -30,7 +30,6 @@ function isMapping(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Parses a JSON output that holds an object, such as `matrix` or `reasons`. */
 export function jsonObject(text: string | undefined): Readonly<Record<string, unknown>> {
   return mapping(JSON.parse(text ?? "null"), "the output");
 }

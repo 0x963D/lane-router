@@ -19,11 +19,7 @@ import {
 } from "../decode.ts";
 import { err, mapNonEmpty, ok, type NonEmpty, type Result } from "../result.ts";
 
-/*
- * The GitHub REST API over built-in fetch, and the event payload. Every GitHub-specific fact lives
- * here: the 300-file cap on compare, the all-zero `before` of a new branch, how to walk first
- * parents and which check runs count as a pass. Wire shapes are decoded here and never leave this file.
- */
+/* Every GitHub-specific fact lives here. Wire shapes are decoded here and never leave this file. */
 
 const COMPARE_LIMIT = 300;
 const PAGE = 100;
@@ -66,7 +62,6 @@ const EVENT_DECODERS = new Map<string, Decoder<GitHubEvent>>([
   ["push", pushEvent],
 ]);
 
-/** `pull_request` and `pull_request_target` are both pull requests. Any other event is `other`. */
 export function readEvent(name: string, payload: unknown): Result<GitHubEvent, NonEmpty<string>> {
   const decoder = EVENT_DECODERS.get(name);
   if (decoder === undefined) return ok({ kind: "other", name });
@@ -120,8 +115,8 @@ const checkRunsResponse = object((field) => {
 type CheckRun = Exclude<ReturnType<typeof checkRunsResponse>, typeof INVALID>["runs"][number];
 
 /**
- * Every run named `check` completed with `success`. Skipped, neutral, cancelled, unfinished and
- * missing runs are not a pass, and neither are two runs of one name that disagree.
+ * Skipped, neutral, cancelled, unfinished and missing runs are not a pass, and neither are two runs
+ * of one name that disagree.
  */
 function passed(runs: readonly CheckRun[], check: string): boolean {
   const named = runs.filter((run) => run.name === check);
@@ -138,11 +133,10 @@ export interface GitHubRepo {
     range: Range,
     options: { readonly expectedCount: number | null; readonly under: string },
   ): Promise<ChangedFiles>;
-  /** Finds each lane's proof among the first `depth` first-parent ancestors of `head`. Rejects on any API failure. */
+  /** The returned `proofs` rejects on any API failure. */
   lastGreen(options: { readonly head: string; readonly depth: number }): LastGreen;
 }
 
-/** `apiUrl` comes from GITHUB_API_URL, which is also how the tests point the Action at a local fake. */
 export function githubRepo(options: {
   readonly apiUrl: string;
   readonly repository: string;

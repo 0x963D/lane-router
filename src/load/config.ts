@@ -25,8 +25,6 @@ import { err, isNonEmpty, mapNonEmpty, ok, type NonEmpty, type Result } from "..
 import type { Problem } from "./problem.ts";
 import { parseYaml } from "./yaml.ts";
 
-/* The format of `.github/lanes.yml`. Nothing outside this file knows a config key. */
-
 export const DISCOVERY_MODES = ["auto", "pnpm", "npm"] as const;
 
 export type Discovery = (typeof DISCOVERY_MODES)[number];
@@ -63,7 +61,6 @@ export function openConfig(file: string, source: string): Result<OpenConfig, Non
 
 const REJECT = { unknownKeys: "reject" } as const;
 
-/** Holding a PackageName means the lookup succeeded, so an unchecked name is never branded. */
 function packageIn(workspace: Workspace): Decoder<PackageName> {
   const names = [...workspace.packages.keys()];
   return refine(nonEmptyString, (name, context) => {

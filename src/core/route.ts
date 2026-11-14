@@ -8,7 +8,7 @@ import { VIA, type Lane, type PackageScope, type Reach, type Row, type RoutingMo
  * those placements. Placements are stored once, so the decision and its explanation cannot disagree.
  */
 
-/** Why a changed path belongs somewhere. Every variant carries the lanes it reaches, fixed at compile time. */
+/** Why a changed path belongs somewhere. Each variant carries the lanes it reaches, fixed when `compile` ran. */
 export type Placement =
   /** The routing config itself. No row can turn it off, or a change could rewrite its own routing. */
   | { readonly kind: "config"; readonly reach: Reach }
@@ -51,7 +51,6 @@ export type RunReason =
   /** Last-green found no commit within `depth` where the lane's check passed. */
   | { readonly kind: "no-proof"; readonly depth: number };
 
-/** `untouched` means nothing the lane reads changed. */
 export type SkipReason = "no-changes" | "docs-only" | "untouched";
 
 export interface Run {
@@ -91,7 +90,6 @@ function place(model: RoutingModel, path: RepoPath): NonEmpty<Placement> {
   return isNonEmpty(placements) ? placements : [{ kind: "unmatched", reach: model.everyLane }];
 }
 
-/** Walks the ancestor directories from the deepest up, so the deepest package wins without sorting. */
 function owningPackage(model: RoutingModel, path: RepoPath): PackageScope | undefined {
   const segments = path.split("/");
   for (let depth = segments.length - 1; depth > 0; depth--) {
@@ -133,7 +131,7 @@ function skip(because: SkipReason): Skip {
   return { kind: "skip", because, [proven]: true };
 }
 
-/** Whether a placement selects its lanes in this routing. The explanation marks the ones that do not. */
+/** False for a placement that a docs-only change ignores. */
 export function isCounted(routing: Routing, placement: Placement): boolean {
   return routing.kind !== "docs-only" || readsAsText(placement);
 }

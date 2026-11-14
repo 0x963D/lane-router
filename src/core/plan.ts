@@ -4,11 +4,6 @@ import type { LaneName } from "./ids.ts";
 import type { Lane, RoutingModel } from "./model.ts";
 import { decide, route, type LaneDecision, type Routing } from "./route.ts";
 
-/*
- * The one entry point both shells call. It composes several routed changes into one plan under
- * last-green, and turns any failure into a plan in which every lane runs.
- */
-
 export type Mode = "pr" | "push";
 
 /**
@@ -21,7 +16,6 @@ export interface LastGreen {
   readonly proofs: (lanes: readonly Lane[]) => Promise<ReadonlyMap<LaneName, string>>;
 }
 
-/** `lastGreen` exists only on the push variant, so last-green cannot be asked for in PR mode. */
 export type PlanRequest =
   | { readonly mode: "pr"; readonly range: Range; readonly changes: ChangeSource }
   | {
@@ -97,7 +91,7 @@ function sealed(mode: Mode, event: Routing, lanes: readonly PlannedLane[]): Plan
   return { mode, event, lanes, [planned]: true };
 }
 
-/** True when every file list the plan read was complete. The `complete` output uses this one definition. */
+/** True when every file list the plan read was complete. */
 export function isComplete(plan: Plan): boolean {
   return [plan.event, ...plan.lanes.map(({ since }) => since)].every((routing) => routing?.kind !== "incomplete");
 }

@@ -16,7 +16,6 @@ export interface RepoTree {
   read(path: string): Promise<string | undefined>;
 }
 
-/** Reads a file as part of loading, where an unreadable file is a problem like any other. */
 export async function readFile(tree: RepoTree, path: string): Promise<Result<string | undefined, NonEmpty<Problem>>> {
   try {
     return ok(await tree.read(path));

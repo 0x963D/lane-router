@@ -9,7 +9,6 @@ export type PackageName = string & { readonly __brand: "PackageName" };
 /** A path relative to the routed root: posix separators, no leading `./` or `/`, no `.` or `..` segment. */
 export type RepoPath = string & { readonly __brand: "RepoPath" };
 
-/** The single list behind the reserved lane names, the rendered outputs and the `action.yml` contract test. */
 export const FIXED_OUTPUTS = ["lanes", "matrix", "reasons", "complete", "docs-only", "none-required"] as const;
 
 export type FixedOutput = (typeof FIXED_OUTPUTS)[number];

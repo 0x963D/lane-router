@@ -1,12 +1,11 @@
 import type { NonEmpty } from "../result.ts";
 
-/** One thing wrong with the config or the workspace, with enough position to fix it. */
 export interface Problem {
   /** Relative to the routed root. */
   readonly file: string;
-  /** One-based. Null when the problem is about the whole file. */
+  /** One-based. Null when no source position is known, as for a whole file or a JSON manifest. */
   readonly at: { readonly line: number; readonly column: number } | null;
-  /** A data path such as `lanes.unit.pakages` or `paths[2].via`. */
+  /** A data path such as `lanes.unit.packages[0]` or `paths[2].via`. */
   readonly where: string | null;
   readonly message: string;
 }
@@ -15,7 +14,6 @@ export function fileProblem(file: string, message: string): Problem {
   return { file, at: null, where: null, message };
 }
 
-/** The Action fails the step with this text and the CLI prints it, so both show the same thing. */
 export function formatProblems(problems: NonEmpty<Problem>): string {
   return [...problems]
     .sort(

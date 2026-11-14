@@ -5,7 +5,7 @@ import type { RepoTree } from "../load/index.ts";
 
 const execFileAsync = promisify(execFile);
 
-/** Paths relative to the top of the repository whatever `diff.relative` says, and renames as two paths. */
+/** Paths relative to the top of the repository whatever `diff.relative` says. */
 const DIFF = ["diff", "--name-only", "--no-renames", "--no-relative", "-z"] as const;
 
 /** Local git, run as a child process with argument arrays, never through a shell. */

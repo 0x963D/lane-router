@@ -11,7 +11,6 @@ export function entries(change: Change): readonly ChangeEntry[] {
   return change.map((entry) => (typeof entry === "string" ? { path: entry, previousPath: null } : entry));
 }
 
-/** Plans a change in PR mode the way the Action does with the `files` input. */
 export function planFor(fixture: string, change: Change, overrides?: Overrides): Promise<Plan> {
   return planWith(fixture, () => Promise.resolve(changedFiles(entries(change))), overrides);
 }
@@ -33,7 +32,10 @@ export function decisionOf(plan: Plan, lane: string): LaneDecision {
   return found.decision;
 }
 
-/** The kinds of evidence behind a lane's decision: reason kinds for a run, the skip reason for a skip. */
+/**
+ * The evidence behind a decision. A run lists each reason's kind, or the placement's kind for a
+ * placement. A skip gives its reason.
+ */
 export function evidenceOf(plan: Plan, lane: string): readonly string[] {
   const decision = decisionOf(plan, lane);
   return decision.kind === "skip"

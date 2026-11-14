@@ -10,10 +10,12 @@ import { err, messageOf, ok, type Result } from "./result.ts";
  * reads the config and the workspace at `--head`, not from the working tree.
  */
 
-/** 0: a plan was printed, fail-closed plans included. 1: the config or workspace did not load. 2: usage. */
+/**
+ * 0: a plan or the usage was printed, fail-closed plans included. 1: the config or the workspace did not
+ * load. 2: a usage error.
+ */
 export type ExitCode = 0 | 1 | 2;
 
-/** The process surface the CLI needs, passed in so tests run it in-process. */
 export interface CliIo {
   readonly cwd: string;
   readonly stdout: (text: string) => void;

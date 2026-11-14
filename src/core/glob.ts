@@ -16,7 +16,7 @@ export function compileGlobs({ match, except }: GlobSet): PathMatcher {
   return picomatch([...match], { ...OPTIONS, ignore: [...except] });
 }
 
-/** Config validation calls this on every glob, which keeps `compileGlobs` total afterwards. */
+/** Config and workspace validation call this on every glob, which keeps `compileGlobs` total afterwards. */
 export function globProblem(glob: string): string | undefined {
   if (glob.trim() === "") return "a glob cannot be empty";
   if (glob.includes("\\")) return "use / as the path separator";

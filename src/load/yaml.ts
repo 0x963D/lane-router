@@ -3,7 +3,6 @@ import { formatDataPath, type DataPath, type Issue } from "../decode.ts";
 import { err, isNonEmpty, ok, type NonEmpty, type Result } from "../result.ts";
 import type { Problem } from "./problem.ts";
 
-/** A parsed YAML file that can turn a decode issue back into a line and column of its source. */
 export interface YamlFile {
   readonly value: unknown;
   readonly locate: (issue: Issue) => Problem;

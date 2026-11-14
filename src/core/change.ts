@@ -6,7 +6,6 @@ export interface Range {
   readonly head: string;
 }
 
-/** Why a file list cannot be trusted as the whole change. */
 export type IncompleteCause =
   | { readonly kind: "truncated"; readonly listed: number; readonly limit: number }
   | { readonly kind: "count-mismatch"; readonly listed: number; readonly expected: number }
@@ -18,7 +17,7 @@ const vetted: unique symbol = Symbol("vetted");
 
 /**
  * A file list known to be the whole change. `vetted` is a symbol no other module can name, so only
- * `changedFiles` can build one. A complete list is one of the two values that can keep a lane from running.
+ * `changedFiles` can build one. It and `Skip` are the only values that can keep a lane from running.
  */
 export interface CompleteFiles {
   readonly kind: "complete";
@@ -41,7 +40,6 @@ export type ChangedFiles = CompleteFiles | IncompleteFiles;
  */
 export type ChangeSource = (range: Range) => Promise<ChangedFiles>;
 
-/** One changed file as a source reports it, before validation. */
 export interface ChangeEntry {
   readonly path: string;
   readonly previousPath: string | null;

@@ -2,7 +2,6 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { IGNORED_DIRECTORIES, type RepoTree } from "../load/index.ts";
 
-/** A RepoTree over a directory on disk: the Action's checkout, or a fixture in the tests. */
 export function directoryTree(root: string): RepoTree {
   return {
     files: async () => (await walk(root, "")).sort(),

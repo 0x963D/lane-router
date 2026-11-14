@@ -11,10 +11,7 @@ import {
 } from "./support/fake-github.ts";
 import { fixtureDir } from "./support/fixtures.ts";
 
-/*
- * A push from P1 to H. The first-parent line is H, P1, P2 ... P6. M is a commit merged into H as its
- * second parent. Lanes and checks come from the acme fixture: api, web, e2e ("e2e / chromium"), lint.
- */
+/* Lanes and checks come from the acme fixture: api, web, e2e ("e2e / chromium"), lint. */
 
 const ACME = fixtureDir("acme");
 const commit = (digit: string): string => digit.repeat(40);

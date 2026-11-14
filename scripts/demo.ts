@@ -5,11 +5,6 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gitFixture } from "../test/support/git-fixture.ts";
 
-/*
- * npm run demo: commits a realistic change to the acme fixture in a temporary git repository and
- * runs the built CLI on it. Rerun it to see every routing decision end to end.
- */
-
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const dir = mkdtempSync(join(tmpdir(), "lane-router-demo-"));
 

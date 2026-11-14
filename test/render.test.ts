@@ -4,8 +4,6 @@ import { explainText, reasonLine, summaryMarkdown } from "../src/render.ts";
 import { CONFIG } from "./support/model.ts";
 import { planFor, planWith } from "./support/plan.ts";
 
-/* The only tests that pin wording. Everything else asserts typed evidence. */
-
 const MIXED = [
   "packages/api/src/user.ts",
   "fixtures/browser/login.json",

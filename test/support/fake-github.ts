@@ -2,8 +2,6 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { onTestFinished } from "vitest";
 
-/* A local stand-in for the GitHub REST API, reached by the real Action through GITHUB_API_URL. */
-
 export const REPOSITORY = "acme/mono";
 
 export interface FakeResponse {

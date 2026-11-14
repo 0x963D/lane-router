@@ -27,7 +27,6 @@ function reasonKind(reason: RunReason): ReasonKind {
   return reason.kind === "placement" ? reason.placement.kind : reason.kind;
 }
 
-/** The one-line reason behind the `reasons` output, the matrix, the job summary and the CLI table. */
 export function reasonLine(planned: PlannedLane): string {
   const { decision, since, lane } = planned;
   const proof = since?.range.base;
@@ -88,7 +87,6 @@ function describePlacement(path: string, placement: Placement, through: Through)
   }
 }
 
-/** The packages between the lane's root and the placed package, when the lane reads it indirectly. */
 function readThrough(through: Through): string {
   if (through.kind === "named" || through.chain.length < 2) return "";
   return `, read through ${through.chain.slice(0, -1).join(" > ")}`;
@@ -155,7 +153,6 @@ function shortRevision(revision: string | null): string {
   return /^[0-9a-f]{40}$/.test(revision) ? revision.slice(0, 7) : revision;
 }
 
-/** The facts the summary and the CLI both open with. */
 export function headerLine(plan: Plan): string {
   const files = pathsOf(plan.event).length;
   return [
@@ -227,7 +224,6 @@ function placementLanes(routing: Routing, placement: Placement): string {
   return isCounted(routing, placement) ? lanes : `${lanes} (not counted in a docs-only change)`;
 }
 
-/** The CLI's default output: the header, the lane table, then each changed path with its placements. */
 export function explainText(plan: Plan): string {
   const lanes = table([
     ["lane", "decision", "reason"],
@@ -371,7 +367,6 @@ export interface Notice {
   readonly message: string;
 }
 
-/** An error annotation for a failure such as an API or git error, a warning for any other fail-closed cause. */
 export function notices(plan: Plan): readonly Notice[] {
   const causes = new Map<string, IncompleteCause>();
   for (const routing of [plan.event, ...plan.lanes.map(({ since }) => since)]) {

@@ -22,8 +22,6 @@ import { fileProblem, type Problem } from "./problem.ts";
 import { listFiles, readFile, type RepoTree } from "./tree.ts";
 import { parseYaml } from "./yaml.ts";
 
-/* How package managers describe a workspace: pnpm-workspace.yaml, package.json `workspaces`, and the dependency fields. */
-
 const PNPM_FILE = "pnpm-workspace.yaml";
 const ROOT_MANIFEST = "package.json";
 const MANIFEST = "/package.json";

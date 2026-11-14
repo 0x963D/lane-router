@@ -7,8 +7,9 @@ export const VIAS = ["code", "tests", "name"] as const;
 export type Via = (typeof VIAS)[number];
 
 /**
- * What each `via` means. `compile` reads `reaches` to work out the lanes a row selects.
- * The docs-only rule reads `readsAsText`, because Markdown is read as text and never compiled.
+ * `closure` reaches every lane whose packages read the named package, `roots` only the lanes that
+ * list it. `readsAsText` placements still count in a docs-only change, because Markdown is read as
+ * text and never compiled.
  */
 export const VIA: { readonly [V in Via]: { readonly reaches: "closure" | "roots"; readonly readsAsText: boolean } } = {
   code: { reaches: "closure", readsAsText: false },

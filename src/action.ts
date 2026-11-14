@@ -78,7 +78,7 @@ export async function runAction(): Promise<void> {
   }
 }
 
-/** Reads every input and the event, and reports every usage problem at once. */
+/** Reports every usage problem at once. */
 function readInvocation(
   input: (name: InputName) => string,
   env: NodeJS.ProcessEnv,
@@ -142,7 +142,6 @@ function invocationDecoder(event: GitHubEvent, env: NodeJS.ProcessEnv): Decoder<
   return refine(inputsDecoder, (inputs, context) => toInvocation(inputs, event, env, context));
 }
 
-/** The rules that relate inputs to each other and to the event. */
 function toInvocation(inputs: Inputs, event: GitHubEvent, env: NodeJS.ProcessEnv, context: DecodeContext) {
   const fromEvent = eventDefaults(event);
   const mode = inputs.mode ?? fromEvent?.mode;

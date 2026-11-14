@@ -1,8 +1,7 @@
 import { err, isNonEmpty, ok, type NonEmpty, type Result } from "./result.ts";
 
 /*
- * The one way this codebase turns `unknown` into a typed value: lanes.yml, pnpm-workspace.yaml,
- * package.json, the GitHub event payload and REST responses. Decoders keep going after a bad
+ * The one way this codebase turns `unknown` into a typed value. Decoders keep going after a bad
  * value, so one `decode` call reports every issue in its input.
  */
 
@@ -148,7 +147,6 @@ export function object<T>(
   };
 }
 
-/** True when no field failed, which narrows every field to its decoded type. */
 export function allValid<T extends Readonly<Record<string, unknown>>>(
   fields: T,
 ): fields is T & { readonly [K in keyof T]: Exclude<T[K], Invalid> } {
@@ -167,7 +165,6 @@ export function withDefault<T>(decoder: Decoder<T>, fallback: NoInfer<T>): Decod
   return (input, context) => (input === undefined ? fallback : decoder(input, context));
 }
 
-/** Narrows or converts a decoded value. A reference check sits on the exact value it is about. */
 export function refine<T, U>(decoder: Decoder<T>, next: (value: T, context: DecodeContext) => U | Invalid): Decoder<U> {
   return (input, context) => {
     const value = decoder(input, context);
