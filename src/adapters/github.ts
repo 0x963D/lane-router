@@ -1,5 +1,8 @@
 import { changedFiles, incomplete, type ChangedFiles, type Range } from "../core/change.ts";
+import type { LaneName } from "../core/ids.ts";
+import type { LastGreen } from "../core/plan.ts";
 import {
+  allValid,
   array,
   decode,
   formatDataPath,
@@ -7,6 +10,7 @@ import {
   integer,
   isValid,
   nonEmptyString,
+  nullable,
   object,
   optional,
   string,
@@ -17,11 +21,12 @@ import { err, mapNonEmpty, ok, type NonEmpty, type Result } from "../result.ts";
 
 /*
  * The GitHub REST API over built-in fetch, and the event payload. Every GitHub-specific fact lives
- * here: the 300-file cap on compare and the all-zero `before` of a new branch. Wire shapes are
- * decoded here and never leave this file.
+ * here: the 300-file cap on compare, the all-zero `before` of a new branch, how to walk first
+ * parents and which check runs count as a pass. Wire shapes are decoded here and never leave this file.
  */
 
 const COMPARE_LIMIT = 300;
+const PAGE = 100;
 const IGNORE = { unknownKeys: "ignore" } as const;
 
 export type GitHubEvent =
@@ -86,6 +91,43 @@ const compareResponse = object(
   IGNORE,
 );
 
+const commitsResponse = array(
+  object((field) => {
+    const sha = field("sha", nonEmptyString);
+    const parents = field("parents", array(object((parent) => parent("sha", nonEmptyString), IGNORE)));
+    return isValid(sha) && isValid(parents) ? { sha, firstParent: parents[0] ?? null } : INVALID;
+  }, IGNORE),
+);
+
+const checkRunsResponse = object((field) => {
+  const total = field("total_count", integer(0));
+  const runs = field(
+    "check_runs",
+    array(
+      object((run) => {
+        const fields = {
+          name: run("name", string),
+          status: run("status", string),
+          conclusion: run("conclusion", nullable(string)),
+        };
+        return allValid(fields) ? fields : INVALID;
+      }, IGNORE),
+    ),
+  );
+  return isValid(total) && isValid(runs) ? { total, runs } : INVALID;
+}, IGNORE);
+
+type CheckRun = Exclude<ReturnType<typeof checkRunsResponse>, typeof INVALID>["runs"][number];
+
+/**
+ * Every run named `check` completed with `success`. Skipped, neutral, cancelled, unfinished and
+ * missing runs are not a pass, and neither are two runs of one name that disagree.
+ */
+function passed(runs: readonly CheckRun[], check: string): boolean {
+  const named = runs.filter((run) => run.name === check);
+  return named.length > 0 && named.every((run) => run.status === "completed" && run.conclusion === "success");
+}
+
 export interface GitHubRepo {
   /**
    * The files changed between `range.base` and `range.head`, from the compare endpoint. Resolves
@@ -96,6 +138,8 @@ export interface GitHubRepo {
     range: Range,
     options: { readonly expectedCount: number | null; readonly under: string },
   ): Promise<ChangedFiles>;
+  /** Finds each lane's proof among the first `depth` first-parent ancestors of `head`. Rejects on any API failure. */
+  lastGreen(options: { readonly head: string; readonly depth: number }): LastGreen;
 }
 
 /** `apiUrl` comes from GITHUB_API_URL, which is also how the tests point the Action at a local fake. */
@@ -121,7 +165,60 @@ export function githubRepo(options: {
     return decoded.value;
   };
 
+  const checkRuns = async (commit: string): Promise<readonly CheckRun[]> => {
+    const runs: CheckRun[] = [];
+    for (let page = 1; ; page++) {
+      const body = await get(
+        `/commits/${commit}/check-runs?filter=latest&per_page=${String(PAGE)}&page=${String(page)}`,
+        checkRunsResponse,
+      );
+      runs.push(...body.runs);
+      if (body.runs.length < PAGE || runs.length >= body.total) return runs;
+    }
+  };
+
+  /**
+   * Newest first, head excluded. The commit list also holds merged commits, so the first-parent chain
+   * can span pages. The walk reads at most `depth` pages, and stopping early is safe: a lane left
+   * without a proof runs.
+   */
+  const firstParents = async function* (head: string, depth: number): AsyncGenerator<string> {
+    const parentOf = new Map<string, string | null>();
+    let page = 1;
+    let more = true;
+    let cursor = head;
+    for (let step = 0; step < depth; step++) {
+      while (!parentOf.has(cursor) && more && page <= depth) {
+        const commits = await get(
+          `/commits?sha=${encodeURIComponent(head)}&per_page=${String(PAGE)}&page=${String(page)}`,
+          commitsResponse,
+        );
+        for (const { sha, firstParent } of commits) parentOf.set(sha, firstParent);
+        more = commits.length === PAGE;
+        page += 1;
+      }
+      const parent = parentOf.get(cursor);
+      if (parent === undefined || parent === null) return;
+      yield parent;
+      cursor = parent;
+    }
+  };
+
   return {
+    lastGreen: ({ head, depth }) => ({
+      depth,
+      proofs: async (lanes) => {
+        const found = new Map<LaneName, string>();
+        for await (const commit of firstParents(head, depth)) {
+          const runs = await checkRuns(commit);
+          for (const lane of lanes) {
+            if (!found.has(lane.name) && passed(runs, lane.check)) found.set(lane.name, commit);
+          }
+          if (found.size === lanes.length) break;
+        }
+        return found;
+      },
+    }),
     compare: async (range, { expectedCount, under }) => {
       if (range.base === null) return incomplete({ kind: "no-base" });
       const listed = await get(

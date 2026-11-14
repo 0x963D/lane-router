@@ -22,11 +22,17 @@ inputs:
     description: Newline-separated changed paths, relative to working-directory and trusted as complete. Skips the compare API.
     default: ""
   token:
-    description: The token for the compare API.
+    description: The token for the compare, commits and check-runs APIs.
     default: ${{ github.token }}
   mode:
     description: pr or push. Defaults from the event.
     default: ""
+  last-green:
+    description: auto or off. In push mode, auto decides each lane from the change since its newest passing commit.
+    default: "off"
+  last-green-depth:
+    description: How many first-parent ancestors last-green searches for a passing commit.
+    default: "100"
 
 outputs:
   lanes:

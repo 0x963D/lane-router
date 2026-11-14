@@ -68,3 +68,38 @@ function close(server: Server): Promise<void> {
     });
   });
 }
+
+export interface FakeCommit {
+  readonly sha: string;
+  readonly parents: readonly string[];
+}
+
+/**
+ * Lists `commits` as reachable from `head`, newest first, 100 to a page, the way the commits endpoint
+ * does. Every commit starts with no check runs.
+ */
+export function history(github: FakeGitHub, head: string, commits: readonly FakeCommit[]): void {
+  for (let page = 0; page * 100 <= commits.length; page++) {
+    const body = commits.slice(page * 100, page * 100 + 100).map(({ sha, parents }) => ({
+      sha,
+      parents: parents.map((parent) => ({ sha: parent })),
+    }));
+    github.on(`/commits?sha=${head}&per_page=100&page=${String(page + 1)}`, { body });
+  }
+  for (const { sha } of commits) checkRuns(github, sha, []);
+}
+
+export interface FakeCheckRun {
+  readonly name: string;
+  readonly status?: string;
+  readonly conclusion?: string | null;
+}
+
+export function checkRuns(github: FakeGitHub, sha: string, runs: readonly FakeCheckRun[]): void {
+  github.on(`/commits/${sha}/check-runs?filter=latest&per_page=100&page=1`, {
+    body: {
+      total_count: runs.length,
+      check_runs: runs.map(({ name, status = "completed", conclusion = "success" }) => ({ name, status, conclusion })),
+    },
+  });
+}

@@ -5,11 +5,12 @@
  */
 import type { ChangedFiles, CompleteFiles } from "../src/core/change.ts";
 import type { RepoPath } from "../src/core/ids.ts";
-import type { Plan } from "../src/core/plan.ts";
+import type { LastGreen, Plan, PlanRequest } from "../src/core/plan.ts";
 import type { LaneDecision, PlacedPath, Routing, Run, Skip } from "../src/core/route.ts";
 
 declare const somePath: RepoPath;
 declare const someRouting: Routing;
+declare const someLastGreen: LastGreen;
 
 // @ts-expect-error a Skip carries a key only route.ts can name
 export const forgedSkip: Skip = { kind: "skip", because: "untouched" };
@@ -41,3 +42,11 @@ export const emptyHasPaths: keyof Extract<Routing, { kind: "empty" }> = "paths";
 
 // @ts-expect-error a plain string is not a RepoPath
 export const rawPath: RepoPath = "packages/api/src/user.ts";
+
+export const pullRequestPlan: PlanRequest = {
+  mode: "pr",
+  range: { base: "a", head: "b" },
+  changes: () => Promise.resolve(honestIncomplete),
+  // @ts-expect-error last-green exists only on the push variant
+  lastGreen: someLastGreen,
+};

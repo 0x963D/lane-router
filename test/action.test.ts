@@ -220,7 +220,7 @@ describe("errors before a model exists", () => {
       event: { name: "workflow_dispatch", payload: {} },
     });
     expect(run.exitCode).toBe(1);
-    expect(run.annotations[0]?.message).toContain("mode is required");
+    expect(run.annotations[0]?.message).toContain("the mode input is required");
   });
 
   it("accept an explicit mode with base and head for any other event", async () => {

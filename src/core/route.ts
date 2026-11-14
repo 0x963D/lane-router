@@ -47,7 +47,9 @@ export type RunReason =
     }
   /** A floor lane in a change that has paths and is not docs-only. */
   | { readonly kind: "floor" }
-  | { readonly kind: "incomplete"; readonly cause: IncompleteCause };
+  | { readonly kind: "incomplete"; readonly cause: IncompleteCause }
+  /** Last-green found no commit within `depth` where the lane's check passed. */
+  | { readonly kind: "no-proof"; readonly depth: number };
 
 /** `untouched` means nothing the lane reads changed. */
 export type SkipReason = "no-changes" | "docs-only" | "untouched";
