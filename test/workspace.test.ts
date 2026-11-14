@@ -95,4 +95,16 @@ describe("workspace discovery", () => {
     const problems = await problemsOf("acme", { "packages/ui/package.json": "{ name" });
     expect(problems.map((problem) => problem.file)).toEqual(["packages/ui/package.json"]);
   });
+
+  it.each([
+    ["pnpm-workspace.yaml", { "pnpm-workspace.yaml": 'packages:\n  - "packages/*"\n  - "./"\n' }, "packages[1]"],
+    [
+      "package.json",
+      { "pnpm-workspace.yaml": null, "package.json": '{ "workspaces": ["packages/*", ""] }' },
+      "workspaces[1]",
+    ],
+  ])("reports a workspace glob in %s that cannot be used", async (file, overrides, where) => {
+    const problems = await problemsOf("acme", overrides);
+    expect(problems.map((problem) => ({ file: problem.file, where: problem.where }))).toEqual([{ file, where }]);
+  });
 });

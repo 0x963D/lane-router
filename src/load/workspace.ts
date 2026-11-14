@@ -1,4 +1,4 @@
-import { compileGlobs, type GlobSet } from "../core/glob.ts";
+import { compileGlobs, globProblem, type GlobSet } from "../core/glob.ts";
 import { parsePackageName, parseRepoPath, type PackageName, type RepoPath } from "../core/ids.ts";
 import type { Workspace, WorkspacePackage } from "../core/model.ts";
 import {
@@ -9,6 +9,7 @@ import {
   INVALID,
   isValid,
   object,
+  refine,
   string,
   unknownValue,
   withDefault,
@@ -101,33 +102,44 @@ function pnpmGlobs(source: string): Result<GlobSet, NonEmpty<Problem>> {
   const file = parseYaml(PNPM_FILE, source);
   if (!file.ok) return file;
   const decoded = decode(
-    object<readonly string[]>((field) => field("packages", withDefault(array(string), [])), IGNORE),
+    object<readonly WorkspaceGlob[]>((field) => field("packages", withDefault(array(workspaceGlob), [])), IGNORE),
     file.value.value,
   );
   return decoded.ok ? ok(globSet(decoded.value)) : err(mapNonEmpty(decoded.error, file.value.locate));
 }
 
-const npmWorkspaces: Decoder<readonly string[]> = (input, context) =>
+const npmWorkspaces: Decoder<readonly WorkspaceGlob[]> = (input, context) =>
   Array.isArray(input)
-    ? array(string)(input, context)
-    : object<readonly string[]>((field) => field("packages", array(string)), IGNORE)(input, context);
+    ? array(workspaceGlob)(input, context)
+    : object<readonly WorkspaceGlob[]>((field) => field("packages", array(workspaceGlob)), IGNORE)(input, context);
 
 function npmGlobs(source: string): Result<GlobSet, NonEmpty<Problem>> {
   const json = parseJson(ROOT_MANIFEST, source);
   if (!json.ok) return json;
   const decoded = decode(
-    object<readonly string[]>((field) => field("workspaces", npmWorkspaces), IGNORE),
+    object<readonly WorkspaceGlob[]>((field) => field("workspaces", npmWorkspaces), IGNORE),
     json.value,
   );
   return decoded.ok ? ok(globSet(decoded.value)) : err(jsonProblems(ROOT_MANIFEST, decoded.error));
 }
 
-/** pnpm writes exclusions as `!glob`. npm users often write `./packages/*`. Both become one GlobSet. */
-function globSet(globs: readonly string[]): GlobSet {
-  const normalize = (glob: string): string => glob.replace(/^\.\//, "").replace(/\/+$/, "");
+interface WorkspaceGlob {
+  readonly glob: string;
+  readonly excluded: boolean;
+}
+
+/** pnpm writes an exclusion as `!glob`, and npm users often write `./packages/*`. */
+const workspaceGlob: Decoder<WorkspaceGlob> = refine(string, (raw, context) => {
+  const excluded = raw.startsWith("!");
+  const glob = (excluded ? raw.slice(1) : raw).replace(/^\.\//, "").replace(/\/+$/, "");
+  const problem = globProblem(glob);
+  return problem === undefined ? { glob, excluded } : context.fail(problem);
+});
+
+function globSet(globs: readonly WorkspaceGlob[]): GlobSet {
   return {
-    match: globs.filter((glob) => !glob.startsWith("!")).map(normalize),
-    except: globs.filter((glob) => glob.startsWith("!")).map((glob) => normalize(glob.slice(1))),
+    match: globs.filter(({ excluded }) => !excluded).map(({ glob }) => glob),
+    except: globs.filter(({ excluded }) => excluded).map(({ glob }) => glob),
   };
 }
 

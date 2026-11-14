@@ -9886,12 +9886,12 @@ function pnpmGlobs(source) {
   const file = parseYaml(PNPM_FILE, source);
   if (!file.ok) return file;
   const decoded = decode(
-    object((field) => field("packages", withDefault(array(string), [])), IGNORE),
+    object((field) => field("packages", withDefault(array(workspaceGlob), [])), IGNORE),
     file.value.value
   );
   return decoded.ok ? ok(globSet(decoded.value)) : err(mapNonEmpty(decoded.error, file.value.locate));
 }
-var npmWorkspaces = (input, context) => Array.isArray(input) ? array(string)(input, context) : object((field) => field("packages", array(string)), IGNORE)(input, context);
+var npmWorkspaces = (input, context) => Array.isArray(input) ? array(workspaceGlob)(input, context) : object((field) => field("packages", array(workspaceGlob)), IGNORE)(input, context);
 function npmGlobs(source) {
   const json = parseJson(ROOT_MANIFEST, source);
   if (!json.ok) return json;
@@ -9901,11 +9901,16 @@ function npmGlobs(source) {
   );
   return decoded.ok ? ok(globSet(decoded.value)) : err(jsonProblems(ROOT_MANIFEST, decoded.error));
 }
+var workspaceGlob = refine(string, (raw, context) => {
+  const excluded = raw.startsWith("!");
+  const glob2 = (excluded ? raw.slice(1) : raw).replace(/^\.\//, "").replace(/\/+$/, "");
+  const problem = globProblem(glob2);
+  return problem === void 0 ? { glob: glob2, excluded } : context.fail(problem);
+});
 function globSet(globs) {
-  const normalize = (glob2) => glob2.replace(/^\.\//, "").replace(/\/+$/, "");
   return {
-    match: globs.filter((glob2) => !glob2.startsWith("!")).map(normalize),
-    except: globs.filter((glob2) => glob2.startsWith("!")).map((glob2) => normalize(glob2.slice(1)))
+    match: globs.filter(({ excluded }) => !excluded).map(({ glob: glob2 }) => glob2),
+    except: globs.filter(({ excluded }) => excluded).map(({ glob: glob2 }) => glob2)
   };
 }
 var manifestDecoder = object((field) => {
