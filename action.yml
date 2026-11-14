@@ -1,0 +1,47 @@
+name: lane-router
+description: Select the CI test lanes a monorepo change can affect, explain every decision, and run every lane when unsure.
+author: Dan Doca
+branding:
+  icon: git-branch
+  color: blue
+
+inputs:
+  config:
+    description: The routing config, relative to working-directory.
+    default: .github/lanes.yml
+  working-directory:
+    description: The repository root to read the config and the workspace from.
+    default: "."
+  base:
+    description: The base commit. Defaults to the event's base.
+    default: ""
+  head:
+    description: The head commit. Defaults to the event's head.
+    default: ""
+  files:
+    description: Newline-separated changed paths, relative to working-directory and trusted as complete. Skips the compare API.
+    default: ""
+  token:
+    description: The token for the compare API.
+    default: ${{ github.token }}
+  mode:
+    description: pr or push. Defaults from the event.
+    default: ""
+
+outputs:
+  lanes:
+    description: A JSON array of the lanes that run.
+  matrix:
+    description: 'A JSON object {"include":[{"lane","base","reason"}]} for strategy.matrix.'
+  reasons:
+    description: A JSON object from every lane name to its one-line reason.
+  complete:
+    description: true when every file list the plan read was complete.
+  docs-only:
+    description: true when the change was docs-only.
+  none-required:
+    description: true when no lane runs.
+
+runs:
+  using: node24
+  main: dist/index.js
