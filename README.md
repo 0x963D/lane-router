@@ -1,0 +1,292 @@
+# lane-router
+
+lane-router works out the smallest set of CI test lanes a change can affect in a JavaScript monorepo. It explains every decision, and it runs every lane when it cannot be sure. It ships as a GitHub Action and as a CLI that makes the same decisions on a local diff.
+
+## The problem
+
+A monorepo CI usually runs every test lane on every change. Most changes touch one package, so most of that time goes to lanes the change cannot affect.
+
+Skipping a lane is safe only when you can show that nothing it reads changed. A lane reads its own packages, their workspace dependencies, and files that no manifest mentions, such as code generators, test fixtures and docs served by name. A wrong skip is worse than a slow build, because it merges a break that no lane tested.
+
+## Why path filters are unsafe
+
+The usual tool is a path filter on each workflow, such as `paths: ["packages/web/**"]`. It fails open in three ways.
+
+- **It does not follow dependencies.** A filter on `packages/web/**` does not fire for a change in `packages/ui`, even when `@acme/web` imports `@acme/ui`. Someone has to keep every filter in step with the dependency graph by hand.
+- **A path that no filter lists runs nothing.** A new top-level file, a renamed directory or a new config file matches no filter, so no lane tests it.
+- **It does not run when a diff is very large.** The GitHub docs on [triggering a workflow](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow) say that if a diff has more than 3,000 files and the matching files are not in the first 3,000, the workflow does not run.
+
+lane-router handles each case. It follows dependencies, it runs every lane for a path that nothing claims, and it runs every lane when it cannot trust the file list.
+
+## How routing works
+
+```
+changed paths --> placements per path --> one decision per lane --> outputs
+                  config                  run, with every reason     lanes, matrix,
+                  paths rows              skip, with one reason      reasons, one per lane,
+                  package                                            summary, explain
+                  docs
+                  unmatched
+```
+
+Each changed path gets every placement that applies to it.
+
+1. **Config.** The routing config itself changed. It selects every lane. No row can turn this off, because a change could otherwise rewrite its own routing.
+2. **Rows.** Every `paths` row whose `match` hits the path applies, inside a package or not. Rows add up.
+3. **Package.** The path is inside a workspace package. The deepest package directory wins. It selects every lane whose closure holds that package.
+4. **Docs.** The path matches `docs-only.match` and no `docs-only.except` glob. It is known and selects no lane by itself.
+5. **Unmatched.** Nothing above placed the path. It selects every lane.
+
+A lane's closure is its root packages, their workspace dependencies, and the configured extra edges, all followed transitively. When a lane reads a package indirectly, its reason names the chain, for example `packages/ui/src/button.tsx is in @acme/ui, read through @acme/web-e2e > @acme/web`.
+
+Rules about the whole change come after that.
+
+- **Docs-only.** A change is docs-only when it has at least one path and every path is docs. In a docs-only change, only the placements that read a file as text count. Those are the config file, `lanes` rows and `via: name` rows. Package placements and `via: code` or `via: tests` rows do not count, because Markdown is not compiled.
+- **Floor.** A lane with `floor: true` runs for every change that has paths and is not docs-only.
+- **Empty.** A change with no paths requires no lane.
+- **Renames.** The old and the new path are both changed paths.
+
+### Last green, for pushes
+
+With `last-green: auto` on a push, each lane is decided from the change since its last green commit. That commit is the newest first-parent ancestor of the pushed head, head excluded, where the lane's check run concluded `success`. The search looks back at most `last-green-depth` commits.
+
+- A lane with no green commit in that window runs, and its reason says so.
+- A lane with a green commit S runs only when the change S...head selects it. Otherwise it skips with the reason `nothing it reads changed since <S>`.
+- Lanes that share a green commit share one diff.
+- A skipped, neutral, cancelled or unfinished check is not a pass. A missing check is not a pass. Two runs of the same check that disagree are not a pass.
+
+This lets a push to `main` skip a lane that already passed on everything the push changed.
+
+## Config reference
+
+lane-router reads `.github/lanes.yml`. This is the config of the `test/fixtures/acme` monorepo that the tests route.
+
+```yaml
+lanes:
+  api:
+    packages: ["@acme/api"]
+  web:
+    packages: ["@acme/web"]
+  e2e:
+    packages: ["@acme/web-e2e"]
+    check: "e2e / chromium"
+  lint:
+    floor: true
+
+workspace:
+  edges:
+    - from: "@acme/web"
+      to: "@acme/api"
+
+paths:
+  - match: [pnpm-lock.yaml, package.json, pnpm-workspace.yaml, ".github/workflows/**"]
+    lanes: all
+    why: Dependency and CI changes can affect every lane.
+  - match: ["tools/codegen/**"]
+    packages: ["@acme/api"]
+    via: code
+    why: The api build runs the code generator.
+  - match: ["fixtures/browser/**"]
+    packages: ["@acme/web"]
+    via: tests
+    why: The browser tests load these fixtures.
+  - match: ["docs/api/*.md"]
+    packages: ["@acme/api"]
+    via: name
+    why: The api serves these files by name.
+  - match: [".vscode/**", ".idea/**"]
+    lanes: []
+    why: Editor settings affect no lane.
+
+docs-only:
+  match: ["**/*.md"]
+  except: [".changeset/**"]
+
+unmatched: all
+```
+
+| Key                                   | Meaning                                                                                                                                             |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lanes.<name>.packages`               | The lane's root packages, by `package.json` name. Required unless the lane is a floor lane.                                                         |
+| `lanes.<name>.floor`                  | `true` to run the lane for every change that is not docs-only. Default `false`.                                                                     |
+| `lanes.<name>.check`                  | The check run name that proves the lane passed, for last-green. Default: the lane name.                                                             |
+| `workspace.discovery`                 | `auto`, `pnpm` or `npm`. `auto` reads `pnpm-workspace.yaml` when it exists, else the `workspaces` field of the root `package.json`. Default `auto`. |
+| `workspace.edges`                     | Extra dependencies that the manifests do not declare. `from` reads `to`.                                                                            |
+| `paths[].match`                       | One or more globs.                                                                                                                                  |
+| `paths[].lanes`                       | `all`, or a list of lane names. An empty list marks a known path that selects no lane.                                                              |
+| `paths[].packages`                    | A list of package names. Needs `via`.                                                                                                               |
+| `paths[].via`                         | How the packages read the path. See the next table.                                                                                                 |
+| `paths[].why`                         | One sentence that explains the row. It appears in every reason the row produces.                                                                    |
+| `docs-only.match`, `docs-only.except` | The globs that make a path docs.                                                                                                                    |
+| `unmatched`                           | Must be `all`. It is required so the policy is written in the file.                                                                                 |
+
+| `via`   | The path behaves like                                 | Selects                                        | Counts in a docs-only change |
+| ------- | ----------------------------------------------------- | ---------------------------------------------- | ---------------------------- |
+| `code`  | the package's source                                  | every lane whose closure holds the package     | no                           |
+| `tests` | a file only the package's own tests read              | only the lanes that list the package as a root | no                           |
+| `name`  | a file the package reads as text, by name, at runtime | every lane whose closure holds the package     | yes                          |
+
+A package is a directory that matches a workspace glob and holds a `package.json` with a `name`. pnpm `!` negations are honoured. The repository root is never a package. Dependencies come from `dependencies`, `devDependencies`, `peerDependencies` and `optionalDependencies`, whatever the version specifier.
+
+Globs are [picomatch](https://github.com/micromatch/picomatch) globs, relative to the repository root, with posix separators and `dot: true`.
+
+Validation reports every problem in one error, each with its line and column. These are problems:
+
+- an unknown key, with the closest known key as a suggestion,
+- a lane name that does not match `^[A-Za-z0-9][A-Za-z0-9_-]*$`, or that is a fixed output name such as `lanes` or `matrix`,
+- a package or lane name that does not exist,
+- a row without `match`, with both or neither of `lanes` and `packages`, with `via` on a `lanes` row, without `via` on a `packages` row, or without `why`,
+- a glob with a backslash, a leading `/` or a leading `!`.
+
+## Outputs
+
+Every output is a string, as Actions requires.
+
+| Output          | Value                                                                                                                                                        |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `lanes`         | A JSON array of the lanes that run, in config order.                                                                                                         |
+| `matrix`        | A JSON object `{"include":[{"lane","base","reason"}]}` for `strategy.matrix`. `base` is the lane's last green commit when it has one, else the event's base. |
+| `<lane>`        | `run` or `skip`, one output per lane, keyed by the lane name.                                                                                                |
+| `reasons`       | A JSON object from every lane name to its one-line reason.                                                                                                   |
+| `complete`      | `true` when every file list the plan read was complete.                                                                                                      |
+| `docs-only`     | `true` when the event's change was docs-only.                                                                                                                |
+| `none-required` | `true` when no lane runs.                                                                                                                                    |
+
+The step also writes a job summary. It opens with a line that gives the mode, base, head, file count, completeness and docs-only state. A table with one row per lane follows.
+
+### Use the outputs in a workflow
+
+`OWNER` is the account that hosts this repository. The `test` job uses `none-required` to skip the matrix when no lane runs.
+
+```yaml
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: read
+    outputs:
+      matrix: ${{ steps.lanes.outputs.matrix }}
+      none-required: ${{ steps.lanes.outputs.none-required }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: lanes
+        uses: OWNER/lane-router@v0
+        with:
+          last-green: auto
+
+  test:
+    needs: plan
+    if: needs.plan.outputs.none-required != 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v7
+      - run: npm ci
+      - run: npm run "test:${{ matrix.lane }}"
+```
+
+### Inputs
+
+| Input               | Default               | Meaning                                                                                                                            |
+| ------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `config`            | `.github/lanes.yml`   | The routing config, relative to `working-directory`.                                                                               |
+| `working-directory` | `.`                   | The repository root to read the config and the workspace from.                                                                     |
+| `base`, `head`      | the event's           | The revisions to compare. Setting either skips the pull request file-count check.                                                  |
+| `files`             | empty                 | Newline-separated changed paths, relative to `working-directory`. They are trusted as complete, and the compare API is not called. |
+| `token`             | `${{ github.token }}` | The token for the compare, commits and check-runs endpoints.                                                                       |
+| `mode`              | from the event        | `pr` or `push`. Required for events other than `pull_request`, `pull_request_target` and `push`.                                   |
+| `last-green`        | `off`                 | `auto` turns on last-green for pushes. It is ignored on pull requests.                                                             |
+| `last-green-depth`  | `100`                 | How many first-parent ancestors last-green searches.                                                                               |
+
+The Action reads the config and the workspace from the checked-out tree. On a pull request the default checkout is the merge commit, which is also what CI tests.
+
+## Fail-closed guarantees
+
+A wrong skip merges an untested break. These are the cases where lane-router runs every lane affected by what it could not check, and says why in the reason and in an annotation:
+
+- a changed path that no placement claims,
+- a change to the routing config,
+- a compare listing of 300 or more files, which is the most the endpoint returns,
+- a pull request whose compare listing differs from its `changed_files` count,
+- a push that opens a new branch, whose `before` is all zeros and cannot be compared,
+- a changed path outside `working-directory`,
+- any API error, git error or unexpected exception after the config has loaded.
+
+In each of these cases `complete` is `false` and the step succeeds, so the lanes run.
+
+A config or workspace error is different. The lane names are unknown, so lane-router fails the step and lists every problem. Downstream jobs never start, so the build stays red and no lane is skipped by mistake.
+
+The code enforces the rule as well. A skip decision and a complete file list each carry a key that only one module can name, so no other code can construct either one. `npm run typecheck` checks this in `test/type-claims.ts`. Every other module can build only a decision to run.
+
+## Run locally
+
+The CLI makes the decisions the Action would make in PR mode for a local diff. It reads the config and the workspace at `--head`, not from the working tree.
+
+```sh
+npm ci
+npm run build
+node dist/cli.js explain --base origin/main --head HEAD
+```
+
+```
+lane-router explain --base <ref> --head <ref> [--config <path>] [--cwd <dir>] [--json]
+```
+
+The CLI exits with 0 when it printed a plan, fail-closed plans included. It exits with 1 when the config or the workspace does not load, and with 2 on a usage error. `--json` prints the plan as a JSON document.
+
+To see a full explanation, run `npm run demo`. It commits a change to the `acme` fixture in a temporary git repository and runs the built CLI on it. The commit SHAs differ on every run. The rest of the output looks like this:
+
+```
+lane  decision  reason
+api   run       docs/api/users.md matches paths[3] for @acme/api via name: The api serves these files by name.
+web   run       docs/api/users.md matches paths[3] for @acme/api via name, read through @acme/web: The api serves these files by name. (+2 more)
+e2e   run       docs/api/users.md matches paths[3] for @acme/api via name, read through @acme/web-e2e > @acme/web: The api serves these files by name. (+1 more)
+lint  run       floor lane, runs for every change that is not docs-only
+
+.vscode/settings.json
+  paths[6]                      no lane        Editor settings affect no lane.
+README.md
+  docs                          no lane
+docs/api/users.md
+  paths[3] @acme/api via name   api, web, e2e  The api serves these files by name.
+  docs                          no lane
+fixtures/browser/login.json
+  paths[2] @acme/web via tests  web            The browser tests load these fixtures.
+packages/ui/src/button.tsx
+  package @acme/ui              web, e2e
+```
+
+To work on lane-router itself, use these commands. CI runs all of them and fails if `dist/` differs from a fresh build.
+
+```sh
+npm test
+npm run typecheck
+npm run lint
+npm run format:check
+npm run build
+```
+
+## What's next
+
+These are not built:
+
+- Workspace discovery reads pnpm and npm files only. Yarn and Bun also use the `workspaces` field, so `discovery: npm` may read them, but no test covers it.
+- Dependencies come from manifests and configured edges. Imports in source files are not read.
+- `unmatched` accepts only `all`.
+- A compare listing of 300 or more files fails closed. Paging through a larger diff would let such a change skip lanes safely.
+- A `merge_group` event needs `mode`, `base` and `head` set by hand.
+- There is no release tag and no Marketplace listing yet.
+
+## Origin
+
+Dan, write this section in your own words.
