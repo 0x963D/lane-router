@@ -140,6 +140,10 @@ function toInvocation(inputs: Inputs, event: GitHubEvent, env: NodeJS.ProcessEnv
 
   const failures = [
     mode === undefined && context.at("mode").fail(`is required for ${eventText}`),
+    inputs.mode !== undefined &&
+      fromEvent !== undefined &&
+      inputs.mode !== fromEvent.mode &&
+      context.at("mode").fail(`is ${inputs.mode}, but ${eventText} routes in ${fromEvent.mode} mode`),
     inputs.files === "" &&
       base === undefined &&
       context.at("base").fail(`is required for ${eventText} unless files is set`),

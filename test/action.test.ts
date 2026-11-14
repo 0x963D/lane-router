@@ -241,6 +241,16 @@ describe("a push", () => {
     expect(run.outputs.complete).toBe("false");
   });
 
+  it("routes the same with a mode input that agrees with the event", async () => {
+    const github = await fakeGitHub();
+    compare(github, BASE, HEAD, [BUTTON], { status: "ahead", mergeBase: BASE });
+    const run = await runAction({ workspace: ACME, inputs: { mode: "push" }, event: push(BASE), github });
+    expect(run.exitCode).toBe(0);
+    expect(run.summary).toContain("mode push");
+    expect(parsed(run.outputs.lanes)).toEqual(["web", "e2e", "lint"]);
+    expect(run.outputs.complete).toBe("true");
+  });
+
   it("runs every lane on a compare status it does not know", async () => {
     const github = await fakeGitHub();
     compare(github, BASE, HEAD, [BUTTON], { status: "sideways", mergeBase: BASE });
@@ -314,6 +324,39 @@ describe("errors before a model exists", () => {
     });
     expect(run.exitCode).toBe(0);
     expect(parsed(run.outputs.lanes)).toEqual(ALL);
+  });
+
+  it("accept mode pr with base and head for an event that implies no mode", async () => {
+    const github = await fakeGitHub();
+    compare(github, BASE, HEAD, ["packages/ui/src/button.tsx"], { status: "diverged", mergeBase: MERGE_BASE });
+    const run = await runAction({
+      workspace: ACME,
+      inputs: { mode: "pr", base: BASE, head: HEAD },
+      event: { name: "workflow_dispatch", payload: {} },
+      github,
+    });
+    expect(run.exitCode).toBe(0);
+    expect(run.summary).toContain("mode pr");
+    expect(parsed(run.outputs.lanes)).toEqual(["web", "e2e", "lint"]);
+    expect(run.outputs.complete).toBe("true");
+  });
+
+  it("fail the step when mode pr contradicts a push event", async () => {
+    const github = await fakeGitHub();
+    compare(github, BASE, HEAD, ["packages/ui/src/button.tsx"], { status: "diverged", mergeBase: MERGE_BASE });
+    const run = await runAction({ workspace: ACME, inputs: { mode: "pr" }, event: push(BASE), github });
+    expect(run.exitCode).toBe(1);
+    expect(run.outputs).toEqual({});
+    expect(run.annotations[0]?.message).toContain("the mode input is pr, but a push event routes in push mode");
+  });
+
+  it("fail the step when mode push contradicts a pull request event", async () => {
+    const github = await fakeGitHub();
+    compare(github, BASE, HEAD, ["packages/ui/src/button.tsx"], { status: "ahead", mergeBase: BASE });
+    const run = await runAction({ workspace: ACME, inputs: { mode: "push" }, event: pullRequest(1), github });
+    expect(run.exitCode).toBe(1);
+    expect(run.outputs).toEqual({});
+    expect(run.annotations[0]?.message).toContain("the mode input is push, but a pull_request event routes in pr mode");
   });
 
   it("fail the step on an event payload that is missing a field the Action needs", async () => {

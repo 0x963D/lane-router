@@ -30046,6 +30046,7 @@ function toInvocation(inputs, event, env, context) {
   const eventText = event.kind === "other" ? `a ${event.name || "manual"} event` : `a ${event.kind} event`;
   const failures = [
     mode === void 0 && context.at("mode").fail(`is required for ${eventText}`),
+    inputs.mode !== void 0 && fromEvent !== void 0 && inputs.mode !== fromEvent.mode && context.at("mode").fail(`is ${inputs.mode}, but ${eventText} routes in ${fromEvent.mode} mode`),
     inputs.files === "" && base === void 0 && context.at("base").fail(`is required for ${eventText} unless files is set`),
     inputs.files === "" && head === "" && context.at("head").fail(`is required for ${eventText} unless files is set`),
     inputs.files === "" && repository === "" && context.fail("GITHUB_REPOSITORY is not set, so the compare API cannot be called")

@@ -202,7 +202,7 @@ jobs:
 | `base`, `head`      | the event's           | The revisions to compare. Setting either skips the pull request file-count check.                                                  |
 | `files`             | empty                 | Newline-separated changed paths, relative to `working-directory`. They are trusted as complete, and the compare API is not called. |
 | `token`             | `${{ github.token }}` | The token for the compare endpoint.                                                                                                |
-| `mode`              | from the event        | `pr` or `push`. Required for events other than `pull_request`, `pull_request_target` and `push`.                                   |
+| `mode`              | from the event        | `pr` or `push`. Must match a `pull_request`, `pull_request_target` or `push` event. Required for any other event.                  |
 
 The token needs only `contents: read`, which the compare endpoint requires.
 
@@ -226,7 +226,7 @@ It also runs every lane when it cannot trust the list of changed files. Then `co
 - a changed path outside `working-directory`,
 - any API error, git error or unexpected exception after the config has loaded.
 
-A push is routed from `before` to `after`, and the compare API lists the change from the merge base of the two. After a force push the merge base is not `before`, so the listing leaves out what the dropped commits changed. In push mode lane-router trusts the listing only when the compare API reports `ahead` or `identical` and the merge base is the base commit. That holds for a `base` input in push mode too. A pull request is exempt, because its base branch often moves on after it opens and its change is meant to start at the merge base.
+A push is routed from `before` to `after`, and the compare API lists the change from the merge base of the two. After a force push the merge base is not `before`, so the listing leaves out what the dropped commits changed. In push mode lane-router trusts the listing only when the compare API reports `ahead` or `identical` and the merge base is the base commit. That holds for a `base` input in push mode too. A `mode` input that contradicts its event fails the step, so a push cannot opt out of this rule. A pull request is exempt, because its base branch often moves on after it opens and its change is meant to start at the merge base.
 
 A shallow checkout, the `actions/checkout` default, has no base commit. A change to a package manifest then runs every lane. Check out with `fetch-depth: 0` to keep those changes precise. Other changes never need the base commit.
 
