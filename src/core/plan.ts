@@ -1,7 +1,7 @@
-import { messageOf } from "../result.ts";
+import { err, messageOf, type Result } from "../result.ts";
 import { incomplete, type ChangeSource, type Range } from "./change.ts";
-import type { LaneName } from "./ids.ts";
-import type { Lane, RoutingModel } from "./model.ts";
+import type { LaneName, RepoPath } from "./ids.ts";
+import { MANIFEST, type Lane, type RoutingModel } from "./model.ts";
 import { decide, route, type LaneDecision, type Routing } from "./route.ts";
 
 export type Mode = "pr" | "push";
@@ -16,12 +16,19 @@ export interface LastGreen {
   readonly proofs: (lanes: readonly Lane[]) => Promise<ReadonlyMap<LaneName, string>>;
 }
 
+/**
+ * The port for the base graph: the model again, with the workspace at `commit` as a second graph.
+ * Resolves an error that says why when that workspace cannot be read or does not load.
+ */
+export type BaseGraph = (commit: string) => Promise<Result<RoutingModel, string>>;
+
 export type PlanRequest =
-  | { readonly mode: "pr"; readonly range: Range; readonly changes: ChangeSource }
+  | { readonly mode: "pr"; readonly range: Range; readonly changes: ChangeSource; readonly baseGraph: BaseGraph }
   | {
       readonly mode: "push";
       readonly range: Range;
       readonly changes: ChangeSource;
+      readonly baseGraph: BaseGraph;
       readonly lastGreen: LastGreen | null;
     };
 
@@ -61,15 +68,14 @@ export async function planLanes(model: RoutingModel, request: PlanRequest): Prom
 }
 
 async function plan(model: RoutingModel, request: PlanRequest): Promise<Plan> {
-  const event = route(model, request.range, await request.changes(request.range));
+  const event = await routeChange(model, request, request.range);
   if (request.mode === "pr" || request.lastGreen === null) return sealed(request.mode, event, decideOver(model, event));
 
   const { depth, proofs: findProofs } = request.lastGreen;
   const proofs = await findProofs(model.lanes);
   const routeSince = async (proof: string): Promise<readonly [string, Routing]> => {
     if (proof === request.range.base) return [proof, event];
-    const range = { base: proof, head: request.range.head };
-    return [proof, route(model, range, await request.changes(range))];
+    return [proof, await routeChange(model, request, { base: proof, head: request.range.head })];
   };
   const sinceProof = new Map(await Promise.all([...new Set(proofs.values())].map(routeSince)));
 
@@ -81,6 +87,30 @@ async function plan(model: RoutingModel, request: PlanRequest): Promise<Plan> {
     return { lane, since, decision: decide(since, lane) };
   });
   return sealed(request.mode, event, lanes);
+}
+
+async function routeChange(model: RoutingModel, request: PlanRequest, range: Range): Promise<Routing> {
+  const files = await request.changes(range);
+  // The graph is a function of the config, the workspace file, the root manifest and the package
+  // manifests. A change to any of the first three already reaches every lane as a built-in, so the
+  // base graph can differ only when a package manifest changed. Reading it only then keeps a
+  // shallow checkout, which lacks the base commit, routing every other change precisely.
+  if (files.kind === "incomplete" || !files.paths.some(isPackageManifest)) return route(model, range, files);
+  const { mergeBase } = files;
+  const withBase =
+    mergeBase === null
+      ? err("the change names no base commit")
+      : await request.baseGraph(mergeBase).catch((error: unknown) => err(messageOf(error)));
+  if (withBase.ok) return route(withBase.value, range, files);
+  return route(
+    model,
+    range,
+    incomplete({ kind: "no-base-graph", commit: mergeBase, reason: withBase.error }, files.paths),
+  );
+}
+
+function isPackageManifest(path: RepoPath): boolean {
+  return path.endsWith(`/${MANIFEST}`);
 }
 
 function decideOver(model: RoutingModel, event: Routing): readonly PlannedLane[] {

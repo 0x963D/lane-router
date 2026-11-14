@@ -1,6 +1,6 @@
 import type { IncompleteCause } from "./core/change.ts";
 import type { FixedOutput, LaneName } from "./core/ids.ts";
-import type { Through } from "./core/model.ts";
+import type { BuiltIn, Graph, Through } from "./core/model.ts";
 import { baseOf, isComplete, type Mode, type Plan, type PlannedLane } from "./core/plan.ts";
 import { isCounted, type Placement, type Routing, type RunReason, type SkipReason } from "./core/route.ts";
 
@@ -15,7 +15,7 @@ type ReasonKind = Exclude<RunReason["kind"], "placement"> | Placement["kind"];
 const HEADLINE_RANK: Readonly<Record<ReasonKind, number>> = {
   incomplete: 0,
   "no-proof": 1,
-  config: 2,
+  "built-in": 2,
   unmatched: 3,
   row: 4,
   package: 5,
@@ -62,16 +62,26 @@ function describeReason(reason: RunReason, check: string): string {
   }
 }
 
+/** Why each built-in input reaches every lane, and its label in the list of paths. */
+const BUILT_IN: Readonly<Record<BuiltIn, { readonly says: string; readonly label: string }>> = {
+  config: { says: "is the routing config", label: "config" },
+  workspace: { says: "defines the workspace", label: "workspace file" },
+  "root-manifest": { says: "is the root manifest", label: "root manifest" },
+  lockfile: { says: "is a lockfile", label: "lockfile" },
+};
+
 function describePlacement(path: string, placement: Placement, through: Through): string {
   switch (placement.kind) {
-    case "config":
-      return `${path} is the routing config`;
+    case "built-in":
+      return `${path} ${BUILT_IN[placement.input].says}`;
     case "unmatched":
       return `${path} matches no package, paths row or docs rule`;
     case "docs":
       return `${path} is documentation`;
-    case "package":
-      return `${path} is in ${placement.package}${readThrough(through)}`;
+    case "package": {
+      const found = through.kind === "reads" ? (through.chain.at(-1) ?? placement.package) : placement.package;
+      return `${path} is in ${found}${readThrough(through)}`;
+    }
     case "row": {
       const { index, why, target } = placement.row;
       const subject =
@@ -87,9 +97,11 @@ function describePlacement(path: string, placement: Placement, through: Through)
   }
 }
 
+/** A chain found only in the base graph says so, since head no longer holds it. */
 function readThrough(through: Through): string {
-  if (through.kind === "named" || through.chain.length < 2) return "";
-  return `, read through ${through.chain.slice(0, -1).join(" > ")}`;
+  if (through.kind === "named") return "";
+  const chain = through.chain.length < 2 ? "" : `, read through ${through.chain.slice(0, -1).join(" > ")}`;
+  return through.graph === "base" ? `${chain} in the base graph` : chain;
 }
 
 function fileCount(count: number): string {
@@ -106,6 +118,10 @@ export function describeCause(cause: IncompleteCause): string {
       return "there is no base commit to compare against";
     case "invalid-path":
       return `${cause.raw} is not a path inside the routed root`;
+    case "no-base-graph": {
+      const at = cause.commit === null ? "" : ` at ${shortRevision(cause.commit)}`;
+      return `a package manifest changed, and the base graph${at} cannot be built: ${cause.reason}`;
+    }
     case "error":
       return cause.message;
     default: {
@@ -200,7 +216,8 @@ function table(rows: readonly (readonly string[])[]): string[] {
 
 function placementLabel(placement: Placement): string {
   switch (placement.kind) {
-    case "config":
+    case "built-in":
+      return BUILT_IN[placement.input].label;
     case "docs":
     case "unmatched":
       return placement.kind;
@@ -277,7 +294,8 @@ export type LaneJson = {
 );
 
 export type PlacementJson = { readonly lanes: readonly string[] } & (
-  | { readonly kind: "config" | "docs" | "unmatched" }
+  | { readonly kind: "built-in"; readonly input: BuiltIn }
+  | { readonly kind: "docs" | "unmatched" }
   | { readonly kind: "row"; readonly row: number; readonly why: string }
   | { readonly kind: "package"; readonly package: string }
 );
@@ -288,6 +306,8 @@ export type RunReasonJson =
       readonly path: string;
       readonly placement: PlacementJson;
       readonly through: readonly string[];
+      /** The graph the chain in `through` was found in. Null for a placement that names its lanes. */
+      readonly graph: Graph | null;
       readonly counted: boolean;
     }
   | { readonly kind: "floor" }
@@ -297,7 +317,8 @@ export type RunReasonJson =
 function placementJson(placement: Placement): PlacementJson {
   const lanes = [...placement.reach.keys()];
   switch (placement.kind) {
-    case "config":
+    case "built-in":
+      return { kind: "built-in", input: placement.input, lanes };
     case "docs":
     case "unmatched":
       return { kind: placement.kind, lanes };
@@ -320,6 +341,7 @@ function reasonJson(routing: Routing, reason: RunReason): RunReasonJson {
         path: reason.path,
         placement: placementJson(reason.placement),
         through: reason.through.kind === "reads" ? reason.through.chain : [],
+        graph: reason.through.kind === "reads" ? reason.through.graph : null,
         counted: isCounted(routing, reason.placement),
       };
     case "floor":

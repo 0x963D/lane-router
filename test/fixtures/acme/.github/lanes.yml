@@ -15,9 +15,9 @@ workspace:
       to: "@acme/api"
 
 paths:
-  - match: [pnpm-lock.yaml, package.json, pnpm-workspace.yaml, ".github/workflows/**"]
+  - match: [".github/workflows/**"]
     lanes: all
-    why: Dependency and CI changes can affect every lane.
+    why: CI changes can affect every lane.
   - match: ["tools/codegen/**"]
     packages: ["@acme/api"]
     via: code

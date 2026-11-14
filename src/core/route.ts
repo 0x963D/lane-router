@@ -1,7 +1,18 @@
 import { isNonEmpty, type NonEmpty } from "../result.ts";
 import type { ChangedFiles, IncompleteCause, Range } from "./change.ts";
 import type { PackageName, RepoPath } from "./ids.ts";
-import { VIA, type Lane, type PackageScope, type Reach, type Row, type RoutingModel, type Through } from "./model.ts";
+import {
+  joinReach,
+  VIA,
+  type BuiltIn,
+  type Lane,
+  type PackageDirs,
+  type PackageScope,
+  type Reach,
+  type Row,
+  type RoutingModel,
+  type Through,
+} from "./model.ts";
 
 /*
  * The routing rules. `route` places every changed path, and `decide` derives one lane's verdict from
@@ -10,11 +21,14 @@ import { VIA, type Lane, type PackageScope, type Reach, type Row, type RoutingMo
 
 /** Why a changed path belongs somewhere. Each variant carries the lanes it reaches, fixed when `compile` ran. */
 export type Placement =
-  /** The routing config itself. No row can turn it off, or a change could rewrite its own routing. */
-  | { readonly kind: "config"; readonly reach: Reach }
+  /** A file every lane reads, such as the routing config or a lockfile. */
+  | { readonly kind: "built-in"; readonly input: BuiltIn; readonly reach: Reach }
   /** A `paths` row whose `match` hits the path. Rows add up, inside a package or not. */
   | { readonly kind: "row"; readonly row: Row; readonly reach: Reach }
-  /** The deepest package directory that holds the path. */
+  /**
+   * The deepest package directory that holds the path, in head when one does, else in base. It
+   * reaches the lanes that read the head package or the base package.
+   */
   | { readonly kind: "package"; readonly package: PackageName; readonly reach: Reach }
   /** Matches `docs-only`. Known, and reaches no lane by itself. */
   | { readonly kind: "docs"; readonly reach: Reach }
@@ -80,20 +94,28 @@ export function route(model: RoutingModel, range: Range, files: ChangedFiles): R
 
 function place(model: RoutingModel, path: RepoPath): NonEmpty<Placement> {
   const placements: Placement[] = [];
-  if (path === model.configPath) placements.push({ kind: "config", reach: model.everyLane });
+  const builtIn = model.builtIns.get(path);
+  if (builtIn !== undefined) placements.push({ kind: "built-in", input: builtIn, reach: model.everyLane });
   for (const { row, hits, reach } of model.rows) {
     if (hits(path)) placements.push({ kind: "row", row, reach });
   }
-  const owner = owningPackage(model, path);
-  if (owner !== undefined) placements.push({ kind: "package", package: owner.name, reach: owner.reach });
+  const owners = model.packageDirs.flatMap((dirs) => owningPackage(dirs, path) ?? []);
+  const [owner] = owners;
+  if (owner !== undefined) {
+    const reach = joinReach(
+      model.lanes,
+      owners.map((scope) => scope.reach),
+    );
+    placements.push({ kind: "package", package: owner.name, reach });
+  }
   if (model.isDocs(path)) placements.push({ kind: "docs", reach: NO_LANES });
   return isNonEmpty(placements) ? placements : [{ kind: "unmatched", reach: model.everyLane }];
 }
 
-function owningPackage(model: RoutingModel, path: RepoPath): PackageScope | undefined {
+function owningPackage(dirs: PackageDirs, path: RepoPath): PackageScope | undefined {
   const segments = path.split("/");
   for (let depth = segments.length - 1; depth > 0; depth--) {
-    const scope = model.packagesByDir.get(segments.slice(0, depth).join("/"));
+    const scope = dirs.get(segments.slice(0, depth).join("/"));
     if (scope !== undefined) return scope;
   }
   return undefined;
@@ -139,7 +161,7 @@ export function isCounted(routing: Routing, placement: Placement): boolean {
 /** The docs-only rule. In a docs-only change only placements that read the file as text count. */
 function readsAsText(placement: Placement): boolean {
   switch (placement.kind) {
-    case "config":
+    case "built-in":
       return true;
     case "row": {
       const { target } = placement.row;

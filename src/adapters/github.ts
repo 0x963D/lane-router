@@ -72,20 +72,20 @@ export function readEvent(name: string, payload: unknown): Result<GitHubEvent, N
     : err(mapNonEmpty(decoded.error, (issue) => `the ${name} event payload ${describe(issue)}`));
 }
 
-const compareResponse = object(
-  (field) =>
-    field(
-      "files",
-      array(
-        object((file) => {
-          const path = file("filename", nonEmptyString);
-          const previousPath = file("previous_filename", optional(string));
-          return isValid(path) && isValid(previousPath) ? { path, previousPath: previousPath ?? null } : INVALID;
-        }, IGNORE),
-      ),
+const compareResponse = object((field) => {
+  const mergeBase = field("merge_base_commit", sha("sha"));
+  const files = field(
+    "files",
+    array(
+      object((file) => {
+        const path = file("filename", nonEmptyString);
+        const previousPath = file("previous_filename", optional(string));
+        return isValid(path) && isValid(previousPath) ? { path, previousPath: previousPath ?? null } : INVALID;
+      }, IGNORE),
     ),
-  IGNORE,
-);
+  );
+  return isValid(mergeBase) && isValid(files) ? { mergeBase, files } : INVALID;
+}, IGNORE);
 
 const commitsResponse = array(
   object((field) => {
@@ -126,9 +126,9 @@ function passed(runs: readonly CheckRun[], check: string): boolean {
 
 export interface GitHubRepo {
   /**
-   * The files changed between `range.base` and `range.head`, from the compare endpoint. Resolves
-   * incomplete when there is no base, when the listing reaches the 300-file cap, or when it differs
-   * from `expectedCount`. Rejects on any HTTP or decoding failure.
+   * The files changed from the merge base of `range.base` and `range.head`, which the list carries,
+   * from the compare endpoint. Resolves incomplete when there is no base, when the listing reaches
+   * the 300-file cap, or when it differs from `expectedCount`. Rejects on any HTTP or decoding failure.
    */
   compare(
     range: Range,
@@ -217,11 +217,11 @@ export function githubRepo(options: {
     }),
     compare: async (range, { expectedCount, under }) => {
       if (range.base === null) return incomplete({ kind: "no-base" });
-      const listed = await get(
+      const { mergeBase, files: listed } = await get(
         `/compare/${encodeURIComponent(range.base)}...${encodeURIComponent(range.head)}`,
         compareResponse,
       );
-      const files = changedFiles(listed, under);
+      const files = changedFiles(listed, { under, mergeBase });
       if (listed.length >= COMPARE_LIMIT) {
         return incomplete({ kind: "truncated", listed: listed.length, limit: COMPARE_LIMIT }, files.paths);
       }

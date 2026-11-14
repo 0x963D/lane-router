@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { changedFiles, incomplete, type IncompleteCause } from "../src/core/change.ts";
+import { reasonLine } from "../src/render.ts";
 import { CONFIG } from "./support/model.ts";
 import { decisionOf, evidenceOf, placementKinds, placementsOf, planFor, planWith, running } from "./support/plan.ts";
 
@@ -35,20 +36,32 @@ ${extra.paths ?? ""}docs-only:
 unmatched: all
 `;
 
-describe("the config file", () => {
-  it("selects every lane when it changes", async () => {
-    const plan = await planFor("acme", [CONFIG]);
+describe("built-in inputs", () => {
+  it.each([
+    [CONFIG, "is the routing config"],
+    ["pnpm-workspace.yaml", "defines the workspace"],
+    ["package.json", "is the root manifest"],
+    ["pnpm-lock.yaml", "is a lockfile"],
+    ["package-lock.json", "is a lockfile"],
+    ["npm-shrinkwrap.json", "is a lockfile"],
+    ["yarn.lock", "is a lockfile"],
+    ["bun.lock", "is a lockfile"],
+  ])("select every lane when %s changes, and no row can turn that off", async (path, says) => {
+    const config = acmeConfig({ paths: `  - match: ["${path}"]\n    lanes: []\n    why: Try to hide it.\n` });
+    const plan = await planFor("acme", [path], { [CONFIG]: config });
     expect(running(plan)).toEqual(ALL);
-    expect(placementKinds(plan, CONFIG)).toEqual(["config"]);
+    expect(placementKinds(plan, path)).toEqual(["built-in", "row"]);
+    expect(plan.lanes.map(reasonLine)).toEqual(
+      ALL.map((lane) => `${path} ${says}${lane === "lint" ? " (+1 more)" : ""}`),
+    );
   });
 
-  it("cannot be turned off by a row", async () => {
-    const config = acmeConfig({ paths: '  - match: [".github/**"]\n    lanes: []\n    why: Hide the config.\n' });
-    const plan = await planFor("acme", [CONFIG], { [CONFIG]: config });
-    expect(running(plan)).toEqual(ALL);
+  it("read only at the root", async () => {
+    const plan = await planFor("acme", ["tools/scripts/package-lock.json"]);
+    expect(placementKinds(plan, "tools/scripts/package-lock.json")).toEqual(["package"]);
   });
 
-  it("still counts when docs-only globs cover it", async () => {
+  it("still count when docs-only globs cover them", async () => {
     const plan = await planFor("acme", [CONFIG], { [CONFIG]: acmeConfig({ docsOnly: '["**/*.md", ".github/**"]' }) });
     expect(plan.event.kind).toBe("docs-only");
     expect(running(plan)).toEqual(ALL);
@@ -57,12 +70,12 @@ describe("the config file", () => {
 
 describe("paths rows", () => {
   it("selects every lane for lanes: all, with the row's why as evidence", async () => {
-    const plan = await planFor("acme", ["pnpm-lock.yaml"]);
+    const plan = await planFor("acme", [".github/workflows/ci.yml"]);
     expect(running(plan)).toEqual(ALL);
     const decision = decisionOf(plan, "api");
     expect(decision.kind === "run" && decision.because[0]).toMatchObject({
       kind: "placement",
-      placement: { kind: "row", row: { index: 0, why: "Dependency and CI changes can affect every lane." } },
+      placement: { kind: "row", row: { index: 0, why: "CI changes can affect every lane." } },
     });
   });
 

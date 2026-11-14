@@ -1,7 +1,7 @@
 import { parseArgs } from "node:util";
 import { gitRepo } from "./adapters/git.ts";
 import { planLanes } from "./core/plan.ts";
-import { formatProblems, loadModel } from "./load/index.ts";
+import { baseGraphOf, formatProblems, loadModel } from "./load/index.ts";
 import { explainJson, explainText } from "./render.ts";
 import { err, messageOf, ok, type Result } from "./result.ts";
 
@@ -51,12 +51,18 @@ export async function runCli(argv: readonly string[], io: CliIo): Promise<ExitCo
     return 2;
   }
   try {
-    const model = await loadModel(repo.treeAt(head), config);
+    const tree = repo.treeAt(head);
+    const model = await loadModel(tree, config);
     if (!model.ok) {
       io.stderr(formatProblems(model.error));
       return 1;
     }
-    const plan = await planLanes(model.value, { mode: "pr", range: { base, head }, changes: repo.changes });
+    const plan = await planLanes(model.value, {
+      mode: "pr",
+      range: { base, head },
+      changes: repo.changes,
+      baseGraph: baseGraphOf(tree, config, repo),
+    });
     io.stdout(json ? explainJson(plan) : explainText(plan));
     return 0;
   } catch (error) {

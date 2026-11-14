@@ -9183,7 +9183,7 @@ function parseRepoPath(raw) {
 
 // src/core/change.ts
 var vetted = /* @__PURE__ */ Symbol("vetted");
-function changedFiles(entries2, under = "") {
+function changedFiles(entries2, { under = "", mergeBase = null } = {}) {
   const prefix = under === "" ? "" : `${under.replace(/\/+$/, "")}/`;
   const paths = /* @__PURE__ */ new Set();
   let outside;
@@ -9195,7 +9195,7 @@ function changedFiles(entries2, under = "") {
   }
   const sorted = [...paths].sort();
   if (outside !== void 0) return incomplete({ kind: "invalid-path", raw: outside }, sorted);
-  return { kind: "complete", paths: sorted, [vetted]: true };
+  return { kind: "complete", paths: sorted, mergeBase, [vetted]: true };
 }
 function incomplete(cause, paths = []) {
   return { kind: "incomplete", cause, paths };
@@ -9229,22 +9229,17 @@ var VIA = {
   tests: { reaches: "roots", readsAsText: false },
   name: { reaches: "closure", readsAsText: true }
 };
+var MANIFEST = "package.json";
+var WORKSPACE_FILE = "pnpm-workspace.yaml";
+var LOCKFILES = ["pnpm-lock.yaml", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "bun.lock"];
 var NAMED = { kind: "named" };
 var NO_LANES = /* @__PURE__ */ new Map();
 function compile(input) {
-  const { config, workspace } = input;
+  const { config } = input;
   const lanes = config.lanes.map(({ name, floor, check }) => ({ name, floor, check }));
-  const graph = dependencyGraph(workspace, config.edges);
-  const reaches = {
-    closure: /* @__PURE__ */ new Map(),
-    roots: /* @__PURE__ */ new Map()
-  };
-  for (const lane of config.lanes) {
-    for (const [name, chain] of shortestChains(graph, lane.packages)) {
-      addReach(reaches.closure, name, lane.name, { kind: "reads", chain });
-    }
-    for (const name of lane.packages) addReach(reaches.roots, name, lane.name, { kind: "reads", chain: [name] });
-  }
+  const head = compileGraph(input.workspace, config, "head");
+  const base = input.base === void 0 ? void 0 : compileGraph(input.base, config, "base");
+  const graphs = base === void 0 ? [head] : [head, base];
   const everyLane = new Map(lanes.map((lane) => [lane.name, NAMED]));
   const rowReach = (target) => {
     switch (target.kind) {
@@ -9254,13 +9249,11 @@ function compile(input) {
         return new Map(lanes.filter((lane) => named.includes(lane.name)).map((lane) => [lane.name, NAMED]));
       }
       case "packages": {
-        const index = reaches[VIA[target.via].reaches];
-        const reach = /* @__PURE__ */ new Map();
-        for (const lane of lanes) {
-          const through = target.packages.map((name) => index.get(name)?.get(lane.name)).find((found) => !!found);
-          if (through) reach.set(lane.name, through);
-        }
-        return reach;
+        const index = VIA[target.via].reaches;
+        return joinReach(
+          lanes,
+          graphs.flatMap((graph) => target.packages.map((name) => graph[index].get(name) ?? NO_LANES))
+        );
       }
       default: {
         const _exhaustive = target;
@@ -9269,7 +9262,12 @@ function compile(input) {
     }
   };
   return {
-    configPath: input.configPath,
+    builtIns: new Map([
+      [WORKSPACE_FILE, "workspace"],
+      [MANIFEST, "root-manifest"],
+      ...LOCKFILES.map((file) => [file, "lockfile"]),
+      [input.configPath, "config"]
+    ]),
     lanes,
     rows: config.rows.map(({ match, target, why }, index) => ({
       row: { index, why, target },
@@ -9277,13 +9275,34 @@ function compile(input) {
       reach: rowReach(target)
     })),
     isDocs: compileGlobs(config.docsOnly),
-    packagesByDir: new Map(
-      [...workspace.packages.values()].map(
-        ({ name, dir }) => [dir, { name, dir, reach: reaches.closure.get(name) ?? NO_LANES }]
-      )
-    ),
+    packageDirs: base === void 0 ? [head.dirs] : [head.dirs, base.dirs],
     everyLane
   };
+}
+function joinReach(lanes, reaches) {
+  const joined = /* @__PURE__ */ new Map();
+  for (const lane of lanes) {
+    const through = reaches.map((reach) => reach.get(lane.name)).find((found) => found !== void 0);
+    if (through !== void 0) joined.set(lane.name, through);
+  }
+  return joined;
+}
+function compileGraph(workspace, config, graph) {
+  const dependencies = dependencyGraph(workspace, config.edges);
+  const closure = /* @__PURE__ */ new Map();
+  const roots = /* @__PURE__ */ new Map();
+  for (const lane of config.lanes) {
+    for (const [name, chain] of shortestChains(dependencies, lane.packages)) {
+      addReach(closure, name, lane.name, { kind: "reads", chain, graph });
+    }
+    for (const name of lane.packages) addReach(roots, name, lane.name, { kind: "reads", chain: [name], graph });
+  }
+  const dirs = new Map(
+    [...workspace.packages.values()].map(
+      ({ name, dir }) => [dir, { name, dir, reach: closure.get(name) ?? NO_LANES }]
+    )
+  );
+  return { closure, roots, dirs };
 }
 function dependencyGraph(workspace, edges) {
   const graph = /* @__PURE__ */ new Map();
@@ -9703,9 +9722,7 @@ async function listFiles(tree) {
 }
 
 // src/load/workspace.ts
-var PNPM_FILE = "pnpm-workspace.yaml";
-var ROOT_MANIFEST = "package.json";
-var MANIFEST = "/package.json";
+var IN_PACKAGE = `/${MANIFEST}`;
 var DEPENDENCY_FIELDS = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"];
 var IGNORE = { unknownKeys: "ignore" };
 async function discoverWorkspace(tree, discovery) {
@@ -9715,7 +9732,7 @@ async function discoverWorkspace(tree, discovery) {
   if (!files.ok) return files;
   const isPackageDir = compileGlobs(globs.value);
   const dirs = files.value.flatMap((path) => {
-    const dir = path.endsWith(MANIFEST) ? parseRepoPath(path.slice(0, -MANIFEST.length)) : void 0;
+    const dir = path.endsWith(IN_PACKAGE) ? parseRepoPath(path.slice(0, -IN_PACKAGE.length)) : void 0;
     return dir !== void 0 && isPackageDir(dir) ? [dir] : [];
   });
   const read = await Promise.all(dirs.map((dir) => readManifest(tree, dir)));
@@ -9726,7 +9743,7 @@ async function discoverWorkspace(tree, discovery) {
     if (claimed === void 0) byName.set(manifest.name, manifest);
     else {
       problems.push({
-        file: manifest.dir + MANIFEST,
+        file: manifest.dir + IN_PACKAGE,
         at: null,
         where: "name",
         message: `${manifest.name} is also the name of ${claimed.dir}`
@@ -9743,25 +9760,25 @@ async function discoverWorkspace(tree, discovery) {
 }
 async function workspaceGlobs(tree, discovery) {
   if (discovery !== "npm") {
-    const pnpm = await readFile(tree, PNPM_FILE);
+    const pnpm = await readFile(tree, WORKSPACE_FILE);
     if (!pnpm.ok) return pnpm;
     if (pnpm.value !== void 0) return pnpmGlobs(pnpm.value);
-    if (discovery === "pnpm") return err([fileProblem(PNPM_FILE, "not found, and workspace.discovery is pnpm")]);
+    if (discovery === "pnpm") return err([fileProblem(WORKSPACE_FILE, "not found, and workspace.discovery is pnpm")]);
   }
-  const manifest = await readFile(tree, ROOT_MANIFEST);
+  const manifest = await readFile(tree, MANIFEST);
   if (!manifest.ok) return manifest;
   if (manifest.value === void 0) {
     return err([
       fileProblem(
-        ROOT_MANIFEST,
-        discovery === "npm" ? "not found, and workspace.discovery is npm" : `not found, and neither is ${PNPM_FILE}, so there is no workspace to discover`
+        MANIFEST,
+        discovery === "npm" ? "not found, and workspace.discovery is npm" : `not found, and neither is ${WORKSPACE_FILE}, so there is no workspace to discover`
       )
     ]);
   }
   return npmGlobs(manifest.value);
 }
 function pnpmGlobs(source) {
-  const file = parseYaml(PNPM_FILE, source);
+  const file = parseYaml(WORKSPACE_FILE, source);
   if (!file.ok) return file;
   const decoded = decode(
     object((field) => field("packages", withDefault(array(workspaceGlob), [])), IGNORE),
@@ -9771,13 +9788,13 @@ function pnpmGlobs(source) {
 }
 var npmWorkspaces = (input, context) => Array.isArray(input) ? array(workspaceGlob)(input, context) : object((field) => field("packages", array(workspaceGlob)), IGNORE)(input, context);
 function npmGlobs(source) {
-  const json = jsonFile(ROOT_MANIFEST, source);
+  const json = jsonFile(MANIFEST, source);
   if (!json.ok) return json;
   const decoded = decode(
     object((field) => field("workspaces", npmWorkspaces), IGNORE),
     json.value
   );
-  return decoded.ok ? ok(globSet(decoded.value)) : err(jsonProblems(ROOT_MANIFEST, decoded.error));
+  return decoded.ok ? ok(globSet(decoded.value)) : err(jsonProblems(MANIFEST, decoded.error));
 }
 var workspaceGlob = refine(string, (raw, context) => {
   const excluded = raw.startsWith("!");
@@ -9798,7 +9815,7 @@ var manifestDecoder = object((field) => {
   return { name, dependencies: dependencies.flat().map(([dependency]) => dependency) };
 }, IGNORE);
 async function readManifest(tree, dir) {
-  const file = dir + MANIFEST;
+  const file = dir + IN_PACKAGE;
   const source = await readFile(tree, file);
   if (!source.ok || source.value === void 0) return source.ok ? ok(void 0) : source;
   const json = jsonFile(file, source.value);
@@ -9822,7 +9839,7 @@ function jsonProblems(file, issues) {
 }
 
 // src/load/index.ts
-async function loadModel(tree, configPath) {
+async function loadModel(tree, configPath, base) {
   const path = parseRepoPath(configPath);
   if (path === void 0) return err([fileProblem(configPath, "is not a path inside the repository")]);
   const source = await readFile(tree, path);
@@ -9837,7 +9854,23 @@ async function loadModel(tree, configPath) {
   }
   const resolved = config.value.resolve(workspace.value);
   if (!resolved.ok) return resolved;
-  return ok(compile({ configPath: path, config: resolved.value, workspace: workspace.value }));
+  const head = { configPath: path, config: resolved.value, workspace: workspace.value };
+  if (base === void 0) return ok(compile(head));
+  const baseWorkspace = await discoverWorkspace(base, config.value.discovery);
+  if (!baseWorkspace.ok) return baseWorkspace;
+  const resolvedInBase = config.value.resolve(baseWorkspace.value);
+  if (!resolvedInBase.ok) return resolvedInBase;
+  return ok(compile({ ...head, base: baseWorkspace.value }));
+}
+function baseGraphOf(head, configPath, commits) {
+  return async (commit) => {
+    const sha = await commits.resolve(commit);
+    if (sha === void 0) {
+      return err("the commit is not in the local repository, so fetch more history, for example with fetch-depth: 0");
+    }
+    const loaded = await loadModel(head, configPath, commits.treeAt(sha));
+    return loaded.ok ? loaded : err(formatProblems(loaded.error).replaceAll("\n", "; "));
+  };
 }
 
 // src/adapters/git.ts
@@ -9883,10 +9916,11 @@ function gitRepo(cwd) {
     },
     changes: async (range) => {
       if (range.base === null) return incomplete({ kind: "no-base" });
-      const output = await git([...DIFF, `${range.base}...${range.head}`]);
+      const mergeBase = (await git(["merge-base", range.base, range.head])).trim();
+      const output = await git([...DIFF, mergeBase, range.head]);
       return changedFiles(
         split(output).map((path) => ({ path, previousPath: null })),
-        await prefix()
+        { under: await prefix(), mergeBase }
       );
     },
     prefix
@@ -9916,19 +9950,27 @@ function route(model, range, files) {
 }
 function place(model, path) {
   const placements = [];
-  if (path === model.configPath) placements.push({ kind: "config", reach: model.everyLane });
+  const builtIn = model.builtIns.get(path);
+  if (builtIn !== void 0) placements.push({ kind: "built-in", input: builtIn, reach: model.everyLane });
   for (const { row, hits, reach } of model.rows) {
     if (hits(path)) placements.push({ kind: "row", row, reach });
   }
-  const owner = owningPackage(model, path);
-  if (owner !== void 0) placements.push({ kind: "package", package: owner.name, reach: owner.reach });
+  const owners = model.packageDirs.flatMap((dirs) => owningPackage(dirs, path) ?? []);
+  const [owner] = owners;
+  if (owner !== void 0) {
+    const reach = joinReach(
+      model.lanes,
+      owners.map((scope) => scope.reach)
+    );
+    placements.push({ kind: "package", package: owner.name, reach });
+  }
   if (model.isDocs(path)) placements.push({ kind: "docs", reach: NO_LANES2 });
   return isNonEmpty(placements) ? placements : [{ kind: "unmatched", reach: model.everyLane }];
 }
-function owningPackage(model, path) {
+function owningPackage(dirs, path) {
   const segments = path.split("/");
   for (let depth = segments.length - 1; depth > 0; depth--) {
-    const scope = model.packagesByDir.get(segments.slice(0, depth).join("/"));
+    const scope = dirs.get(segments.slice(0, depth).join("/"));
     if (scope !== void 0) return scope;
   }
   return void 0;
@@ -9965,7 +10007,7 @@ function isCounted(routing, placement) {
 }
 function readsAsText(placement) {
   switch (placement.kind) {
-    case "config":
+    case "built-in":
       return true;
     case "row": {
       const { target } = placement.row;
@@ -9994,14 +10036,13 @@ async function planLanes(model, request) {
   }
 }
 async function plan(model, request) {
-  const event = route(model, request.range, await request.changes(request.range));
+  const event = await routeChange(model, request, request.range);
   if (request.mode === "pr" || request.lastGreen === null) return sealed(request.mode, event, decideOver(model, event));
   const { depth, proofs: findProofs } = request.lastGreen;
   const proofs = await findProofs(model.lanes);
   const routeSince = async (proof) => {
     if (proof === request.range.base) return [proof, event];
-    const range = { base: proof, head: request.range.head };
-    return [proof, route(model, range, await request.changes(range))];
+    return [proof, await routeChange(model, request, { base: proof, head: request.range.head })];
   };
   const sinceProof = new Map(await Promise.all([...new Set(proofs.values())].map(routeSince)));
   const lanes = model.lanes.map((lane) => {
@@ -10012,6 +10053,21 @@ async function plan(model, request) {
     return { lane, since, decision: decide(since, lane) };
   });
   return sealed(request.mode, event, lanes);
+}
+async function routeChange(model, request, range) {
+  const files = await request.changes(range);
+  if (files.kind === "incomplete" || !files.paths.some(isPackageManifest)) return route(model, range, files);
+  const { mergeBase } = files;
+  const withBase = mergeBase === null ? err("the change names no base commit") : await request.baseGraph(mergeBase).catch((error) => err(messageOf(error)));
+  if (withBase.ok) return route(withBase.value, range, files);
+  return route(
+    model,
+    range,
+    incomplete({ kind: "no-base-graph", commit: mergeBase, reason: withBase.error }, files.paths)
+  );
+}
+function isPackageManifest(path) {
+  return path.endsWith(`/${MANIFEST}`);
 }
 function decideOver(model, event) {
   return model.lanes.map((lane) => ({ lane, since: null, decision: decide(event, lane) }));
@@ -10030,7 +10086,7 @@ function baseOf(plan2, lane) {
 var HEADLINE_RANK = {
   incomplete: 0,
   "no-proof": 1,
-  config: 2,
+  "built-in": 2,
   unmatched: 3,
   row: 4,
   package: 5,
@@ -10072,16 +10128,24 @@ function describeReason(reason, check) {
     }
   }
 }
+var BUILT_IN = {
+  config: { says: "is the routing config", label: "config" },
+  workspace: { says: "defines the workspace", label: "workspace file" },
+  "root-manifest": { says: "is the root manifest", label: "root manifest" },
+  lockfile: { says: "is a lockfile", label: "lockfile" }
+};
 function describePlacement(path, placement, through) {
   switch (placement.kind) {
-    case "config":
-      return `${path} is the routing config`;
+    case "built-in":
+      return `${path} ${BUILT_IN[placement.input].says}`;
     case "unmatched":
       return `${path} matches no package, paths row or docs rule`;
     case "docs":
       return `${path} is documentation`;
-    case "package":
-      return `${path} is in ${placement.package}${readThrough(through)}`;
+    case "package": {
+      const found = through.kind === "reads" ? through.chain.at(-1) ?? placement.package : placement.package;
+      return `${path} is in ${found}${readThrough(through)}`;
+    }
     case "row": {
       const { index, why, target } = placement.row;
       const subject = target.kind === "packages" && through.kind === "reads" ? ` for ${through.chain.at(-1) ?? ""} via ${target.via}` : "";
@@ -10094,8 +10158,9 @@ function describePlacement(path, placement, through) {
   }
 }
 function readThrough(through) {
-  if (through.kind === "named" || through.chain.length < 2) return "";
-  return `, read through ${through.chain.slice(0, -1).join(" > ")}`;
+  if (through.kind === "named") return "";
+  const chain = through.chain.length < 2 ? "" : `, read through ${through.chain.slice(0, -1).join(" > ")}`;
+  return through.graph === "base" ? `${chain} in the base graph` : chain;
 }
 function fileCount(count) {
   return `${String(count)} ${count === 1 ? "file" : "files"}`;
@@ -10110,6 +10175,10 @@ function describeCause(cause) {
       return "there is no base commit to compare against";
     case "invalid-path":
       return `${cause.raw} is not a path inside the routed root`;
+    case "no-base-graph": {
+      const at = cause.commit === null ? "" : ` at ${shortRevision(cause.commit)}`;
+      return `a package manifest changed, and the base graph${at} cannot be built: ${cause.reason}`;
+    }
     case "error":
       return cause.message;
     default: {
@@ -10149,7 +10218,8 @@ function table(rows) {
 }
 function placementLabel(placement) {
   switch (placement.kind) {
-    case "config":
+    case "built-in":
+      return BUILT_IN[placement.input].label;
     case "docs":
     case "unmatched":
       return placement.kind;
@@ -10197,7 +10267,8 @@ function pathsSection(event, paths) {
 function placementJson(placement) {
   const lanes = [...placement.reach.keys()];
   switch (placement.kind) {
-    case "config":
+    case "built-in":
+      return { kind: "built-in", input: placement.input, lanes };
     case "docs":
     case "unmatched":
       return { kind: placement.kind, lanes };
@@ -10219,6 +10290,7 @@ function reasonJson(routing, reason) {
         path: reason.path,
         placement: placementJson(reason.placement),
         through: reason.through.kind === "reads" ? reason.through.chain : [],
+        graph: reason.through.kind === "reads" ? reason.through.graph : null,
         counted: isCounted(routing, reason.placement)
       };
     case "floor":
@@ -10281,12 +10353,18 @@ ${USAGE}`);
     return 2;
   }
   try {
-    const model = await loadModel(repo.treeAt(head), config);
+    const tree = repo.treeAt(head);
+    const model = await loadModel(tree, config);
     if (!model.ok) {
       io.stderr(formatProblems(model.error));
       return 1;
     }
-    const plan2 = await planLanes(model.value, { mode: "pr", range: { base, head }, changes: repo.changes });
+    const plan2 = await planLanes(model.value, {
+      mode: "pr",
+      range: { base, head },
+      changes: repo.changes,
+      baseGraph: baseGraphOf(tree, config, repo)
+    });
     io.stdout(json ? explainJson(plan2) : explainText(plan2));
     return 0;
   } catch (error) {

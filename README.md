@@ -22,7 +22,7 @@ lane-router handles each case. It follows dependencies, it runs every lane for a
 
 ```
 changed paths --> placements per path --> one decision per lane --> outputs
-                  config                  run, with every reason     lanes, matrix,
+                  built-in                run, with every reason     lanes, matrix,
                   paths rows              skip, with one reason      reasons, one per lane,
                   package                                            summary, explain
                   docs
@@ -31,7 +31,7 @@ changed paths --> placements per path --> one decision per lane --> outputs
 
 Each changed path gets every placement that applies to it.
 
-1. **Config.** The routing config itself changed. It selects every lane. No row can turn this off, because a change could otherwise rewrite its own routing.
+1. **Built-in.** The path is the routing config, `pnpm-workspace.yaml`, the root `package.json`, or a root lockfile: `pnpm-lock.yaml`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock` or `bun.lock`. It selects every lane, and its reason says which file it is, such as `pnpm-workspace.yaml defines the workspace`. No row can turn this off, because a change could otherwise rewrite the routing that judges it.
 2. **Rows.** Every `paths` row whose `match` hits the path applies, inside a package or not. Rows add up.
 3. **Package.** The path is inside a workspace package. The deepest package directory wins. It selects every lane whose closure holds that package.
 4. **Docs.** The path matches `docs-only.match` and no `docs-only.except` glob. It is known and selects no lane by itself.
@@ -39,9 +39,19 @@ Each changed path gets every placement that applies to it.
 
 A lane's closure is its root packages, their workspace dependencies, and the configured extra edges, all followed transitively. When a lane reads a package indirectly, its reason names the chain, for example `packages/ui/src/button.tsx is in @acme/ui, read through @acme/web-e2e > @acme/web`.
 
+### The base graph
+
+A change could reshape the graph that judges it. Say a pull request renames `@acme/ui` in `packages/ui/package.json` and edits `packages/ui/src/button.tsx`. `@acme/web` still depends on `@acme/ui` by name, which no longer resolves, so in the new graph no lane reads the button.
+
+So a change is judged against two graphs. The head graph is the workspace the change ends in. The base graph is the workspace at the commit the change was diffed from. A lane's closure is the union of its closure in each graph, worked out in each graph on its own. A path inside a package reaches the lanes that read its head package or its base package, so a package that exists only in base still owns its directory. When a lane reads a path only in the base graph, its reason says so: `packages/ui/src/button.tsx is in @acme/ui, read through @acme/web in the base graph`.
+
+The graph comes from the config, `pnpm-workspace.yaml`, the root `package.json` and the package manifests. The first three are built in and select every lane. So lane-router reads the base graph only when a package manifest other than the root one changed. Every other change needs no base commit, so a shallow checkout routes it precisely.
+
+The base commit is the merge base the compare API reports for the event's range, or for each lane's last green commit under last-green. The CLI uses the merge base of `--base` and `--head`. With the `files` input it is the `base` input, when one is given. lane-router reads the base graph from git in `working-directory`'s repository.
+
 Rules about the whole change come after that.
 
-- **Docs-only.** A change is docs-only when it has at least one path and every path is docs. In a docs-only change, only the placements that read a file as text count. Those are the config file, `lanes` rows and `via: name` rows. Package placements and `via: code` or `via: tests` rows do not count, because Markdown is not compiled.
+- **Docs-only.** A change is docs-only when it has at least one path and every path is docs. In a docs-only change, only the placements that read a file as text count. Those are the built-in files, `lanes` rows and `via: name` rows. Package placements and `via: code` or `via: tests` rows do not count, because Markdown is not compiled.
 - **Floor.** A lane with `floor: true` runs for every change that has paths and is not docs-only.
 - **Empty.** A change with no paths requires no lane.
 - **Renames.** The old and the new path are both changed paths.
@@ -79,9 +89,9 @@ workspace:
       to: "@acme/api"
 
 paths:
-  - match: [pnpm-lock.yaml, package.json, pnpm-workspace.yaml, ".github/workflows/**"]
+  - match: [".github/workflows/**"]
     lanes: all
-    why: Dependency and CI changes can affect every lane.
+    why: CI changes can affect every lane.
   - match: ["tools/codegen/**"]
     packages: ["@acme/api"]
     via: code
@@ -177,6 +187,8 @@ jobs:
       none-required: ${{ steps.lanes.outputs.none-required }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - id: lanes
         uses: OWNER/lane-router@v0
         with:
@@ -212,17 +224,21 @@ The Action reads the config and the workspace from the checked-out tree. On a pu
 
 ## Fail-closed guarantees
 
-A wrong skip merges an untested break. These are the cases where lane-router runs every lane affected by what it could not check, and says why in the reason and in an annotation:
+A wrong skip merges an untested break. lane-router runs every lane, and says why in each reason, for a change that holds:
 
 - a changed path that no placement claims,
-- a change to the routing config,
+- a built-in file: the routing config, `pnpm-workspace.yaml`, the root `package.json` or a root lockfile.
+
+It also runs every lane decided from a change it cannot trust. Then `complete` is `false`, an annotation gives the cause, and the step succeeds so the lanes run. These are the cases:
+
+- a package manifest change whose base graph cannot be built, because there is no base commit, the commit was not fetched, a manifest there does not parse, a name in the config does not resolve there, or reading it failed,
 - a compare listing of 300 or more files, which is the most the endpoint returns,
 - a pull request whose compare listing differs from its `changed_files` count,
 - a push that opens a new branch, whose `before` is all zeros and cannot be compared,
 - a changed path outside `working-directory`,
 - any API error, git error or unexpected exception after the config has loaded.
 
-In each of these cases `complete` is `false` and the step succeeds, so the lanes run.
+A shallow checkout, the `actions/checkout` default, has no base commit. A change to a package manifest then runs every lane. Check out with `fetch-depth: 0` to keep those changes precise. Other changes never need the base commit.
 
 A config or workspace error is different. The lane names are unknown, so lane-router fails the step and lists every problem. Downstream jobs never start, so the build stays red and no lane is skipped by mistake.
 

@@ -1,6 +1,6 @@
 import { compileGlobs, globProblem, type GlobSet } from "../core/glob.ts";
 import { parsePackageName, parseRepoPath, type PackageName, type RepoPath } from "../core/ids.ts";
-import type { Workspace, WorkspacePackage } from "../core/model.ts";
+import { MANIFEST, WORKSPACE_FILE, type Workspace, type WorkspacePackage } from "../core/model.ts";
 import {
   array,
   decode,
@@ -23,9 +23,7 @@ import { fileProblem, type Problem } from "./problem.ts";
 import { listFiles, readFile, type RepoTree } from "./tree.ts";
 import { parseYaml } from "./yaml.ts";
 
-const PNPM_FILE = "pnpm-workspace.yaml";
-const ROOT_MANIFEST = "package.json";
-const MANIFEST = "/package.json";
+const IN_PACKAGE = `/${MANIFEST}`;
 const DEPENDENCY_FIELDS = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"] as const;
 const IGNORE = { unknownKeys: "ignore" } as const;
 
@@ -46,7 +44,7 @@ export async function discoverWorkspace(
 
   const isPackageDir = compileGlobs(globs.value);
   const dirs = files.value.flatMap((path) => {
-    const dir = path.endsWith(MANIFEST) ? parseRepoPath(path.slice(0, -MANIFEST.length)) : undefined;
+    const dir = path.endsWith(IN_PACKAGE) ? parseRepoPath(path.slice(0, -IN_PACKAGE.length)) : undefined;
     return dir !== undefined && isPackageDir(dir) ? [dir] : [];
   });
   const read = await Promise.all(dirs.map((dir) => readManifest(tree, dir)));
@@ -58,7 +56,7 @@ export async function discoverWorkspace(
     if (claimed === undefined) byName.set(manifest.name, manifest);
     else {
       problems.push({
-        file: manifest.dir + MANIFEST,
+        file: manifest.dir + IN_PACKAGE,
         at: null,
         where: "name",
         message: `${manifest.name} is also the name of ${claimed.dir}`,
@@ -77,20 +75,20 @@ export async function discoverWorkspace(
 
 async function workspaceGlobs(tree: RepoTree, discovery: Discovery): Promise<Result<GlobSet, NonEmpty<Problem>>> {
   if (discovery !== "npm") {
-    const pnpm = await readFile(tree, PNPM_FILE);
+    const pnpm = await readFile(tree, WORKSPACE_FILE);
     if (!pnpm.ok) return pnpm;
     if (pnpm.value !== undefined) return pnpmGlobs(pnpm.value);
-    if (discovery === "pnpm") return err([fileProblem(PNPM_FILE, "not found, and workspace.discovery is pnpm")]);
+    if (discovery === "pnpm") return err([fileProblem(WORKSPACE_FILE, "not found, and workspace.discovery is pnpm")]);
   }
-  const manifest = await readFile(tree, ROOT_MANIFEST);
+  const manifest = await readFile(tree, MANIFEST);
   if (!manifest.ok) return manifest;
   if (manifest.value === undefined) {
     return err([
       fileProblem(
-        ROOT_MANIFEST,
+        MANIFEST,
         discovery === "npm"
           ? "not found, and workspace.discovery is npm"
-          : `not found, and neither is ${PNPM_FILE}, so there is no workspace to discover`,
+          : `not found, and neither is ${WORKSPACE_FILE}, so there is no workspace to discover`,
       ),
     ]);
   }
@@ -98,7 +96,7 @@ async function workspaceGlobs(tree: RepoTree, discovery: Discovery): Promise<Res
 }
 
 function pnpmGlobs(source: string): Result<GlobSet, NonEmpty<Problem>> {
-  const file = parseYaml(PNPM_FILE, source);
+  const file = parseYaml(WORKSPACE_FILE, source);
   if (!file.ok) return file;
   const decoded = decode(
     object<readonly WorkspaceGlob[]>((field) => field("packages", withDefault(array(workspaceGlob), [])), IGNORE),
@@ -113,13 +111,13 @@ const npmWorkspaces: Decoder<readonly WorkspaceGlob[]> = (input, context) =>
     : object<readonly WorkspaceGlob[]>((field) => field("packages", array(workspaceGlob)), IGNORE)(input, context);
 
 function npmGlobs(source: string): Result<GlobSet, NonEmpty<Problem>> {
-  const json = jsonFile(ROOT_MANIFEST, source);
+  const json = jsonFile(MANIFEST, source);
   if (!json.ok) return json;
   const decoded = decode(
     object<readonly WorkspaceGlob[]>((field) => field("workspaces", npmWorkspaces), IGNORE),
     json.value,
   );
-  return decoded.ok ? ok(globSet(decoded.value)) : err(jsonProblems(ROOT_MANIFEST, decoded.error));
+  return decoded.ok ? ok(globSet(decoded.value)) : err(jsonProblems(MANIFEST, decoded.error));
 }
 
 interface WorkspaceGlob {
@@ -151,7 +149,7 @@ const manifestDecoder = object((field) => {
 
 /** Undefined when the directory has a package.json without a name, which makes it not a package. */
 async function readManifest(tree: RepoTree, dir: RepoPath): Promise<Result<Manifest | undefined, NonEmpty<Problem>>> {
-  const file = dir + MANIFEST;
+  const file = dir + IN_PACKAGE;
   const source = await readFile(tree, file);
   if (!source.ok || source.value === undefined) return source.ok ? ok(undefined) : source;
   const json = jsonFile(file, source.value);

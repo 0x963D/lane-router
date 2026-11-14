@@ -21,7 +21,7 @@ import {
   type Invalid,
   type Issue,
 } from "./decode.ts";
-import { formatProblems, loadModel } from "./load/index.ts";
+import { baseGraphOf, formatProblems, loadModel, type RepoTree } from "./load/index.ts";
 import { actionOutputs, notices, summaryMarkdown } from "./render.ts";
 import { err, mapNonEmpty, messageOf, type NonEmpty, type Result } from "./result.ts";
 
@@ -68,12 +68,13 @@ export async function runAction(): Promise<void> {
       core.setFailed(invocation.error.join("\n"));
       return;
     }
-    const model = await loadModel(directoryTree(invocation.value.root), invocation.value.config);
+    const head = directoryTree(invocation.value.root);
+    const model = await loadModel(head, invocation.value.config);
     if (!model.ok) {
       core.setFailed(formatProblems(model.error));
       return;
     }
-    await publish(await planLanes(model.value, requestFor(invocation.value)));
+    await publish(await planLanes(model.value, requestFor(invocation.value, head)));
   } catch (error) {
     core.setFailed(messageOf(error));
   }
@@ -183,7 +184,13 @@ function toInvocation(inputs: Inputs, event: GitHubEvent, env: NodeJS.ProcessEnv
     source:
       inputs.files === ""
         ? { kind: "compare", expectedCount: event.kind === "pull_request" && ownRange ? event.changedFiles : null }
-        : { kind: "files", files: changedFiles(lines(inputs.files).map((path) => ({ path, previousPath: null }))) },
+        : {
+            kind: "files",
+            files: changedFiles(
+              lines(inputs.files).map((path) => ({ path, previousPath: null })),
+              { mergeBase: inputs.base === "" ? null : inputs.base },
+            ),
+          },
     lastGreenDepth: mode === "push" && inputs.lastGreen === "auto" ? inputs.depth : null,
     github: { apiUrl: env.GITHUB_API_URL ?? "https://api.github.com", repository, token: inputs.token },
   } satisfies Invocation;
@@ -214,19 +221,24 @@ function lines(text: string): string[] {
     .filter((line) => line !== "");
 }
 
-/** Builds closures only. Every read happens inside `planLanes`, where a failure fails closed. */
-function requestFor(invocation: Invocation): PlanRequest {
+/**
+ * Builds closures only. Every read happens inside `planLanes`, where a failure fails closed. The
+ * checkout holds only head, so a base graph is read from git in `working-directory`'s repository.
+ */
+function requestFor(invocation: Invocation, head: RepoTree): PlanRequest {
   const { source, range, lastGreenDepth } = invocation;
   const github = githubRepo(invocation.github);
+  const repo = gitRepo(invocation.root);
   const under = (): Promise<string> =>
-    relative(process.cwd(), invocation.root) === "" ? Promise.resolve("") : gitRepo(invocation.root).prefix();
+    relative(process.cwd(), invocation.root) === "" ? Promise.resolve("") : repo.prefix();
   const changes: ChangeSource =
     source.kind === "files"
       ? () => Promise.resolve(source.files)
       : async (requested) => github.compare(requested, { expectedCount: source.expectedCount, under: await under() });
-  if (invocation.mode === "pr") return { mode: "pr", range, changes };
+  const baseGraph = baseGraphOf(head, invocation.config, repo);
+  if (invocation.mode === "pr") return { mode: "pr", range, changes, baseGraph };
   const lastGreen = lastGreenDepth === null ? null : github.lastGreen({ head: range.head, depth: lastGreenDepth });
-  return { mode: "push", range, changes, lastGreen };
+  return { mode: "push", range, changes, baseGraph, lastGreen };
 }
 
 /** Renders everything before the first write, so a rendering bug cannot leave half the outputs set. */

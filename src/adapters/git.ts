@@ -21,8 +21,9 @@ export interface GitRepo {
   /** The routed root at one commit. Nothing here reads the working tree or the index. */
   treeAt(commit: string): RepoTree;
   /**
-   * The files changed between the merge base of the range and its head. With rename detection off, a
-   * rename arrives as its deleted and its added path. Rejects when git fails, such as for unrelated histories.
+   * The files changed between the merge base of the range, which the list carries, and its head. With
+   * rename detection off, a rename arrives as its deleted and its added path. Rejects when git fails,
+   * such as for unrelated histories.
    */
   readonly changes: ChangeSource;
   /** Where the routed root sits inside the repository, empty at the top level. */
@@ -68,10 +69,11 @@ export function gitRepo(cwd: string): GitRepo {
     },
     changes: async (range) => {
       if (range.base === null) return incomplete({ kind: "no-base" });
-      const output = await git([...DIFF, `${range.base}...${range.head}`]);
+      const mergeBase = (await git(["merge-base", range.base, range.head])).trim();
+      const output = await git([...DIFF, mergeBase, range.head]);
       return changedFiles(
         split(output).map((path) => ({ path, previousPath: null })),
-        await prefix(),
+        { under: await prefix(), mergeBase },
       );
     },
     prefix,

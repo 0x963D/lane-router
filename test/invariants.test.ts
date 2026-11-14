@@ -3,7 +3,7 @@ import { changedFiles } from "../src/core/change.ts";
 import type { RoutingModel } from "../src/core/model.ts";
 import { planLanes, type Plan } from "../src/core/plan.ts";
 import { CONFIG, modelOf } from "./support/model.ts";
-import { running } from "./support/plan.ts";
+import { NO_BASE_GRAPH, running } from "./support/plan.ts";
 
 /* Every subset of a fixed list of paths, at least one per kind of placement. Small enough to enumerate. */
 const UNIVERSE = [
@@ -21,7 +21,8 @@ const UNIVERSE = [
   ".changeset/quiet-frogs.md",
 ];
 
-const UNMATCHED = ["tsconfig.json", ".changeset/quiet-frogs.md"];
+/** The config and a lockfile are built in, and the other two are unmatched. */
+const EVERY_LANE = [CONFIG, "pnpm-lock.yaml", "tsconfig.json", ".changeset/quiet-frogs.md"];
 
 let model: RoutingModel;
 const plans = new Map<number, Plan>();
@@ -32,7 +33,12 @@ function pathsOf(mask: number): string[] {
 
 function plan(paths: readonly string[]): Promise<Plan> {
   const files = changedFiles(paths.map((path) => ({ path, previousPath: null })));
-  return planLanes(model, { mode: "pr", range: { base: "base", head: "head" }, changes: () => Promise.resolve(files) });
+  return planLanes(model, {
+    mode: "pr",
+    range: { base: "base", head: "head" },
+    changes: () => Promise.resolve(files),
+    baseGraph: NO_BASE_GRAPH,
+  });
 }
 
 beforeAll(async () => {
@@ -56,12 +62,11 @@ describe("routing invariants over every subset", () => {
     expect(shrinks).toEqual([]);
   });
 
-  it("runs every lane when an unmatched path or the config is in the change", () => {
+  it("runs every lane when a built-in or unmatched path is in the change", () => {
     const lanes = model.lanes.map((lane) => lane.name);
     const short = everyPlan().filter(
       ([mask, result]) =>
-        pathsOf(mask).some((path) => path === CONFIG || UNMATCHED.includes(path)) &&
-        running(result).length !== lanes.length,
+        pathsOf(mask).some((path) => EVERY_LANE.includes(path)) && running(result).length !== lanes.length,
     );
     expect(short.map(([mask]) => pathsOf(mask))).toEqual([]);
   });

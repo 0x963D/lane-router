@@ -206,6 +206,20 @@ describe("deciding a lane from its proof", () => {
     expect(run.outputs).toMatchObject({ api: "skip", web: "run", complete: "false" });
   });
 
+  it("judges a manifest change since the proof against the base graph at that diff's merge base", async () => {
+    const github = await pushWithHistory();
+    green(github, P2, "api");
+    compare(github, P1, H, ["README.md"]);
+    compare(github, P2, H, ["packages/web/package.json"], { mergeBase: commit("c") });
+    const run = await lastGreen(github);
+    expect(run.outputs).toMatchObject({ api: "run", complete: "false" });
+    expect(jsonObject(run.outputs.reasons).api).toMatch(
+      new RegExp(
+        `^fail closed, a package manifest changed, and the base graph at ccccccc cannot be built: .+ since ${short(P2)}$`,
+      ),
+    );
+  });
+
   it("selects every lane and lets the step succeed when the proof lookup fails", async () => {
     const github = await pushWithHistory();
     github.on(`/commits/${P1}/check-runs?filter=latest&per_page=100&page=1`, { status: 500, body: {} });

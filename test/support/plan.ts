@@ -1,6 +1,7 @@
 import { expect } from "vitest";
 import { changedFiles, type ChangeEntry, type ChangeSource } from "../../src/core/change.ts";
-import { planLanes, type Plan } from "../../src/core/plan.ts";
+import { planLanes, type BaseGraph, type Plan } from "../../src/core/plan.ts";
+import { err } from "../../src/result.ts";
 import type { LaneDecision, Placement } from "../../src/core/route.ts";
 import type { Overrides } from "./fixtures.ts";
 import { modelOf } from "./model.ts";
@@ -11,13 +12,21 @@ export function entries(change: Change): readonly ChangeEntry[] {
   return change.map((entry) => (typeof entry === "string" ? { path: entry, previousPath: null } : entry));
 }
 
+/** These plans route a change with no base commit, so a manifest change in one fails closed. */
+export const NO_BASE_GRAPH: BaseGraph = () => Promise.resolve(err("these plans read no base graph"));
+
 export function planFor(fixture: string, change: Change, overrides?: Overrides): Promise<Plan> {
   return planWith(fixture, () => Promise.resolve(changedFiles(entries(change))), overrides);
 }
 
 export async function planWith(fixture: string, changes: ChangeSource, overrides?: Overrides): Promise<Plan> {
   const model = await modelOf(fixture, overrides);
-  const plan = await planLanes(model, { mode: "pr", range: { base: "base", head: "head" }, changes });
+  const plan = await planLanes(model, {
+    mode: "pr",
+    range: { base: "base", head: "head" },
+    changes,
+    baseGraph: NO_BASE_GRAPH,
+  });
   expect(plan.lanes.map(({ lane }) => lane.name)).toEqual(model.lanes.map((lane) => lane.name));
   return plan;
 }

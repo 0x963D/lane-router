@@ -17,6 +17,20 @@ export const VIA: { readonly [V in Via]: { readonly reaches: "closure" | "roots"
   name: { reaches: "closure", readsAsText: true },
 };
 
+/** The file name of every package manifest, the root one included. */
+export const MANIFEST = "package.json";
+
+export const WORKSPACE_FILE = "pnpm-workspace.yaml";
+
+const LOCKFILES = ["pnpm-lock.yaml", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "bun.lock"] as const;
+
+/**
+ * A root file that reaches every lane whatever the rows say: the routing config, the two files that
+ * define the workspace, and the lockfiles that pin what every package installs. No row can turn one
+ * off, or a change could rewrite the routing that judges it.
+ */
+export type BuiltIn = "config" | "workspace" | "root-manifest" | "lockfile";
+
 export interface LaneSpec {
   readonly name: LaneName;
   readonly packages: readonly PackageName[];
@@ -65,11 +79,15 @@ export interface Lane {
   readonly check: string;
 }
 
+/** `base` is the workspace at the commit the change was diffed from, `head` the one it ends in. */
+export type Graph = "head" | "base";
+
 /**
  * How a placement reaches a lane. `reads` holds the shortest chain from one of the lane's root
- * packages to the placed package, through declared dependencies and configured edges.
+ * packages to the placed package, through declared dependencies and configured edges, in `graph`.
  */
-export type Through = { readonly kind: "named" } | { readonly kind: "reads"; readonly chain: NonEmpty<PackageName> };
+export type Through =
+  { readonly kind: "named" } | { readonly kind: "reads"; readonly chain: NonEmpty<PackageName>; readonly graph: Graph };
 
 /** The lanes a placement selects, in config order. A lane is selected exactly when it is a key. */
 export type Reach = ReadonlyMap<LaneName, Through>;
@@ -93,13 +111,17 @@ export interface PackageScope {
   readonly reach: Reach;
 }
 
-/** The resolved routing table. The dependency graph is spent in `compile`, so routing is lookups. */
+/** One graph's packages by directory. */
+export type PackageDirs = ReadonlyMap<string, PackageScope>;
+
+/** The resolved routing table. The dependency graphs are spent in `compile`, so routing is lookups. */
 export interface RoutingModel {
-  readonly configPath: RepoPath;
+  readonly builtIns: ReadonlyMap<string, BuiltIn>;
   readonly lanes: readonly Lane[];
   readonly rows: readonly CompiledRow[];
   readonly isDocs: PathMatcher;
-  readonly packagesByDir: ReadonlyMap<string, PackageScope>;
+  /** A path finds its package in each graph on its own, because the deepest directory can differ. */
+  readonly packageDirs: readonly [head: PackageDirs] | readonly [head: PackageDirs, base: PackageDirs];
   readonly everyLane: Reach;
 }
 
@@ -107,25 +129,22 @@ const NAMED: Through = { kind: "named" };
 
 const NO_LANES: Reach = new Map();
 
-/** Pure and total: the loader already rejected unknown names and bad globs. */
+/**
+ * Pure and total: the loader already rejected unknown names and bad globs, in both workspaces. With
+ * `base`, a lane reaches what it reads in either graph. Each graph's closures are computed on their
+ * own and joined per lane, because one graph made of both would invent chains that neither holds.
+ */
 export function compile(input: {
   readonly configPath: RepoPath;
   readonly config: Config;
   readonly workspace: Workspace;
+  readonly base?: Workspace;
 }): RoutingModel {
-  const { config, workspace } = input;
+  const { config } = input;
   const lanes: readonly Lane[] = config.lanes.map(({ name, floor, check }) => ({ name, floor, check }));
-  const graph = dependencyGraph(workspace, config.edges);
-  const reaches = {
-    closure: new Map<PackageName, Map<LaneName, Through>>(),
-    roots: new Map<PackageName, Map<LaneName, Through>>(),
-  };
-  for (const lane of config.lanes) {
-    for (const [name, chain] of shortestChains(graph, lane.packages)) {
-      addReach(reaches.closure, name, lane.name, { kind: "reads", chain });
-    }
-    for (const name of lane.packages) addReach(reaches.roots, name, lane.name, { kind: "reads", chain: [name] });
-  }
+  const head = compileGraph(input.workspace, config, "head");
+  const base = input.base === undefined ? undefined : compileGraph(input.base, config, "base");
+  const graphs = base === undefined ? [head] : [head, base];
   const everyLane: Reach = new Map(lanes.map((lane) => [lane.name, NAMED] as const));
 
   const rowReach = (target: RowTarget): Reach => {
@@ -136,13 +155,11 @@ export function compile(input: {
         return new Map(lanes.filter((lane) => named.includes(lane.name)).map((lane) => [lane.name, NAMED] as const));
       }
       case "packages": {
-        const index = reaches[VIA[target.via].reaches];
-        const reach = new Map<LaneName, Through>();
-        for (const lane of lanes) {
-          const through = target.packages.map((name) => index.get(name)?.get(lane.name)).find((found) => !!found);
-          if (through) reach.set(lane.name, through);
-        }
-        return reach;
+        const index = VIA[target.via].reaches;
+        return joinReach(
+          lanes,
+          graphs.flatMap((graph) => target.packages.map((name) => graph[index].get(name) ?? NO_LANES)),
+        );
       }
       default: {
         const _exhaustive: never = target;
@@ -152,7 +169,12 @@ export function compile(input: {
   };
 
   return {
-    configPath: input.configPath,
+    builtIns: new Map<string, BuiltIn>([
+      [WORKSPACE_FILE, "workspace"],
+      [MANIFEST, "root-manifest"],
+      ...LOCKFILES.map((file) => [file, "lockfile"] as const),
+      [input.configPath, "config"],
+    ]),
     lanes,
     rows: config.rows.map(({ match, target, why }, index) => ({
       row: { index, why, target },
@@ -160,13 +182,45 @@ export function compile(input: {
       reach: rowReach(target),
     })),
     isDocs: compileGlobs(config.docsOnly),
-    packagesByDir: new Map(
-      [...workspace.packages.values()].map(
-        ({ name, dir }) => [dir, { name, dir, reach: reaches.closure.get(name) ?? NO_LANES }] as const,
-      ),
-    ),
+    packageDirs: base === undefined ? [head.dirs] : [head.dirs, base.dirs],
     everyLane,
   };
+}
+
+/** Per lane, in config order, the first of `reaches` that holds it. Earlier reaches explain first. */
+export function joinReach(lanes: readonly Lane[], reaches: readonly Reach[]): Reach {
+  const joined = new Map<LaneName, Through>();
+  for (const lane of lanes) {
+    const through = reaches.map((reach) => reach.get(lane.name)).find((found) => found !== undefined);
+    if (through !== undefined) joined.set(lane.name, through);
+  }
+  return joined;
+}
+
+interface CompiledGraph {
+  /** Per package, the lanes whose closure holds it. */
+  readonly closure: ReadonlyMap<PackageName, Reach>;
+  /** Per package, the lanes that list it as a root. */
+  readonly roots: ReadonlyMap<PackageName, Reach>;
+  readonly dirs: PackageDirs;
+}
+
+function compileGraph(workspace: Workspace, config: Config, graph: Graph): CompiledGraph {
+  const dependencies = dependencyGraph(workspace, config.edges);
+  const closure = new Map<PackageName, Map<LaneName, Through>>();
+  const roots = new Map<PackageName, Map<LaneName, Through>>();
+  for (const lane of config.lanes) {
+    for (const [name, chain] of shortestChains(dependencies, lane.packages)) {
+      addReach(closure, name, lane.name, { kind: "reads", chain, graph });
+    }
+    for (const name of lane.packages) addReach(roots, name, lane.name, { kind: "reads", chain: [name], graph });
+  }
+  const dirs = new Map(
+    [...workspace.packages.values()].map(
+      ({ name, dir }) => [dir, { name, dir, reach: closure.get(name) ?? NO_LANES }] as const,
+    ),
+  );
+  return { closure, roots, dirs };
 }
 
 function dependencyGraph(

@@ -11,6 +11,8 @@ export type IncompleteCause =
   | { readonly kind: "count-mismatch"; readonly listed: number; readonly expected: number }
   | { readonly kind: "no-base" }
   | { readonly kind: "invalid-path"; readonly raw: string }
+  /** A package manifest changed, and the graph at `commit`, the commit the change was diffed from, cannot be built. */
+  | { readonly kind: "no-base-graph"; readonly commit: string | null; readonly reason: string }
   | { readonly kind: "error"; readonly message: string };
 
 const vetted: unique symbol = Symbol("vetted");
@@ -22,6 +24,11 @@ const vetted: unique symbol = Symbol("vetted");
 export interface CompleteFiles {
   readonly kind: "complete";
   readonly paths: readonly RepoPath[];
+  /**
+   * The commit the paths were diffed from: the merge base of a three-dot range, or the base a caller
+   * named. Null when no source knows it.
+   */
+  readonly mergeBase: string | null;
   readonly [vetted]: true;
 }
 
@@ -50,7 +57,10 @@ export interface ChangeEntry {
  * the routed root sits inside the repository, and its prefix is removed from every path. A path
  * outside `under`, or one that is not a valid path, makes the list incomplete rather than being dropped.
  */
-export function changedFiles(entries: readonly ChangeEntry[], under = ""): ChangedFiles {
+export function changedFiles(
+  entries: readonly ChangeEntry[],
+  { under = "", mergeBase = null }: { readonly under?: string; readonly mergeBase?: string | null } = {},
+): ChangedFiles {
   const prefix = under === "" ? "" : `${under.replace(/\/+$/, "")}/`;
   const paths = new Set<RepoPath>();
   let outside: string | undefined;
@@ -62,7 +72,7 @@ export function changedFiles(entries: readonly ChangeEntry[], under = ""): Chang
   }
   const sorted = [...paths].sort();
   if (outside !== undefined) return incomplete({ kind: "invalid-path", raw: outside }, sorted);
-  return { kind: "complete", paths: sorted, [vetted]: true };
+  return { kind: "complete", paths: sorted, mergeBase, [vetted]: true };
 }
 
 /** Failing closed is always allowed, so any module may build this. */

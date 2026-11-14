@@ -5,12 +5,13 @@
  */
 import type { ChangedFiles, CompleteFiles } from "../src/core/change.ts";
 import type { RepoPath } from "../src/core/ids.ts";
-import type { LastGreen, Plan, PlanRequest } from "../src/core/plan.ts";
+import type { BaseGraph, LastGreen, Plan, PlanRequest } from "../src/core/plan.ts";
 import type { LaneDecision, PlacedPath, Routing, Run, Skip } from "../src/core/route.ts";
 
 declare const somePath: RepoPath;
 declare const someRouting: Routing;
 declare const someLastGreen: LastGreen;
+declare const someBaseGraph: BaseGraph;
 
 // @ts-expect-error a Skip carries a key only route.ts can name
 export const forgedSkip: Skip = { kind: "skip", because: "untouched" };
@@ -24,10 +25,10 @@ export const honestRun: Run = { kind: "run", because: [{ kind: "incomplete", cau
 export const reasonlessRun: Run = { kind: "run", because: [] };
 
 // @ts-expect-error a complete file list carries a key only change.ts can name
-export const forgedComplete: CompleteFiles = { kind: "complete", paths: [] };
+export const forgedComplete: CompleteFiles = { kind: "complete", paths: [], mergeBase: null };
 
 // @ts-expect-error the same, through the file list union
-export const forgedFiles: ChangedFiles = { kind: "complete", paths: [] };
+export const forgedFiles: ChangedFiles = { kind: "complete", paths: [], mergeBase: null };
 
 export const honestIncomplete: ChangedFiles = { kind: "incomplete", cause: { kind: "no-base" }, paths: [] };
 
@@ -47,6 +48,7 @@ export const pullRequestPlan: PlanRequest = {
   mode: "pr",
   range: { base: "a", head: "b" },
   changes: () => Promise.resolve(honestIncomplete),
+  baseGraph: someBaseGraph,
   // @ts-expect-error last-green exists only on the push variant
   lastGreen: someLastGreen,
 };
