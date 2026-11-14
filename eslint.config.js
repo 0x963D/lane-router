@@ -29,7 +29,7 @@ const imports = {
     message: "The core imports only src/core and src/result.ts.",
   },
   corePurityGlob: {
-    regex: "^(?!\\./|\\.\\./result\\.ts$|picomatch/posix$)",
+    regex: "^(?!\\./|\\.\\./result\\.ts$|picomatch/posix\\.js$)",
     message: "The core imports only src/core and src/result.ts.",
   },
 };
