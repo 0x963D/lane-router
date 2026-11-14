@@ -60,7 +60,7 @@ interface Invocation {
     /** `expectedCount` is the pull request's `changed_files` when the range is the event's own. */
     | { readonly kind: "compare"; readonly expectedCount: number | null };
   /** Set only for `last-green: auto` on a push. */
-  readonly lastGreen: { readonly depth: number; readonly trust: Trust } | null;
+  readonly lastGreen: { readonly depth: number; readonly ref: string | null; readonly trust: Trust } | null;
   readonly github: { readonly apiUrl: string; readonly repository: string; readonly token: string };
 }
 
@@ -200,6 +200,7 @@ function toInvocation(inputs: Inputs, event: GitHubEvent, env: NodeJS.ProcessEnv
       mode === "push" && inputs.lastGreen === "auto"
         ? {
             depth: inputs.depth,
+            ref: event.kind === "push" && event.after === head ? event.ref : null,
             trust: {
               app: inputs.trustedApp,
               branch: inputs.branch === "" ? (event.kind === "push" ? event.defaultBranch : null) : inputs.branch,

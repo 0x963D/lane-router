@@ -1,19 +1,17 @@
 import { err, messageOf, type Result } from "../result.ts";
 import { incomplete, type ChangeSource, type Range } from "./change.ts";
-import type { LaneName, RepoPath } from "./ids.ts";
+import type { RepoPath } from "./ids.ts";
 import { MANIFEST, type Lane, type RoutingModel } from "./model.ts";
-import { decide, route, type LaneDecision, type Routing } from "./route.ts";
+import { decide, route, type LaneDecision, type NoProofCause, type Routing } from "./route.ts";
 
 export type Mode = "pr" | "push";
 
 /**
- * The port for `last-green: auto`. `proofs` resolves, for each lane that has one, the newest
- * first-parent ancestor of head, head excluded, where the lane's check passed. A lane missing from
- * the map has no proof within `depth` commits.
+ * The port for `last-green: auto`. `proofs` resolves a lookup that gives each lane its proof: the
+ * newest first-parent ancestor of head, head excluded, where the lane's check passed. Or why it has none.
  */
 export interface LastGreen {
-  readonly depth: number;
-  readonly proofs: (lanes: readonly Lane[]) => Promise<ReadonlyMap<LaneName, string>>;
+  readonly proofs: (lanes: readonly Lane[]) => Promise<(lane: Lane) => Result<string, NoProofCause>>;
 }
 
 /**
@@ -71,21 +69,27 @@ async function plan(model: RoutingModel, request: PlanRequest): Promise<Plan> {
   const event = await routeChange(model, request, request.range);
   if (request.mode === "pr" || request.lastGreen === null) return sealed(request.mode, event, decideOver(model, event));
 
-  const { depth, proofs: findProofs } = request.lastGreen;
-  const proofs = await findProofs(model.lanes);
-  const routeSince = async (proof: string): Promise<readonly [string, Routing]> => {
-    if (proof === request.range.base) return [proof, event];
-    return [proof, await routeChange(model, request, { base: proof, head: request.range.head })];
+  const proofOf = await request.lastGreen.proofs(model.lanes);
+  const sinceProof = new Map<string, Promise<Routing>>();
+  const routeSince = (proof: string): Promise<Routing> => {
+    const routing =
+      sinceProof.get(proof) ??
+      (proof === request.range.base
+        ? Promise.resolve(event)
+        : routeChange(model, request, { base: proof, head: request.range.head }));
+    sinceProof.set(proof, routing);
+    return routing;
   };
-  const sinceProof = new Map(await Promise.all([...new Set(proofs.values())].map(routeSince)));
 
-  const lanes = model.lanes.map((lane): PlannedLane => {
-    const proof = proofs.get(lane.name);
-    const since = proof === undefined ? undefined : sinceProof.get(proof);
-    if (since === undefined)
-      return { lane, since: null, decision: { kind: "run", because: [{ kind: "no-proof", depth }] } };
-    return { lane, since, decision: decide(since, lane) };
-  });
+  const lanes = await Promise.all(
+    model.lanes.map(async (lane): Promise<PlannedLane> => {
+      const proof = proofOf(lane);
+      if (!proof.ok)
+        return { lane, since: null, decision: { kind: "run", because: [{ kind: "no-proof", cause: proof.error }] } };
+      const since = await routeSince(proof.value);
+      return { lane, since, decision: decide(since, lane) };
+    }),
+  );
   return sealed(request.mode, event, lanes);
 }
 

@@ -73,6 +73,18 @@ A check run's name proves nothing by itself. Any GitHub App with `checks: write`
 
 A lane's `workflow` defaults to the workflow that runs lane-router, taken from `GITHUB_WORKFLOW_REF`. `last-green-branch` defaults to the repository's default branch, taken from the push event. When either is unknown, no commit can prove the lane, so it runs. A check run that fails any of these is ignored. It can neither prove nor disprove a lane.
 
+Proofs are used only on the branch's own push. The event must be a push whose `ref` is `refs/heads/<last-green-branch>` and whose `after` is the head being routed. A push to another branch, a tag push, or a push without a `ref` runs every lane. The search starts at that head and follows only first parents, so every candidate is on the branch's first-parent history.
+
+A tag can also make a branch name ambiguous. For a tag push, a workflow run's branch is the tag's name, so a push of the tag `main` looks like a push to the branch `main`. Workflows often gate steps on `github.ref`, so such a run can conclude `success` with its real steps skipped. So before it takes any proof, lane-router looks up the tags that start with the branch name. When `refs/tags/<last-green-branch>` exists, no lane gets a proof. A tag that only starts with the name, such as `main-v2`, does not count.
+
+A lane without a proof runs, and its reason says why:
+
+- `no proof: no trusted green <check> check in the last <N> commits`,
+- `no proof: head was not pushed to branch main`,
+- `no proof: a tag is also named main`,
+- `no proof: last-green-branch is not set and the event names no default branch`,
+- `no proof: the lane names no workflow and the running workflow is unknown`.
+
 This lets a push to `main` skip a lane that already passed on everything the push changed.
 
 ## Config reference
@@ -226,14 +238,14 @@ jobs:
 | `working-directory` | `.`                   | The repository root to read the config and the workspace from.                                                                     |
 | `base`, `head`      | the event's           | The revisions to compare. Setting either skips the pull request file-count check.                                                  |
 | `files`             | empty                 | Newline-separated changed paths, relative to `working-directory`. They are trusted as complete, and the compare API is not called. |
-| `token`             | `${{ github.token }}` | The token for the compare, commits, check-runs and workflow-runs endpoints.                                                        |
+| `token`             | `${{ github.token }}` | The token for the compare, commits, matching-refs, check-runs and workflow-runs endpoints.                                         |
 | `mode`              | from the event        | `pr` or `push`. Required for events other than `pull_request`, `pull_request_target` and `push`.                                   |
 | `last-green`        | `off`                 | `auto` turns on last-green for pushes. It is ignored on pull requests.                                                             |
 | `last-green-depth`  | `100`                 | How many first-parent ancestors last-green searches.                                                                               |
-| `last-green-branch` | the default branch    | The branch whose push runs can prove a lane passed.                                                                                |
+| `last-green-branch` | the default branch    | The branch whose push runs can prove a lane passed. Only a push to it uses proofs.                                                 |
 | `trusted-app`       | `github-actions`      | The slug of the GitHub App whose check runs can prove a lane passed.                                                               |
 
-The token needs `contents: read` for the compare and commits endpoints. With `last-green: auto` it also needs `checks: read` for check runs and `actions: read` for workflow runs.
+The token needs `contents: read` for the compare, commits and matching-refs endpoints. With `last-green: auto` it also needs `checks: read` for check runs and `actions: read` for workflow runs.
 
 The Action reads the config and the workspace from the checked-out tree. On a pull request the default checkout is the merge commit, which is also what CI tests.
 
@@ -253,7 +265,15 @@ It also runs every lane decided from a change it cannot trust. Then `complete` i
 - a changed path outside `working-directory`,
 - any API error, git error or unexpected exception after the config has loaded.
 
-Under last-green, a lane never skips on a check run that its trusted workflow did not produce from a push to the trusted branch. Without a trusted proof the lane runs.
+Under last-green, a lane never skips without a trusted proof. It runs when:
+
+- the event is not a push of head to `refs/heads/<last-green-branch>`. That covers a push to another branch, a tag push, a push event without a `ref`, and a `head` input that is not the pushed commit,
+- a tag named `refs/tags/<last-green-branch>` exists,
+- the branch or the lane's workflow is unknown,
+- no first-parent ancestor within `last-green-depth` has a passing check run that the trusted app created for that commit, in a push run of the lane's workflow on the branch,
+- looking up tags, commits, check runs or workflow runs fails. Then `complete` is `false` and an annotation gives the cause.
+
+lane-router cannot see a tag that was deleted after its push ran. A run from that push still looks like a run on the branch. A tag ruleset that blocks creating tags named like the branch closes that gap.
 
 A shallow checkout, the `actions/checkout` default, has no base commit. A change to a package manifest then runs every lane. Check out with `fetch-depth: 0` to keep those changes precise. Other changes never need the base commit.
 

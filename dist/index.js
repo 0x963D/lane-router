@@ -29625,15 +29625,17 @@ var pullRequestEvent = object(
   IGNORE2
 );
 var pushEvent = object((field) => {
+  const ref = field("ref", optional(nonEmptyString));
   const before = field("before", nonEmptyString);
   const after = field("after", nonEmptyString);
   const repository = field(
     "repository",
     optional(object((repo) => repo("default_branch", optional(nonEmptyString)), IGNORE2))
   );
-  if (!isValid(before) || !isValid(after) || !isValid(repository)) return INVALID;
+  if (!isValid(ref) || !isValid(before) || !isValid(after) || !isValid(repository)) return INVALID;
   return {
     kind: "push",
+    ref: ref ?? null,
     before: /^0+$/.test(before) ? null : before,
     after,
     defaultBranch: repository ?? null
@@ -29708,6 +29710,7 @@ var workflowRunsResponse = object(
   ),
   IGNORE2
 );
+var matchingRefsResponse = array(object((ref) => ref("ref", string), IGNORE2));
 function runningWorkflow(workflowRef, repository) {
   const prefix = `${repository}/`;
   if (workflowRef === void 0 || repository === "" || !workflowRef.startsWith(prefix)) return null;
@@ -29780,18 +29783,24 @@ function githubRepo(options) {
     const [only, ...more] = await workflowRunsOf(run.suite);
     return only !== void 0 && more.length === 0 && withoutRef(only.path) === proof.workflow && only.event === "push" && only.branch === proof.branch && only.headSha === proof.commit;
   };
+  const tagExists = async (name) => {
+    const refs = await get(`/git/matching-refs/tags/${encodeURIComponent(name)}`, matchingRefsResponse);
+    return refs.includes(`refs/tags/${name}`);
+  };
   return {
-    lastGreen: ({ head, depth, trust }) => ({
-      depth,
+    lastGreen: ({ head, ref, depth, trust }) => ({
       proofs: async (lanes) => {
-        const found = /* @__PURE__ */ new Map();
         const { branch } = trust;
-        if (branch === null) return found;
+        if (branch === null) return () => err({ kind: "unknown-branch" });
+        if (ref !== `refs/heads/${branch}`) return () => err({ kind: "not-proof-branch-push", branch });
+        if (await tagExists(branch)) return () => err({ kind: "branch-shares-tag-name", branch });
+        const workflowOf = (lane) => lane.workflow ?? trust.workflow;
         const provable = lanes.flatMap((lane) => {
-          const workflow = lane.workflow ?? trust.workflow;
+          const workflow = workflowOf(lane);
           return workflow === null ? [] : [{ lane, workflow }];
         });
-        if (provable.length === 0) return found;
+        if (provable.length === 0) return () => err({ kind: "unknown-workflow" });
+        const found = /* @__PURE__ */ new Map();
         for await (const commit of firstParents(head, depth)) {
           const runs = await checkRuns(commit);
           for (const { lane, workflow } of provable) {
@@ -29803,7 +29812,12 @@ function githubRepo(options) {
           }
           if (found.size === provable.length) break;
         }
-        return found;
+        return (lane) => {
+          const commit = found.get(lane.name);
+          if (commit !== void 0) return ok(commit);
+          const cause = workflowOf(lane) === null ? { kind: "unknown-workflow" } : { kind: "none-within-depth", depth };
+          return err(cause);
+        };
       }
     }),
     compare: async (range, { expectedCount, under }) => {
@@ -29926,20 +29940,22 @@ async function planLanes(model, request) {
 async function plan(model, request) {
   const event = await routeChange(model, request, request.range);
   if (request.mode === "pr" || request.lastGreen === null) return sealed(request.mode, event, decideOver(model, event));
-  const { depth, proofs: findProofs } = request.lastGreen;
-  const proofs = await findProofs(model.lanes);
-  const routeSince = async (proof) => {
-    if (proof === request.range.base) return [proof, event];
-    return [proof, await routeChange(model, request, { base: proof, head: request.range.head })];
+  const proofOf = await request.lastGreen.proofs(model.lanes);
+  const sinceProof = /* @__PURE__ */ new Map();
+  const routeSince = (proof) => {
+    const routing = sinceProof.get(proof) ?? (proof === request.range.base ? Promise.resolve(event) : routeChange(model, request, { base: proof, head: request.range.head }));
+    sinceProof.set(proof, routing);
+    return routing;
   };
-  const sinceProof = new Map(await Promise.all([...new Set(proofs.values())].map(routeSince)));
-  const lanes = model.lanes.map((lane) => {
-    const proof = proofs.get(lane.name);
-    const since = proof === void 0 ? void 0 : sinceProof.get(proof);
-    if (since === void 0)
-      return { lane, since: null, decision: { kind: "run", because: [{ kind: "no-proof", depth }] } };
-    return { lane, since, decision: decide(since, lane) };
-  });
+  const lanes = await Promise.all(
+    model.lanes.map(async (lane) => {
+      const proof = proofOf(lane);
+      if (!proof.ok)
+        return { lane, since: null, decision: { kind: "run", because: [{ kind: "no-proof", cause: proof.error }] } };
+      const since = await routeSince(proof.value);
+      return { lane, since, decision: decide(since, lane) };
+    })
+  );
   return sealed(request.mode, event, lanes);
 }
 async function routeChange(model, request, range) {
@@ -30005,13 +30021,31 @@ function describeReason(reason, check) {
     case "incomplete":
       return `fail closed, ${describeCause(reason.cause)}`;
     case "no-proof":
-      return `no trusted green ${check} check in the last ${String(reason.depth)} commits`;
+      return `no proof: ${describeNoProof(reason.cause, check)}`;
     case "floor":
       return "floor lane, runs for every change that is not docs-only";
     case "placement":
       return describePlacement(reason.path, reason.placement, reason.through);
     default: {
       const _exhaustive = reason;
+      return _exhaustive;
+    }
+  }
+}
+function describeNoProof(cause, check) {
+  switch (cause.kind) {
+    case "none-within-depth":
+      return `no trusted green ${check} check in the last ${String(cause.depth)} commits`;
+    case "not-proof-branch-push":
+      return `head was not pushed to branch ${cause.branch}`;
+    case "branch-shares-tag-name":
+      return `a tag is also named ${cause.branch}`;
+    case "unknown-branch":
+      return "last-green-branch is not set and the event names no default branch";
+    case "unknown-workflow":
+      return "the lane names no workflow and the running workflow is unknown";
+    default: {
+      const _exhaustive = cause;
       return _exhaustive;
     }
   }
@@ -30261,6 +30295,7 @@ function toInvocation(inputs, event, env, context) {
     },
     lastGreen: mode === "push" && inputs.lastGreen === "auto" ? {
       depth: inputs.depth,
+      ref: event.kind === "push" && event.after === head ? event.ref : null,
       trust: {
         app: inputs.trustedApp,
         branch: inputs.branch === "" ? event.kind === "push" ? event.defaultBranch : null : inputs.branch,

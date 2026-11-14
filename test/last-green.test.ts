@@ -5,6 +5,7 @@ import {
   compare,
   fakeGitHub,
   history,
+  tags,
   type FakeCheckRun,
   type FakeCommit,
   type FakeGitHub,
@@ -34,7 +35,16 @@ const LINE: readonly FakeCommit[] = [
   { sha: P6, parents: [] },
 ];
 
-const PUSH: ActionEvent = { name: "push", payload: { before: P1, after: H, repository: { default_branch: "main" } } };
+function push(payload: Readonly<Record<string, unknown>> = {}): ActionEvent {
+  return {
+    name: "push",
+    payload: { ref: "refs/heads/main", before: P1, after: H, repository: { default_branch: "main" }, ...payload },
+  };
+}
+
+const PUSH = push();
+
+const UNREAD = "tools/scripts/run.mjs";
 
 function short(sha: string): string {
   return sha.slice(0, 7);
@@ -43,6 +53,7 @@ function short(sha: string): string {
 async function pushWithHistory(commits: readonly FakeCommit[] = LINE): Promise<FakeGitHub> {
   const github = await fakeGitHub();
   history(github, H, commits);
+  tags(github, "main", []);
   return github;
 }
 
@@ -88,15 +99,16 @@ describe("finding a lane's last green commit", () => {
     compare(github, P1, H, ["README.md"]);
     const run = await lastGreen(github);
     expect(run.outputs.api).toBe("run");
-    expect(jsonObject(run.outputs.reasons).api).toBe("no trusted green api check in the last 100 commits");
+    expect(jsonObject(run.outputs.reasons).api).toBe("no proof: no trusted green api check in the last 100 commits");
   });
 
-  it("follows first parents only", async () => {
+  it("never takes a proof from a commit reached only through a second parent", async () => {
     const github = await pushWithHistory([{ sha: H, parents: [P1, M] }, { sha: M, parents: [P2] }, ...LINE.slice(1)]);
     green(github, M, "api");
-    compare(github, P1, H, ["README.md"]);
+    green(github, P3, "api");
+    for (const base of [P1, M, P3]) compare(github, base, H, [UNREAD]);
     const run = await lastGreen(github);
-    expect(run.outputs.api).toBe("run");
+    expect(jsonObject(run.outputs.reasons).api).toBe(`nothing it reads changed since ${short(P3)}`);
   });
 
   it("walks past a page of merged commits to reach the first parent", async () => {
@@ -144,7 +156,7 @@ describe("finding a lane's last green commit", () => {
     compare(github, P1, H, ["README.md"]);
     const run = await lastGreen(github, { "last-green-depth": "2" });
     expect(run.outputs.api).toBe("run");
-    expect(jsonObject(run.outputs.reasons).api).toBe("no trusted green api check in the last 2 commits");
+    expect(jsonObject(run.outputs.reasons).api).toBe("no proof: no trusted green api check in the last 2 commits");
     expect(github.requests.filter((path) => path.includes("/check-runs"))).toEqual(
       [P1, P2].map((sha) => `/repos/acme/mono/commits/${sha}/check-runs?filter=latest&per_page=100&page=1`),
     );
@@ -214,11 +226,7 @@ describe("deciding a lane from its proof", () => {
     const github = await pushWithHistory();
     green(github, P1, "api");
     compare(github, P1, H, ["README.md"]);
-    const newBranch: ActionEvent = {
-      name: "push",
-      payload: { before: commit("0"), after: H, repository: { default_branch: "main" } },
-    };
-    const run = await lastGreen(github, {}, newBranch);
+    const run = await lastGreen(github, {}, push({ before: commit("0") }));
     expect(run.outputs).toMatchObject({ api: "skip", web: "run", complete: "false" });
   });
 
@@ -248,9 +256,6 @@ describe("deciding a lane from its proof", () => {
 });
 
 describe("trusting a proof", () => {
-  /** In a package that no lane reads, so a lane with a proof skips. */
-  const UNREAD = "tools/scripts/run.mjs";
-
   async function apiProof(...runs: FakeCheckRun[]) {
     const github = await pushWithHistory();
     checkRuns(github, P1, runs);
@@ -276,7 +281,7 @@ describe("trusting a proof", () => {
   ])("ignores a passing check of the lane's name from %s", async (_, check) => {
     const { run } = await apiProof(check);
     expect(run.outputs.api).toBe("run");
-    expect(jsonObject(run.outputs.reasons).api).toBe("no trusted green api check in the last 100 commits");
+    expect(jsonObject(run.outputs.reasons).api).toBe("no proof: no trusted green api check in the last 100 commits");
   });
 
   it("lets an untrusted failure neither prove nor disprove", async () => {
@@ -323,17 +328,23 @@ unmatched: all
     compare(github, P1, H, [UNREAD]);
     const run = await lastGreen(github, {}, PUSH, { env: { GITHUB_WORKFLOW_REF: undefined } });
     expect(run.outputs.api).toBe("run");
-    expect(jsonObject(run.outputs.reasons).api).toBe("no trusted green api check in the last 100 commits");
+    expect(jsonObject(run.outputs.reasons).api).toBe(
+      "no proof: the lane names no workflow and the running workflow is unknown",
+    );
   });
 
   it("proves nothing without a branch to trust, and trusts last-green-branch when it is set", async () => {
     const github = await pushWithHistory();
     checkRuns(github, P1, [{ name: "api", workflow: { branch: "release" } }]);
     compare(github, P1, H, [UNREAD]);
+    tags(github, "release", []);
     const unknown = await lastGreen(github, {}, { name: "push", payload: { before: P1, after: H } });
     expect(unknown.outputs.api).toBe("run");
+    expect(jsonObject(unknown.outputs.reasons).api).toBe(
+      "no proof: last-green-branch is not set and the event names no default branch",
+    );
 
-    const named = await lastGreen(github, { "last-green-branch": "release" });
+    const named = await lastGreen(github, { "last-green-branch": "release" }, push({ ref: "refs/heads/release" }));
     expect(named.outputs.api).toBe("skip");
   });
 
@@ -343,6 +354,63 @@ unmatched: all
     compare(github, P1, H, [UNREAD]);
     expect((await lastGreen(github)).outputs.api).toBe("run");
     expect((await lastGreen(github, { "trusted-app": "our-ci" })).outputs.api).toBe("skip");
+  });
+});
+
+describe("taking proofs only from the proof branch's own push", () => {
+  async function genuineProof(): Promise<FakeGitHub> {
+    const github = await pushWithHistory();
+    green(github, P1, "api");
+    compare(github, P1, H, [UNREAD]);
+    return github;
+  }
+
+  function everyLane(reason: string) {
+    return { api: reason, web: reason, e2e: reason, lint: reason };
+  }
+
+  it("rejects a genuine proof when a tag has the proof branch's name", async () => {
+    const github = await genuineProof();
+    tags(github, "main", ["main", "main-v2"]);
+    const run = await lastGreen(github);
+    expect(run.outputs).toMatchObject({ api: "run", web: "run", e2e: "run", lint: "run", complete: "true" });
+    expect(jsonObject(run.outputs.reasons)).toEqual(everyLane("no proof: a tag is also named main"));
+  });
+
+  it("accepts the same proof when tags only start with the proof branch's name", async () => {
+    const github = await genuineProof();
+    tags(github, "main", ["main-v2"]);
+    const run = await lastGreen(github);
+    expect(run.outputs.api).toBe("skip");
+    expect(jsonObject(run.outputs.reasons).api).toBe(`nothing it reads changed since ${short(P1)}`);
+    expect(github.requests.filter((path) => path.includes("/git/"))).toEqual([
+      "/repos/acme/mono/git/matching-refs/tags/main",
+    ]);
+  });
+
+  it.each<[string, ActionEvent]>([
+    ["a tag push named like the branch", push({ ref: "refs/tags/main" })],
+    ["a push to another branch", push({ ref: "refs/heads/feature" })],
+    ["a push that names no ref", push({ ref: undefined })],
+  ])("uses no proof on %s", async (_, event) => {
+    const github = await genuineProof();
+    const run = await lastGreen(github, {}, event);
+    expect(jsonObject(run.outputs.reasons)).toEqual(everyLane("no proof: head was not pushed to branch main"));
+  });
+
+  it("uses no proof when the head input is not the commit the push moved main to", async () => {
+    const github = await genuineProof();
+    const run = await lastGreen(github, { head: H }, push({ after: commit("a") }));
+    expect(jsonObject(run.outputs.reasons)).toEqual(everyLane("no proof: head was not pushed to branch main"));
+  });
+
+  it("runs every lane and lets the step succeed when the tag lookup fails", async () => {
+    const github = await genuineProof();
+    github.on("/git/matching-refs/tags/main", { status: 500, body: {} });
+    const run = await lastGreen(github);
+    expect(run.exitCode).toBe(0);
+    expect(run.outputs).toMatchObject({ api: "run", web: "run", e2e: "run", lint: "run", complete: "false" });
+    expect(run.annotations.map(({ level }) => level)).toEqual(["error"]);
   });
 });
 

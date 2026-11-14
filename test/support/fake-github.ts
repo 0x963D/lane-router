@@ -89,6 +89,12 @@ export function history(github: FakeGitHub, head: string, commits: readonly Fake
   for (const { sha } of commits) checkRuns(github, sha, []);
 }
 
+export function tags(github: FakeGitHub, prefix: string, names: readonly string[]): void {
+  github.on(`/git/matching-refs/tags/${prefix}`, {
+    body: names.map((name) => ({ ref: `refs/tags/${name}`, object: { type: "commit", sha: "a".repeat(40) } })),
+  });
+}
+
 /** The workflow run behind a check suite. */
 export interface FakeWorkflowRun {
   readonly path: string;

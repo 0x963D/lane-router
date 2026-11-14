@@ -2,7 +2,14 @@ import type { IncompleteCause } from "./core/change.ts";
 import type { FixedOutput, LaneName } from "./core/ids.ts";
 import type { BuiltIn, Graph, Through } from "./core/model.ts";
 import { baseOf, isComplete, type Mode, type Plan, type PlannedLane } from "./core/plan.ts";
-import { isCounted, type Placement, type Routing, type RunReason, type SkipReason } from "./core/route.ts";
+import {
+  isCounted,
+  type NoProofCause,
+  type Placement,
+  type Routing,
+  type RunReason,
+  type SkipReason,
+} from "./core/route.ts";
 
 /*
  * Plan in, text out. Every user-visible sentence about a plan comes from here, so the Action
@@ -50,13 +57,32 @@ function describeReason(reason: RunReason, check: string): string {
     case "incomplete":
       return `fail closed, ${describeCause(reason.cause)}`;
     case "no-proof":
-      return `no trusted green ${check} check in the last ${String(reason.depth)} commits`;
+      return `no proof: ${describeNoProof(reason.cause, check)}`;
     case "floor":
       return "floor lane, runs for every change that is not docs-only";
     case "placement":
       return describePlacement(reason.path, reason.placement, reason.through);
     default: {
       const _exhaustive: never = reason;
+      return _exhaustive;
+    }
+  }
+}
+
+function describeNoProof(cause: NoProofCause, check: string): string {
+  switch (cause.kind) {
+    case "none-within-depth":
+      return `no trusted green ${check} check in the last ${String(cause.depth)} commits`;
+    case "not-proof-branch-push":
+      return `head was not pushed to branch ${cause.branch}`;
+    case "branch-shares-tag-name":
+      return `a tag is also named ${cause.branch}`;
+    case "unknown-branch":
+      return "last-green-branch is not set and the event names no default branch";
+    case "unknown-workflow":
+      return "the lane names no workflow and the running workflow is unknown";
+    default: {
+      const _exhaustive: never = cause;
       return _exhaustive;
     }
   }
@@ -312,7 +338,7 @@ export type RunReasonJson =
     }
   | { readonly kind: "floor" }
   | { readonly kind: "incomplete"; readonly cause: IncompleteCause }
-  | { readonly kind: "no-proof"; readonly depth: number };
+  | { readonly kind: "no-proof"; readonly cause: NoProofCause };
 
 function placementJson(placement: Placement): PlacementJson {
   const lanes = [...placement.reach.keys()];

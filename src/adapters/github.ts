@@ -1,6 +1,8 @@
 import { changedFiles, incomplete, type ChangedFiles, type Range } from "../core/change.ts";
 import type { LaneName } from "../core/ids.ts";
+import type { Lane } from "../core/model.ts";
 import type { LastGreen } from "../core/plan.ts";
+import type { NoProofCause } from "../core/route.ts";
 import {
   allValid,
   array,
@@ -31,6 +33,8 @@ export type GitHubEvent =
   /** `before` is null for the first push of a branch, which GitHub sends as an all-zero SHA. */
   | {
       readonly kind: "push";
+      /** The full ref the push moved to `after`, such as refs/heads/main or refs/tags/v1. */
+      readonly ref: string | null;
       readonly before: string | null;
       readonly after: string;
       readonly defaultBranch: string | null;
@@ -56,15 +60,17 @@ const pullRequestEvent = object(
 );
 
 const pushEvent = object((field) => {
+  const ref = field("ref", optional(nonEmptyString));
   const before = field("before", nonEmptyString);
   const after = field("after", nonEmptyString);
   const repository = field(
     "repository",
     optional(object((repo) => repo("default_branch", optional(nonEmptyString)), IGNORE)),
   );
-  if (!isValid(before) || !isValid(after) || !isValid(repository)) return INVALID;
+  if (!isValid(ref) || !isValid(before) || !isValid(after) || !isValid(repository)) return INVALID;
   return {
     kind: "push" as const,
+    ref: ref ?? null,
     before: /^0+$/.test(before) ? null : before,
     after,
     defaultBranch: repository ?? null,
@@ -153,6 +159,8 @@ const workflowRunsResponse = object(
 
 type WorkflowRun = Exclude<ReturnType<typeof workflowRunsResponse>, typeof INVALID>[number];
 
+const matchingRefsResponse = array(object((ref) => ref("ref", string), IGNORE));
+
 /**
  * What a check run must come from to prove a lane. Any GitHub App with `checks: write`, or any other
  * workflow, can create a passing check run with a lane's name, so the name alone proves nothing.
@@ -197,11 +205,18 @@ export interface GitHubRepo {
     options: { readonly expectedCount: number | null; readonly under: string },
   ): Promise<ChangedFiles>;
   /**
-   * A check run proves lane L at commit S only when it comes from `trust.app` for S, and its check
-   * suite belongs to a push run of L's workflow on `trust.branch` for S. The returned `proofs`
+   * Proofs are taken only when `ref` is `refs/heads/<trust.branch>` and no tag has the branch's name.
+   * Then a check run proves lane L at commit S only when it comes from `trust.app` for S, and its
+   * check suite belongs to a push run of L's workflow on `trust.branch` for S. The returned `proofs`
    * rejects on any API failure.
    */
-  lastGreen(options: { readonly head: string; readonly depth: number; readonly trust: Trust }): LastGreen;
+  lastGreen(options: {
+    readonly head: string;
+    /** The ref the triggering push moved to `head`. Null when the triggering event did not push head. */
+    readonly ref: string | null;
+    readonly depth: number;
+    readonly trust: Trust;
+  }): LastGreen;
 }
 
 export function githubRepo(options: {
@@ -290,18 +305,25 @@ export function githubRepo(options: {
     );
   };
 
+  const tagExists = async (name: string): Promise<boolean> => {
+    const refs = await get(`/git/matching-refs/tags/${encodeURIComponent(name)}`, matchingRefsResponse);
+    return refs.includes(`refs/tags/${name}`);
+  };
+
   return {
-    lastGreen: ({ head, depth, trust }) => ({
-      depth,
+    lastGreen: ({ head, ref, depth, trust }) => ({
       proofs: async (lanes) => {
-        const found = new Map<LaneName, string>();
         const { branch } = trust;
-        if (branch === null) return found;
+        if (branch === null) return () => err({ kind: "unknown-branch" });
+        if (ref !== `refs/heads/${branch}`) return () => err({ kind: "not-proof-branch-push", branch });
+        if (await tagExists(branch)) return () => err({ kind: "branch-shares-tag-name", branch });
+        const workflowOf = (lane: Lane): string | null => lane.workflow ?? trust.workflow;
         const provable = lanes.flatMap((lane) => {
-          const workflow = lane.workflow ?? trust.workflow;
+          const workflow = workflowOf(lane);
           return workflow === null ? [] : [{ lane, workflow }];
         });
-        if (provable.length === 0) return found;
+        if (provable.length === 0) return () => err({ kind: "unknown-workflow" });
+        const found = new Map<LaneName, string>();
         for await (const commit of firstParents(head, depth)) {
           const runs = await checkRuns(commit);
           for (const { lane, workflow } of provable) {
@@ -313,7 +335,13 @@ export function githubRepo(options: {
           }
           if (found.size === provable.length) break;
         }
-        return found;
+        return (lane) => {
+          const commit = found.get(lane.name);
+          if (commit !== undefined) return ok(commit);
+          const cause: NoProofCause =
+            workflowOf(lane) === null ? { kind: "unknown-workflow" } : { kind: "none-within-depth", depth };
+          return err(cause);
+        };
       },
     }),
     compare: async (range, { expectedCount, under }) => {

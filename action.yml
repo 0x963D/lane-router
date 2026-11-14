@@ -22,7 +22,7 @@ inputs:
     description: Newline-separated changed paths, relative to working-directory and trusted as complete. Skips the compare API.
     default: ""
   token:
-    description: The token for the compare, commits, check-runs and workflow-runs APIs.
+    description: The token for the compare, commits, matching-refs, check-runs and workflow-runs APIs.
     default: ${{ github.token }}
   mode:
     description: pr or push. Defaults from the event.
@@ -34,7 +34,7 @@ inputs:
     description: How many first-parent ancestors last-green searches for a passing commit.
     default: "100"
   last-green-branch:
-    description: The branch whose push runs can prove a lane passed. Defaults to the repository's default branch.
+    description: The branch whose push runs can prove a lane passed. Only a push to it uses proofs. Defaults to the repository's default branch.
     default: ""
   trusted-app:
     description: The slug of the GitHub App whose check runs can prove a lane passed, for last-green.

@@ -10049,20 +10049,22 @@ async function planLanes(model, request) {
 async function plan(model, request) {
   const event = await routeChange(model, request, request.range);
   if (request.mode === "pr" || request.lastGreen === null) return sealed(request.mode, event, decideOver(model, event));
-  const { depth, proofs: findProofs } = request.lastGreen;
-  const proofs = await findProofs(model.lanes);
-  const routeSince = async (proof) => {
-    if (proof === request.range.base) return [proof, event];
-    return [proof, await routeChange(model, request, { base: proof, head: request.range.head })];
+  const proofOf = await request.lastGreen.proofs(model.lanes);
+  const sinceProof = /* @__PURE__ */ new Map();
+  const routeSince = (proof) => {
+    const routing = sinceProof.get(proof) ?? (proof === request.range.base ? Promise.resolve(event) : routeChange(model, request, { base: proof, head: request.range.head }));
+    sinceProof.set(proof, routing);
+    return routing;
   };
-  const sinceProof = new Map(await Promise.all([...new Set(proofs.values())].map(routeSince)));
-  const lanes = model.lanes.map((lane) => {
-    const proof = proofs.get(lane.name);
-    const since = proof === void 0 ? void 0 : sinceProof.get(proof);
-    if (since === void 0)
-      return { lane, since: null, decision: { kind: "run", because: [{ kind: "no-proof", depth }] } };
-    return { lane, since, decision: decide(since, lane) };
-  });
+  const lanes = await Promise.all(
+    model.lanes.map(async (lane) => {
+      const proof = proofOf(lane);
+      if (!proof.ok)
+        return { lane, since: null, decision: { kind: "run", because: [{ kind: "no-proof", cause: proof.error }] } };
+      const since = await routeSince(proof.value);
+      return { lane, since, decision: decide(since, lane) };
+    })
+  );
   return sealed(request.mode, event, lanes);
 }
 async function routeChange(model, request, range) {
@@ -10128,13 +10130,31 @@ function describeReason(reason, check) {
     case "incomplete":
       return `fail closed, ${describeCause(reason.cause)}`;
     case "no-proof":
-      return `no trusted green ${check} check in the last ${String(reason.depth)} commits`;
+      return `no proof: ${describeNoProof(reason.cause, check)}`;
     case "floor":
       return "floor lane, runs for every change that is not docs-only";
     case "placement":
       return describePlacement(reason.path, reason.placement, reason.through);
     default: {
       const _exhaustive = reason;
+      return _exhaustive;
+    }
+  }
+}
+function describeNoProof(cause, check) {
+  switch (cause.kind) {
+    case "none-within-depth":
+      return `no trusted green ${check} check in the last ${String(cause.depth)} commits`;
+    case "not-proof-branch-push":
+      return `head was not pushed to branch ${cause.branch}`;
+    case "branch-shares-tag-name":
+      return `a tag is also named ${cause.branch}`;
+    case "unknown-branch":
+      return "last-green-branch is not set and the event names no default branch";
+    case "unknown-workflow":
+      return "the lane names no workflow and the running workflow is unknown";
+    default: {
+      const _exhaustive = cause;
       return _exhaustive;
     }
   }

@@ -62,8 +62,16 @@ export type RunReason =
   /** A floor lane in a change that has paths and is not docs-only. */
   | { readonly kind: "floor" }
   | { readonly kind: "incomplete"; readonly cause: IncompleteCause }
-  /** Last-green found no commit within `depth` where the lane's check passed. */
-  | { readonly kind: "no-proof"; readonly depth: number };
+  | { readonly kind: "no-proof"; readonly cause: NoProofCause };
+
+export type NoProofCause =
+  | { readonly kind: "none-within-depth"; readonly depth: number }
+  /** Head is not the commit that the triggering push moved `refs/heads/<branch>` to. */
+  | { readonly kind: "not-proof-branch-push"; readonly branch: string }
+  /** GitHub gives a tag push run the tag's bare name as `head_branch`, the same as a branch push. */
+  | { readonly kind: "branch-shares-tag-name"; readonly branch: string }
+  | { readonly kind: "unknown-branch" }
+  | { readonly kind: "unknown-workflow" };
 
 export type SkipReason = "no-changes" | "docs-only" | "untouched";
 
