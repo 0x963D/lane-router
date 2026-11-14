@@ -1,0 +1,88 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm test
+      - run: npm run build
+      - name: Check that dist matches the source
+        run: git diff --exit-code -- dist
+
+  dogfood:
+    name: Dogfood
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - id: package
+        name: Route a package change
+        uses: ./
+        with:
+          working-directory: test/fixtures/acme
+          files: packages/ui/src/button.tsx
+      - name: Expect the lanes that read @acme/ui
+        env:
+          LANES: ${{ steps.package.outputs.lanes }}
+          API: ${{ steps.package.outputs.api }}
+          WEB: ${{ steps.package.outputs.web }}
+          COMPLETE: ${{ steps.package.outputs.complete }}
+          NONE_REQUIRED: ${{ steps.package.outputs.none-required }}
+        run: |
+          test "$LANES" = '["web","e2e","lint"]'
+          test "$API" = skip
+          test "$WEB" = run
+          test "$COMPLETE" = true
+          test "$NONE_REQUIRED" = false
+
+      - id: docs
+        name: Route a docs-only change
+        uses: ./
+        with:
+          working-directory: test/fixtures/acme
+          files: README.md
+      - name: Expect no lane to be required
+        env:
+          LANES: ${{ steps.docs.outputs.lanes }}
+          MATRIX: ${{ steps.docs.outputs.matrix }}
+          DOCS_ONLY: ${{ steps.docs.outputs.docs-only }}
+          NONE_REQUIRED: ${{ steps.docs.outputs.none-required }}
+        run: |
+          test "$LANES" = '[]'
+          test "$MATRIX" = '{"include":[]}'
+          test "$DOCS_ONLY" = true
+          test "$NONE_REQUIRED" = true
+
+      - id: unmatched
+        name: Route a path that nothing claims
+        uses: ./
+        with:
+          working-directory: test/fixtures/acme
+          files: tsconfig.json
+      - name: Expect every lane to run
+        env:
+          LANES: ${{ steps.unmatched.outputs.lanes }}
+          LINT: ${{ steps.unmatched.outputs.lint }}
+          COMPLETE: ${{ steps.unmatched.outputs.complete }}
+        run: |
+          test "$LANES" = '["api","web","e2e","lint"]'
+          test "$LINT" = run
+          test "$COMPLETE" = true
