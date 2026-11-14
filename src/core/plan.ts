@@ -44,6 +44,16 @@ export async function planLanes(model: RoutingModel, request: PlanRequest): Prom
   }
 }
 
+/** True when every file list the plan read was complete. The `complete` output uses this one definition. */
+export function isComplete(plan: Plan): boolean {
+  return plan.event.kind !== "incomplete";
+}
+
+/** The revision a lane's job diffs against. Null when there is no base commit. */
+export function baseOf(plan: Plan): string | null {
+  return plan.event.range.base;
+}
+
 function decideAll(model: RoutingModel, mode: Mode, event: Routing): Plan {
   return { mode, event, lanes: model.lanes.map((lane) => ({ lane, decision: decide(event, lane) })), [planned]: true };
 }
