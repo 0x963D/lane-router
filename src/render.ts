@@ -50,7 +50,7 @@ function describeReason(reason: RunReason, check: string): string {
     case "incomplete":
       return `fail closed, ${describeCause(reason.cause)}`;
     case "no-proof":
-      return `no green ${check} check in the last ${String(reason.depth)} commits`;
+      return `no trusted green ${check} check in the last ${String(reason.depth)} commits`;
     case "floor":
       return "floor lane, runs for every change that is not docs-only";
     case "placement":

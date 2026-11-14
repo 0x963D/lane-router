@@ -78,6 +78,23 @@ unmatched: all
     expect(located(problems)).toEqual([{ where: `lanes.${name}`, at: at(2, 3) }]);
   });
 
+  it.each(["ci.yml", ".github/workflows/nested/ci.yml", ".github/workflows/ci.json", "../.github/workflows/ci.yml"])(
+    "rejects the lane workflow %j, which is not a file in .github/workflows",
+    async (workflow) => {
+      const problems = await configProblems(
+        `lanes:\n  lint:\n    floor: true\n    workflow: "${workflow}"\nunmatched: all\n`,
+      );
+      expect(located(problems)).toEqual([{ where: "lanes.lint.workflow", at: at(4, 15) }]);
+    },
+  );
+
+  it("accepts a lane workflow in .github/workflows", async () => {
+    const loaded = await loadFixture("acme", {
+      [CONFIG]: `lanes:\n  lint:\n    floor: true\n    workflow: .github/workflows/lint.yaml\nunmatched: all\n`,
+    });
+    expect(loaded.ok).toBe(true);
+  });
+
   it("checks that every package a lane names exists, and suggests a close one", async () => {
     const problems = await configProblems(`lanes:\n  web:\n    packages: ["@acme/wbe"]\nunmatched: all\n`);
     expect(located(problems)).toEqual([{ where: "lanes.web.packages[0]", at: at(3, 16) }]);

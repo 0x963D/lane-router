@@ -29,7 +29,12 @@ const IGNORE = { unknownKeys: "ignore" } as const;
 export type GitHubEvent =
   | { readonly kind: "pull_request"; readonly base: string; readonly head: string; readonly changedFiles: number }
   /** `before` is null for the first push of a branch, which GitHub sends as an all-zero SHA. */
-  | { readonly kind: "push"; readonly before: string | null; readonly after: string }
+  | {
+      readonly kind: "push";
+      readonly before: string | null;
+      readonly after: string;
+      readonly defaultBranch: string | null;
+    }
   | { readonly kind: "other"; readonly name: string };
 
 const sha = (key: string): Decoder<string> => object((field) => field(key, nonEmptyString), IGNORE);
@@ -53,8 +58,17 @@ const pullRequestEvent = object(
 const pushEvent = object((field) => {
   const before = field("before", nonEmptyString);
   const after = field("after", nonEmptyString);
-  if (!isValid(before) || !isValid(after)) return INVALID;
-  return { kind: "push" as const, before: /^0+$/.test(before) ? null : before, after };
+  const repository = field(
+    "repository",
+    optional(object((repo) => repo("default_branch", optional(nonEmptyString)), IGNORE)),
+  );
+  if (!isValid(before) || !isValid(after) || !isValid(repository)) return INVALID;
+  return {
+    kind: "push" as const,
+    before: /^0+$/.test(before) ? null : before,
+    after,
+    defaultBranch: repository ?? null,
+  };
 }, IGNORE);
 
 const EVENT_DECODERS = new Map<string, Decoder<GitHubEvent>>([
@@ -105,8 +119,11 @@ const checkRunsResponse = object((field) => {
           name: run("name", string),
           status: run("status", string),
           conclusion: run("conclusion", nullable(string)),
+          headSha: run("head_sha", string),
+          app: run("app", nullable(object((app) => app("slug", optional(string)), IGNORE))),
+          suite: run("check_suite", nullable(object((suite) => suite("id", integer(0)), IGNORE))),
         };
-        return allValid(fields) ? fields : INVALID;
+        return allValid(fields) ? { ...fields, app: fields.app ?? null } : INVALID;
       }, IGNORE),
     ),
   );
@@ -115,13 +132,58 @@ const checkRunsResponse = object((field) => {
 
 type CheckRun = Exclude<ReturnType<typeof checkRunsResponse>, typeof INVALID>["runs"][number];
 
+const workflowRunsResponse = object(
+  (field) =>
+    field(
+      "workflow_runs",
+      array(
+        object((run) => {
+          const fields = {
+            path: run("path", string),
+            event: run("event", string),
+            branch: run("head_branch", nullable(string)),
+            headSha: run("head_sha", string),
+          };
+          return allValid(fields) ? fields : INVALID;
+        }, IGNORE),
+      ),
+    ),
+  IGNORE,
+);
+
+type WorkflowRun = Exclude<ReturnType<typeof workflowRunsResponse>, typeof INVALID>[number];
+
 /**
- * Skipped, neutral, cancelled, unfinished and missing runs are not a pass, and neither are two runs
- * of one name that disagree.
+ * What a check run must come from to prove a lane. Any GitHub App with `checks: write`, or any other
+ * workflow, can create a passing check run with a lane's name, so the name alone proves nothing.
  */
-function passed(runs: readonly CheckRun[], check: string): boolean {
-  const named = runs.filter((run) => run.name === check);
-  return named.length > 0 && named.every((run) => run.status === "completed" && run.conclusion === "success");
+export interface Trust {
+  /** The slug of the app whose check runs can prove a lane. */
+  readonly app: string;
+  /** The branch whose push runs can prove a lane. Null when unknown, and then no commit proves one. */
+  readonly branch: string | null;
+  /** The workflow file running lane-router, which proves the lanes that name no workflow. */
+  readonly workflow: string | null;
+}
+
+/** The workflow file in `owner/repo/<path>@<ref>`, the shape of GITHUB_WORKFLOW_REF. Null for anything else. */
+export function runningWorkflow(workflowRef: string | undefined, repository: string): string | null {
+  const prefix = `${repository}/`;
+  if (workflowRef === undefined || repository === "" || !workflowRef.startsWith(prefix)) return null;
+  return withoutRef(workflowRef.slice(prefix.length));
+}
+
+/** A ref can hold an `@` itself, so the path ends at the first YAML extension followed by one. */
+function withoutRef(path: string): string {
+  return /^(.+?\.ya?ml)@/.exec(path)?.[1] ?? path;
+}
+
+/**
+ * Skipped, neutral, cancelled, unfinished and missing runs are not a pass, and neither are two
+ * trusted runs that disagree. A run that is not trusted is not counted either way.
+ */
+function passed(trusted: readonly CheckRun[]): boolean {
+  return trusted.length > 0 && trusted.every((run) => run.status === "completed" && run.conclusion === "success");
 }
 
 export interface GitHubRepo {
@@ -134,8 +196,12 @@ export interface GitHubRepo {
     range: Range,
     options: { readonly expectedCount: number | null; readonly under: string },
   ): Promise<ChangedFiles>;
-  /** The returned `proofs` rejects on any API failure. */
-  lastGreen(options: { readonly head: string; readonly depth: number }): LastGreen;
+  /**
+   * A check run proves lane L at commit S only when it comes from `trust.app` for S, and its check
+   * suite belongs to a push run of L's workflow on `trust.branch` for S. The returned `proofs`
+   * rejects on any API failure.
+   */
+  lastGreen(options: { readonly head: string; readonly depth: number; readonly trust: Trust }): LastGreen;
 }
 
 export function githubRepo(options: {
@@ -200,17 +266,52 @@ export function githubRepo(options: {
     }
   };
 
+  const workflowRuns = new Map<number, Promise<readonly WorkflowRun[]>>();
+  const workflowRunsOf = (suite: number): Promise<readonly WorkflowRun[]> => {
+    const cached =
+      workflowRuns.get(suite) ?? get(`/actions/runs?check_suite_id=${String(suite)}`, workflowRunsResponse);
+    workflowRuns.set(suite, cached);
+    return cached;
+  };
+
+  const isTrusted = async (
+    run: CheckRun,
+    proof: { readonly commit: string; readonly workflow: string; readonly branch: string; readonly app: string },
+  ): Promise<boolean> => {
+    if (run.app !== proof.app || run.headSha !== proof.commit || run.suite === null) return false;
+    const [only, ...more] = await workflowRunsOf(run.suite);
+    return (
+      only !== undefined &&
+      more.length === 0 &&
+      withoutRef(only.path) === proof.workflow &&
+      only.event === "push" &&
+      only.branch === proof.branch &&
+      only.headSha === proof.commit
+    );
+  };
+
   return {
-    lastGreen: ({ head, depth }) => ({
+    lastGreen: ({ head, depth, trust }) => ({
       depth,
       proofs: async (lanes) => {
         const found = new Map<LaneName, string>();
+        const { branch } = trust;
+        if (branch === null) return found;
+        const provable = lanes.flatMap((lane) => {
+          const workflow = lane.workflow ?? trust.workflow;
+          return workflow === null ? [] : [{ lane, workflow }];
+        });
+        if (provable.length === 0) return found;
         for await (const commit of firstParents(head, depth)) {
           const runs = await checkRuns(commit);
-          for (const lane of lanes) {
-            if (!found.has(lane.name) && passed(runs, lane.check)) found.set(lane.name, commit);
+          for (const { lane, workflow } of provable) {
+            if (found.has(lane.name)) continue;
+            const proof = { commit, workflow, branch, app: trust.app };
+            const named = runs.filter((run) => run.name === lane.check);
+            const trusted = await Promise.all(named.map(async (run) => ((await isTrusted(run, proof)) ? [run] : [])));
+            if (passed(trusted.flat())) found.set(lane.name, commit);
           }
-          if (found.size === lanes.length) break;
+          if (found.size === provable.length) break;
         }
         return found;
       },

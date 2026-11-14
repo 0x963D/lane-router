@@ -89,17 +89,63 @@ export function history(github: FakeGitHub, head: string, commits: readonly Fake
   for (const { sha } of commits) checkRuns(github, sha, []);
 }
 
+/** The workflow run behind a check suite. */
+export interface FakeWorkflowRun {
+  readonly path: string;
+  readonly event: string;
+  readonly branch: string | null;
+  readonly headSha: string;
+}
+
+/** The workflow that the Action runs in under `runAction`, unless a test sets GITHUB_WORKFLOW_REF. */
+export const RUNNING_WORKFLOW = ".github/workflows/ci.yml";
+
+/**
+ * By default a run comes from the github-actions app, for the commit it is listed on, in a check
+ * suite of its own whose workflow run is a push to main from RUNNING_WORKFLOW: a run that proves.
+ */
 export interface FakeCheckRun {
   readonly name: string;
   readonly status?: string;
   readonly conclusion?: string | null;
+  readonly app?: string | null;
+  readonly headSha?: string;
+  /** Runs that name the same suite share it, and its workflow run comes from the first of them. */
+  readonly suite?: number;
+  /** Null for a suite that no workflow run created. */
+  readonly workflow?: Partial<FakeWorkflowRun> | null;
 }
 
+let lastSuite = 0;
+
 export function checkRuns(github: FakeGitHub, sha: string, runs: readonly FakeCheckRun[]): void {
+  const suites = new Set<number>();
+  const listed = runs.map((run) => {
+    const suite = run.suite ?? 1_000 + ++lastSuite;
+    if (!suites.has(suite)) {
+      suites.add(suite);
+      const workflow =
+        run.workflow === null
+          ? null
+          : { path: RUNNING_WORKFLOW, event: "push", branch: "main", headSha: sha, ...run.workflow };
+      const workflowRuns =
+        workflow === null
+          ? []
+          : [{ path: workflow.path, event: workflow.event, head_branch: workflow.branch, head_sha: workflow.headSha }];
+      github.on(`/actions/runs?check_suite_id=${String(suite)}`, {
+        body: { total_count: workflowRuns.length, workflow_runs: workflowRuns },
+      });
+    }
+    return {
+      name: run.name,
+      status: run.status ?? "completed",
+      conclusion: run.conclusion === undefined ? "success" : run.conclusion,
+      head_sha: run.headSha ?? sha,
+      app: run.app === null ? null : { slug: run.app ?? "github-actions" },
+      check_suite: { id: suite },
+    };
+  });
   github.on(`/commits/${sha}/check-runs?filter=latest&per_page=100&page=1`, {
-    body: {
-      total_count: runs.length,
-      check_runs: runs.map(({ name, status = "completed", conclusion = "success" }) => ({ name, status, conclusion })),
-    },
+    body: { total_count: listed.length, check_runs: listed },
   });
 }

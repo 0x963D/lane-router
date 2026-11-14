@@ -58,12 +58,20 @@ Rules about the whole change come after that.
 
 ### Last green, for pushes
 
-With `last-green: auto` on a push, each lane is decided from the change since its last green commit. That commit is the newest first-parent ancestor of the pushed head, head excluded, where the lane's check run concluded `success`. The search looks back at most `last-green-depth` commits.
+With `last-green: auto` on a push, each lane is decided from the change since its last green commit. That commit is the newest first-parent ancestor of the pushed head, head excluded, where the lane's trusted check runs concluded `success`. The search looks back at most `last-green-depth` commits.
 
 - A lane with no green commit in that window runs, and its reason says so.
 - A lane with a green commit S runs only when the change S...head selects it. Otherwise it skips with the reason `nothing it reads changed since <S>`.
 - Lanes that share a green commit share one diff.
-- A skipped, neutral, cancelled or unfinished check is not a pass. A missing check is not a pass. Two runs of the same check that disagree are not a pass.
+- A skipped, neutral, cancelled or unfinished check is not a pass. A missing check is not a pass. Two trusted runs of the same check that disagree are not a pass.
+
+A check run's name proves nothing by itself. Any GitHub App with `checks: write`, or any other workflow, can create a passing check run named `e2e` on a commit. So a check run proves lane L at commit S only when all of these hold:
+
+- it was created by the app that `trusted-app` names, `github-actions` by default,
+- its `head_sha` is S,
+- its check suite belongs to exactly one workflow run, and that run's workflow file is L's `workflow`, its event is `push`, its branch is `last-green-branch` and its `head_sha` is S.
+
+A lane's `workflow` defaults to the workflow that runs lane-router, taken from `GITHUB_WORKFLOW_REF`. `last-green-branch` defaults to the repository's default branch, taken from the push event. When either is unknown, no commit can prove the lane, so it runs. A check run that fails any of these is ignored. It can neither prove nor disprove a lane.
 
 This lets a push to `main` skip a lane that already passed on everything the push changed.
 
@@ -120,6 +128,7 @@ unmatched: all
 | `lanes.<name>.packages`               | The lane's root packages, by `package.json` name. Required unless the lane is a floor lane.                                                         |
 | `lanes.<name>.floor`                  | `true` to run the lane for every change that is not docs-only. Default `false`.                                                                     |
 | `lanes.<name>.check`                  | The check run name that proves the lane passed, for last-green. Default: the lane name.                                                             |
+| `lanes.<name>.workflow`               | The workflow file whose push runs prove the lane, such as `.github/workflows/ci.yml`. Default: the workflow that runs lane-router.                  |
 | `workspace.discovery`                 | `auto`, `pnpm` or `npm`. `auto` reads `pnpm-workspace.yaml` when it exists, else the `workspaces` field of the root `package.json`. Default `auto`. |
 | `workspace.edges`                     | Extra dependencies that the manifests do not declare. `from` reads `to`.                                                                            |
 | `paths[].match`                       | One or more globs.                                                                                                                                  |
@@ -146,7 +155,8 @@ Validation reports every problem in one error, each with its line and column. Th
 - a lane name that does not match `^[A-Za-z0-9][A-Za-z0-9_-]*$`, or that is a fixed output name such as `lanes` or `matrix`,
 - a package or lane name that does not exist,
 - a row without `match`, with both or neither of `lanes` and `packages`, with `via` on a `lanes` row, without `via` on a `packages` row, or without `why`,
-- a glob with a backslash, a leading `/`, a leading `!` or a `..` segment.
+- a glob with a backslash, a leading `/`, a leading `!` or a `..` segment,
+- a lane `workflow` that is not a `.yml` or `.yaml` file directly in `.github/workflows`.
 
 ## Outputs
 
@@ -182,6 +192,7 @@ jobs:
     permissions:
       contents: read
       checks: read
+      actions: read
     outputs:
       matrix: ${{ steps.lanes.outputs.matrix }}
       none-required: ${{ steps.lanes.outputs.none-required }}
@@ -215,10 +226,14 @@ jobs:
 | `working-directory` | `.`                   | The repository root to read the config and the workspace from.                                                                     |
 | `base`, `head`      | the event's           | The revisions to compare. Setting either skips the pull request file-count check.                                                  |
 | `files`             | empty                 | Newline-separated changed paths, relative to `working-directory`. They are trusted as complete, and the compare API is not called. |
-| `token`             | `${{ github.token }}` | The token for the compare, commits and check-runs endpoints.                                                                       |
+| `token`             | `${{ github.token }}` | The token for the compare, commits, check-runs and workflow-runs endpoints.                                                        |
 | `mode`              | from the event        | `pr` or `push`. Required for events other than `pull_request`, `pull_request_target` and `push`.                                   |
 | `last-green`        | `off`                 | `auto` turns on last-green for pushes. It is ignored on pull requests.                                                             |
 | `last-green-depth`  | `100`                 | How many first-parent ancestors last-green searches.                                                                               |
+| `last-green-branch` | the default branch    | The branch whose push runs can prove a lane passed.                                                                                |
+| `trusted-app`       | `github-actions`      | The slug of the GitHub App whose check runs can prove a lane passed.                                                               |
+
+The token needs `contents: read` for the compare and commits endpoints. With `last-green: auto` it also needs `checks: read` for check runs and `actions: read` for workflow runs.
 
 The Action reads the config and the workspace from the checked-out tree. On a pull request the default checkout is the merge commit, which is also what CI tests.
 
@@ -237,6 +252,8 @@ It also runs every lane decided from a change it cannot trust. Then `complete` i
 - a push that opens a new branch, whose `before` is all zeros and cannot be compared,
 - a changed path outside `working-directory`,
 - any API error, git error or unexpected exception after the config has loaded.
+
+Under last-green, a lane never skips on a check run that its trusted workflow did not produce from a push to the trusted branch. Without a trusted proof the lane runs.
 
 A shallow checkout, the `actions/checkout` default, has no base commit. A change to a package manifest then runs every lane. Check out with `fetch-depth: 0` to keep those changes precise. Other changes never need the base commit.
 

@@ -9,7 +9,8 @@ import {
   type FakeCommit,
   type FakeGitHub,
 } from "./support/fake-github.ts";
-import { fixtureDir } from "./support/fixtures.ts";
+import { fixtureCopy, fixtureDir } from "./support/fixtures.ts";
+import { CONFIG } from "./support/model.ts";
 
 /* Lanes and checks come from the acme fixture: api, web, e2e ("e2e / chromium"), lint. */
 
@@ -33,7 +34,7 @@ const LINE: readonly FakeCommit[] = [
   { sha: P6, parents: [] },
 ];
 
-const PUSH: ActionEvent = { name: "push", payload: { before: P1, after: H } };
+const PUSH: ActionEvent = { name: "push", payload: { before: P1, after: H, repository: { default_branch: "main" } } };
 
 function short(sha: string): string {
   return sha.slice(0, 7);
@@ -50,8 +51,19 @@ function green(github: FakeGitHub, sha: string, ...names: string[]): void {
   checkRuns(github, sha, runs);
 }
 
-function lastGreen(github: FakeGitHub, inputs: Readonly<Record<string, string>> = {}, event = PUSH) {
-  return runAction({ workspace: ACME, inputs: { "last-green": "auto", ...inputs }, event, github });
+function lastGreen(
+  github: FakeGitHub,
+  inputs: Readonly<Record<string, string>> = {},
+  event = PUSH,
+  options: { readonly workspace?: string; readonly env?: Readonly<Record<string, string | undefined>> } = {},
+) {
+  return runAction({
+    workspace: options.workspace ?? ACME,
+    inputs: { "last-green": "auto", ...inputs },
+    event,
+    github,
+    ...(options.env === undefined ? {} : { env: options.env }),
+  });
 }
 
 function compareRequests(github: FakeGitHub): string[] {
@@ -76,7 +88,7 @@ describe("finding a lane's last green commit", () => {
     compare(github, P1, H, ["README.md"]);
     const run = await lastGreen(github);
     expect(run.outputs.api).toBe("run");
-    expect(jsonObject(run.outputs.reasons).api).toBe("no green api check in the last 100 commits");
+    expect(jsonObject(run.outputs.reasons).api).toBe("no trusted green api check in the last 100 commits");
   });
 
   it("follows first parents only", async () => {
@@ -132,7 +144,7 @@ describe("finding a lane's last green commit", () => {
     compare(github, P1, H, ["README.md"]);
     const run = await lastGreen(github, { "last-green-depth": "2" });
     expect(run.outputs.api).toBe("run");
-    expect(jsonObject(run.outputs.reasons).api).toBe("no green api check in the last 2 commits");
+    expect(jsonObject(run.outputs.reasons).api).toBe("no trusted green api check in the last 2 commits");
     expect(github.requests.filter((path) => path.includes("/check-runs"))).toEqual(
       [P1, P2].map((sha) => `/repos/acme/mono/commits/${sha}/check-runs?filter=latest&per_page=100&page=1`),
     );
@@ -202,7 +214,11 @@ describe("deciding a lane from its proof", () => {
     const github = await pushWithHistory();
     green(github, P1, "api");
     compare(github, P1, H, ["README.md"]);
-    const run = await lastGreen(github, {}, { name: "push", payload: { before: commit("0"), after: H } });
+    const newBranch: ActionEvent = {
+      name: "push",
+      payload: { before: commit("0"), after: H, repository: { default_branch: "main" } },
+    };
+    const run = await lastGreen(github, {}, newBranch);
     expect(run.outputs).toMatchObject({ api: "skip", web: "run", complete: "false" });
   });
 
@@ -228,6 +244,105 @@ describe("deciding a lane from its proof", () => {
     expect(run.exitCode).toBe(0);
     expect(run.outputs).toMatchObject({ api: "run", web: "run", e2e: "run", lint: "run", complete: "false" });
     expect(run.annotations.map(({ level }) => level)).toEqual(["error"]);
+  });
+});
+
+describe("trusting a proof", () => {
+  /** In a package that no lane reads, so a lane with a proof skips. */
+  const UNREAD = "tools/scripts/run.mjs";
+
+  async function apiProof(...runs: FakeCheckRun[]) {
+    const github = await pushWithHistory();
+    checkRuns(github, P1, runs);
+    compare(github, P1, H, [UNREAD]);
+    return { github, run: await lastGreen(github) };
+  }
+
+  it("accepts a passing push run on the default branch from the workflow running lane-router", async () => {
+    const { run } = await apiProof({ name: "api" });
+    expect(run.outputs.api).toBe("skip");
+    expect(jsonObject(run.outputs.reasons).api).toBe(`nothing it reads changed since ${short(P1)}`);
+  });
+
+  it.each<[string, FakeCheckRun]>([
+    ["another app", { name: "api", app: "impostor" }],
+    ["no app", { name: "api", app: null }],
+    ["a pull_request run", { name: "api", workflow: { event: "pull_request" } }],
+    ["another workflow", { name: "api", workflow: { path: ".github/workflows/other.yml" } }],
+    ["another branch", { name: "api", workflow: { branch: "feature" } }],
+    ["a check for another commit", { name: "api", headSha: P2 }],
+    ["a workflow run for another commit", { name: "api", workflow: { headSha: P2 } }],
+    ["a suite with no workflow run", { name: "api", workflow: null }],
+  ])("ignores a passing check of the lane's name from %s", async (_, check) => {
+    const { run } = await apiProof(check);
+    expect(run.outputs.api).toBe("run");
+    expect(jsonObject(run.outputs.reasons).api).toBe("no trusted green api check in the last 100 commits");
+  });
+
+  it("lets an untrusted failure neither prove nor disprove", async () => {
+    const { run } = await apiProof({ name: "api" }, { name: "api", app: "impostor", conclusion: "failure" });
+    expect(jsonObject(run.outputs.reasons).api).toBe(`nothing it reads changed since ${short(P1)}`);
+  });
+
+  it("strips the ref from a workflow path", async () => {
+    const { run } = await apiProof({ name: "api", workflow: { path: ".github/workflows/ci.yml@refs/heads/main" } });
+    expect(run.outputs.api).toBe("skip");
+  });
+
+  it("looks up each check suite's workflow run once", async () => {
+    const { github } = await apiProof({ name: "api", suite: 7 }, { name: "web", suite: 7 });
+    expect(github.requests.filter((path) => path.startsWith("/repos/acme/mono/actions/runs"))).toEqual([
+      "/repos/acme/mono/actions/runs?check_suite_id=7",
+    ]);
+  });
+
+  it("trusts the workflow a lane names instead of the running one", async () => {
+    const config = `lanes:
+  api:
+    packages: ["@acme/api"]
+    workflow: .github/workflows/api.yml
+  web:
+    packages: ["@acme/web"]
+unmatched: all
+`;
+    const github = await pushWithHistory();
+    checkRuns(github, P1, [{ name: "api" }, { name: "web" }]);
+    checkRuns(github, P2, [{ name: "api", workflow: { path: ".github/workflows/api.yml" } }]);
+    compare(github, P1, H, [UNREAD]);
+    compare(github, P2, H, [UNREAD]);
+    const run = await lastGreen(github, {}, PUSH, { workspace: fixtureCopy("acme", { [CONFIG]: config }) });
+    expect(jsonObject(run.outputs.reasons)).toEqual({
+      api: `nothing it reads changed since ${short(P2)}`,
+      web: `nothing it reads changed since ${short(P1)}`,
+    });
+  });
+
+  it("proves nothing without a workflow to trust", async () => {
+    const github = await pushWithHistory();
+    checkRuns(github, P1, [{ name: "api" }]);
+    compare(github, P1, H, [UNREAD]);
+    const run = await lastGreen(github, {}, PUSH, { env: { GITHUB_WORKFLOW_REF: undefined } });
+    expect(run.outputs.api).toBe("run");
+    expect(jsonObject(run.outputs.reasons).api).toBe("no trusted green api check in the last 100 commits");
+  });
+
+  it("proves nothing without a branch to trust, and trusts last-green-branch when it is set", async () => {
+    const github = await pushWithHistory();
+    checkRuns(github, P1, [{ name: "api", workflow: { branch: "release" } }]);
+    compare(github, P1, H, [UNREAD]);
+    const unknown = await lastGreen(github, {}, { name: "push", payload: { before: P1, after: H } });
+    expect(unknown.outputs.api).toBe("run");
+
+    const named = await lastGreen(github, { "last-green-branch": "release" });
+    expect(named.outputs.api).toBe("skip");
+  });
+
+  it("trusts the app trusted-app names", async () => {
+    const github = await pushWithHistory();
+    checkRuns(github, P1, [{ name: "api", app: "our-ci" }]);
+    compare(github, P1, H, [UNREAD]);
+    expect((await lastGreen(github)).outputs.api).toBe("run");
+    expect((await lastGreen(github, { "trusted-app": "our-ci" })).outputs.api).toBe("skip");
   });
 });
 

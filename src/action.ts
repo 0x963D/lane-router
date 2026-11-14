@@ -3,7 +3,7 @@ import { relative, resolve } from "node:path";
 import * as core from "@actions/core";
 import { directoryTree } from "./adapters/directory.ts";
 import { gitRepo } from "./adapters/git.ts";
-import { githubRepo, readEvent, type GitHubEvent } from "./adapters/github.ts";
+import { githubRepo, readEvent, runningWorkflow, type GitHubEvent, type Trust } from "./adapters/github.ts";
 import { changedFiles, type ChangedFiles, type ChangeSource, type Range } from "./core/change.ts";
 import { planLanes, type Mode, type Plan, type PlanRequest } from "./core/plan.ts";
 import {
@@ -12,6 +12,7 @@ import {
   formatDataPath,
   INVALID,
   literal,
+  nonEmptyString,
   object,
   parseJson,
   refine,
@@ -42,6 +43,8 @@ export const INPUT_NAMES = [
   "mode",
   "last-green",
   "last-green-depth",
+  "last-green-branch",
+  "trusted-app",
 ] as const;
 
 type InputName = (typeof INPUT_NAMES)[number];
@@ -57,7 +60,7 @@ interface Invocation {
     /** `expectedCount` is the pull request's `changed_files` when the range is the event's own. */
     | { readonly kind: "compare"; readonly expectedCount: number | null };
   /** Set only for `last-green: auto` on a push. */
-  readonly lastGreenDepth: number | null;
+  readonly lastGreen: { readonly depth: number; readonly trust: Trust } | null;
   readonly github: { readonly apiUrl: string; readonly repository: string; readonly token: string };
 }
 
@@ -136,6 +139,8 @@ const inputsDecoder = object(
       mode: field("mode", blankOr(literal("pr", "push"))),
       lastGreen: field("last-green", literal("auto", "off")),
       depth: field("last-green-depth", positiveInteger),
+      branch: field("last-green-branch", string),
+      trustedApp: field("trusted-app", nonEmptyString),
     };
     return allValid(fields) ? fields : INVALID;
   },
@@ -191,7 +196,17 @@ function toInvocation(inputs: Inputs, event: GitHubEvent, env: NodeJS.ProcessEnv
               { mergeBase: inputs.base === "" ? null : inputs.base },
             ),
           },
-    lastGreenDepth: mode === "push" && inputs.lastGreen === "auto" ? inputs.depth : null,
+    lastGreen:
+      mode === "push" && inputs.lastGreen === "auto"
+        ? {
+            depth: inputs.depth,
+            trust: {
+              app: inputs.trustedApp,
+              branch: inputs.branch === "" ? (event.kind === "push" ? event.defaultBranch : null) : inputs.branch,
+              workflow: runningWorkflow(env.GITHUB_WORKFLOW_REF, repository),
+            },
+          }
+        : null,
     github: { apiUrl: env.GITHUB_API_URL ?? "https://api.github.com", repository, token: inputs.token },
   } satisfies Invocation;
 }
@@ -226,7 +241,7 @@ function lines(text: string): string[] {
  * checkout holds only head, so a base graph is read from git in `working-directory`'s repository.
  */
 function requestFor(invocation: Invocation, head: RepoTree): PlanRequest {
-  const { source, range, lastGreenDepth } = invocation;
+  const { source, range } = invocation;
   const github = githubRepo(invocation.github);
   const repo = gitRepo(invocation.root);
   const under = (): Promise<string> =>
@@ -237,7 +252,8 @@ function requestFor(invocation: Invocation, head: RepoTree): PlanRequest {
       : async (requested) => github.compare(requested, { expectedCount: source.expectedCount, under: await under() });
   const baseGraph = baseGraphOf(head, invocation.config, repo);
   if (invocation.mode === "pr") return { mode: "pr", range, changes, baseGraph };
-  const lastGreen = lastGreenDepth === null ? null : github.lastGreen({ head: range.head, depth: lastGreenDepth });
+  const lastGreen =
+    invocation.lastGreen === null ? null : github.lastGreen({ head: range.head, ...invocation.lastGreen });
   return { mode: "push", range, changes, baseGraph, lastGreen };
 }
 

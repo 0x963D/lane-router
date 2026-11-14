@@ -9236,7 +9236,12 @@ var NAMED = { kind: "named" };
 var NO_LANES = /* @__PURE__ */ new Map();
 function compile(input) {
   const { config } = input;
-  const lanes = config.lanes.map(({ name, floor, check }) => ({ name, floor, check }));
+  const lanes = config.lanes.map(({ name, floor, check, workflow }) => ({
+    name,
+    floor,
+    check,
+    workflow
+  }));
   const head = compileGraph(input.workspace, config, "head");
   const base = input.base === void 0 ? void 0 : compileGraph(input.base, config, "base");
   const graphs = base === void 0 ? [head] : [head, base];
@@ -9548,6 +9553,10 @@ var glob = refine(string, (value, context) => {
   const problem = globProblem(value);
   return problem === void 0 ? value : context.fail(problem);
 });
+var workflowFile = refine(
+  string,
+  (path, context) => /^\.github\/workflows\/[^/]+\.ya?ml$/.test(path) ? path : context.fail("a workflow is a file in .github/workflows, such as .github/workflows/ci.yml")
+);
 var laneKey = refine(string, (name, context) => {
   const parsed = parseLaneName(name);
   if (parsed.ok) return parsed.value;
@@ -9571,7 +9580,8 @@ function documentDecoder(laneNames, packageRef) {
       const fields = {
         packages: field("packages", withDefault(array(packageRef), [])),
         floor: field("floor", withDefault(boolean, false)),
-        check: field("check", optional(nonEmptyString))
+        check: field("check", optional(nonEmptyString)),
+        workflow: field("workflow", optional(workflowFile))
       };
       return allValid(fields) ? fields : INVALID;
     }, REJECT),
@@ -9634,7 +9644,8 @@ function toConfig(document) {
       name,
       packages: spec.packages,
       floor: spec.floor,
-      check: spec.check ?? name
+      check: spec.check ?? name,
+      workflow: spec.workflow ?? null
     })),
     edges: document.workspace.edges,
     rows: document.paths,
@@ -10117,7 +10128,7 @@ function describeReason(reason, check) {
     case "incomplete":
       return `fail closed, ${describeCause(reason.cause)}`;
     case "no-proof":
-      return `no green ${check} check in the last ${String(reason.depth)} commits`;
+      return `no trusted green ${check} check in the last ${String(reason.depth)} commits`;
     case "floor":
       return "floor lane, runs for every change that is not docs-only";
     case "placement":

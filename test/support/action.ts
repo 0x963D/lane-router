@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
 import { tempDir } from "./fixtures.ts";
-import { REPOSITORY, type FakeGitHub } from "./fake-github.ts";
+import { REPOSITORY, RUNNING_WORKFLOW, type FakeGitHub } from "./fake-github.ts";
 
 /*
  * Runs the Action the way the runner does: a separate Node process with INPUT_* and GITHUB_* set,
@@ -55,12 +55,16 @@ function defaultOf(spec: unknown, name: string): string {
 /** What the runner puts in a default of `${{ github.token }}`. */
 const RUNNER_TOKEN = "token-from-the-runner";
 
-/** `workspace` is the checkout the runner starts the Action in. `working-directory` is relative to it. */
+/**
+ * `workspace` is the checkout the runner starts the Action in. `working-directory` is relative to it.
+ * `env` sets or, with undefined, removes a runner variable.
+ */
 export async function runAction(options: {
   readonly workspace: string;
   readonly inputs?: Readonly<Record<string, string>>;
   readonly event: ActionEvent;
   readonly github?: FakeGitHub;
+  readonly env?: Readonly<Record<string, string | undefined>>;
 }): Promise<ActionRun> {
   const scratch = tempDir();
   const files = {
@@ -92,7 +96,12 @@ export async function runAction(options: {
     GITHUB_REPOSITORY: REPOSITORY,
     GITHUB_SHA: "f".repeat(40),
     GITHUB_API_URL: options.github?.url ?? "http://127.0.0.1:9",
+    GITHUB_WORKFLOW_REF: `${REPOSITORY}/${RUNNING_WORKFLOW}@refs/heads/main`,
   });
+  for (const [key, value] of Object.entries(options.env ?? {})) {
+    if (value === undefined) Reflect.deleteProperty(env, key);
+    else env[key] = value;
+  }
 
   const { exitCode, stdout } = await node(ENTRY, { cwd: options.workspace, env });
   return {
