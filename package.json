@@ -18,7 +18,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
-    "build": "node scripts/build.ts"
+    "build": "node scripts/build.ts",
+    "demo": "npm run build && node scripts/demo.ts"
   },
   "dependencies": {
     "@actions/core": "^3.0.1",
