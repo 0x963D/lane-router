@@ -1,0 +1,6 @@
+lanes:
+  core:
+    packages: ["@neg/core"]
+  lint:
+    floor: true
+unmatched: all

@@ -1,0 +1,10 @@
+lanes:
+  prod:
+    packages: ["@dep/prod"]
+  dev:
+    packages: ["@dep/dev"]
+  peer:
+    packages: ["@dep/peer"]
+  optional:
+    packages: ["@dep/optional"]
+unmatched: all

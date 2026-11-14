@@ -1,0 +1,10 @@
+{
+  "name": "npm-object",
+  "private": true,
+  "workspaces": {
+    "packages": [
+      "./apps/*",
+      "libs/*/"
+    ]
+  }
+}

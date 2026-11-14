@@ -1,0 +1,6 @@
+lanes:
+  one:
+    packages: ["@npm/one"]
+  two:
+    packages: ["@npm/two"]
+unmatched: all

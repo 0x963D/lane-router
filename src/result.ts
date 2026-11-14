@@ -14,6 +14,10 @@ export function isNonEmpty<T>(items: readonly T[]): items is NonEmpty<T> {
   return items.length > 0;
 }
 
+export function mapNonEmpty<T, U>([first, ...rest]: NonEmpty<T>, transform: (item: T) => U): NonEmpty<U> {
+  return [transform(first), ...rest.map(transform)];
+}
+
 export function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }

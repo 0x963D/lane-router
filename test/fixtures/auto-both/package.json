@@ -1,0 +1,7 @@
+{
+  "name": "auto-both",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ]
+}

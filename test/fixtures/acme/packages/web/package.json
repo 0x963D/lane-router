@@ -1,0 +1,9 @@
+{
+  "name": "@acme/web",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "@acme/ui": "workspace:*",
+    "react": "^19.0.0"
+  }
+}

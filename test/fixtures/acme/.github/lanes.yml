@@ -1,0 +1,48 @@
+lanes:
+  api:
+    packages: ["@acme/api"]
+  web:
+    packages: ["@acme/web"]
+  e2e:
+    packages: ["@acme/web-e2e"]
+    check: "e2e / chromium"
+  lint:
+    floor: true
+
+workspace:
+  edges:
+    - from: "@acme/web"
+      to: "@acme/api"
+
+paths:
+  - match: [pnpm-lock.yaml, package.json, pnpm-workspace.yaml, ".github/workflows/**"]
+    lanes: all
+    why: Dependency and CI changes can affect every lane.
+  - match: ["tools/codegen/**"]
+    packages: ["@acme/api"]
+    via: code
+    why: The api build runs the code generator.
+  - match: ["fixtures/browser/**"]
+    packages: ["@acme/web"]
+    via: tests
+    why: The browser tests load these fixtures.
+  - match: ["docs/api/*.md"]
+    packages: ["@acme/api"]
+    via: name
+    why: The api serves these files by name.
+  - match: ["docs/guide.md"]
+    lanes: [web]
+    why: The web build inlines the guide.
+  - match: ["packages/ui/tokens.json"]
+    packages: ["@acme/api"]
+    via: code
+    why: The api reads the design tokens.
+  - match: [".vscode/**", ".idea/**"]
+    lanes: []
+    why: Editor settings affect no lane.
+
+docs-only:
+  match: ["**/*.md"]
+  except: [".changeset/**"]
+
+unmatched: all

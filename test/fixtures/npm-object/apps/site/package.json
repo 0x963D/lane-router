@@ -1,0 +1,8 @@
+{
+  "name": "@obj/site",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "@obj/kit": "^1.0.0"
+  }
+}
