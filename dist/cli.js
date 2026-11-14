@@ -9809,6 +9809,7 @@ function compareText(a, b) {
 }
 
 // src/load/tree.ts
+var IGNORED_DIRECTORIES = /* @__PURE__ */ new Set([".git", "node_modules"]);
 async function readFile(tree, path) {
   try {
     return ok(await tree.read(path));
@@ -9818,7 +9819,8 @@ async function readFile(tree, path) {
 }
 async function listFiles(tree) {
   try {
-    return ok(await tree.files());
+    const files = await tree.files();
+    return ok(files.filter((path) => !path.split("/").some((segment) => IGNORED_DIRECTORIES.has(segment))));
   } catch (error) {
     return err([fileProblem(".", `cannot list the repository files: ${messageOf(error)}`)]);
   }

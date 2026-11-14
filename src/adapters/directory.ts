@@ -1,8 +1,6 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { RepoTree } from "../load/index.ts";
-
-const PRUNED = new Set([".git", "node_modules"]);
+import { IGNORED_DIRECTORIES, type RepoTree } from "../load/index.ts";
 
 /** A RepoTree over a directory on disk: the Action's checkout, or a fixture in the tests. */
 export function directoryTree(root: string): RepoTree {
@@ -19,12 +17,13 @@ export function directoryTree(root: string): RepoTree {
   };
 }
 
+/** Skips ignored directories while walking, so an installed workspace costs no more to read than a fresh one. */
 async function walk(root: string, dir: string): Promise<string[]> {
   const found = await readdir(join(root, dir), { withFileTypes: true });
   const nested = await Promise.all(
     found.map(async (entry) => {
       const path = dir === "" ? entry.name : `${dir}/${entry.name}`;
-      if (entry.isDirectory()) return PRUNED.has(entry.name) ? [] : walk(root, path);
+      if (entry.isDirectory()) return IGNORED_DIRECTORIES.has(entry.name) ? [] : walk(root, path);
       return entry.isFile() ? [path] : [];
     }),
   );

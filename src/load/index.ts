@@ -7,7 +7,7 @@ import { readFile, type RepoTree } from "./tree.ts";
 import { discoverWorkspace } from "./workspace.ts";
 
 export { formatProblems, type Problem } from "./problem.ts";
-export type { RepoTree } from "./tree.ts";
+export { IGNORED_DIRECTORIES, type RepoTree } from "./tree.ts";
 
 /**
  * The boundary. A repository tree goes in, and out comes a routing model the core can trust, or

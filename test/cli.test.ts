@@ -119,6 +119,17 @@ describe("lane-router explain", () => {
     });
   });
 
+  it("ignores packages under a committed node_modules directory", async () => {
+    const repo = gitFixture(fixtureDir("pnpm-negated"), tempDir());
+    repo.write("packages/core/node_modules/copy/package.json", '{ "name": "@neg/core" }\n');
+    repo.write("packages/core/index.js", "export const core = 2;\n");
+    const head = repo.commit("Vendor a copy of core");
+
+    const { code, stdout } = await cli(["explain", "--base", repo.base, "--head", head, "--json"], repo.dir);
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout)).toMatchObject(decisions({ core: "run", lint: "run" }));
+  });
+
   it("exits 0 with every lane running when the revisions share no history", async () => {
     const repo = acmeRepo();
     repo.git("checkout", "--quiet", "--orphan", "unrelated");

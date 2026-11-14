@@ -28744,40 +28744,8 @@ function warning(message, properties = {}) {
 }
 
 // src/adapters/directory.ts
-import { readdir as readdir2, readFile } from "node:fs/promises";
+import { readdir as readdir2, readFile as readFile2 } from "node:fs/promises";
 import { join } from "node:path";
-var PRUNED = /* @__PURE__ */ new Set([".git", "node_modules"]);
-function directoryTree(root) {
-  return {
-    files: async () => (await walk(root, "")).sort(),
-    read: async (path) => {
-      try {
-        return await readFile(join(root, path), "utf8");
-      } catch (error2) {
-        if (isMissing(error2)) return void 0;
-        throw error2;
-      }
-    }
-  };
-}
-async function walk(root, dir) {
-  const found = await readdir2(join(root, dir), { withFileTypes: true });
-  const nested = await Promise.all(
-    found.map(async (entry) => {
-      const path = dir === "" ? entry.name : `${dir}/${entry.name}`;
-      if (entry.isDirectory()) return PRUNED.has(entry.name) ? [] : walk(root, path);
-      return entry.isFile() ? [path] : [];
-    })
-  );
-  return nested.flat();
-}
-function isMissing(error2) {
-  return error2 instanceof Error && "code" in error2 && (error2.code === "ENOENT" || error2.code === "ENOTDIR");
-}
-
-// src/adapters/git.ts
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 
 // src/result.ts
 function ok(value) {
@@ -28820,72 +28788,113 @@ function parseRepoPath(raw) {
   return isRepoPath(canonical) ? canonical : void 0;
 }
 
-// src/core/change.ts
-var vetted = /* @__PURE__ */ Symbol("vetted");
-function changedFiles(entries2, under = "") {
-  const prefix = under === "" ? "" : `${under.replace(/\/+$/, "")}/`;
-  const paths = /* @__PURE__ */ new Set();
-  let outside;
-  const listed = entries2.flatMap(({ path, previousPath }) => previousPath === null ? [path] : [previousPath, path]);
-  for (const raw of listed) {
-    const path = raw.startsWith(prefix) ? parseRepoPath(raw.slice(prefix.length)) : void 0;
-    if (path === void 0) outside ??= raw;
-    else paths.add(path);
-  }
-  const sorted = [...paths].sort();
-  if (outside !== void 0) return incomplete({ kind: "invalid-path", raw: outside }, sorted);
-  return { kind: "complete", paths: sorted, [vetted]: true };
+// src/core/glob.ts
+var import_posix = __toESM(require_posix(), 1);
+var OPTIONS = { dot: true };
+function compileGlobs({ match, except }) {
+  if (match.length === 0) return () => false;
+  return (0, import_posix.default)([...match], { ...OPTIONS, ignore: [...except] });
 }
-function incomplete(cause, paths = []) {
-  return { kind: "incomplete", cause, paths };
+function globProblem(glob2) {
+  if (glob2.trim() === "") return "a glob cannot be empty";
+  if (glob2.includes("\\")) return "use / as the path separator";
+  if (glob2.startsWith("/") || glob2.startsWith("./")) return "globs are relative to the repository root";
+  if (glob2.startsWith("!")) return "a glob cannot start with !";
+  try {
+    (0, import_posix.default)(glob2, OPTIONS);
+    return void 0;
+  } catch (error2) {
+    return messageOf(error2);
+  }
 }
 
-// src/adapters/git.ts
-var execFileAsync = promisify(execFile);
-var DIFF = ["diff", "--name-only", "--no-renames", "--no-relative", "-z"];
-function gitRepo(cwd) {
-  const git = async (args) => {
-    try {
-      const { stdout } = await execFileAsync("git", args, { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
-      return stdout;
-    } catch (error2) {
-      throw new Error(`git ${args.join(" ")} failed: ${stderrOf(error2)}`, { cause: error2 });
+// src/core/model.ts
+var VIAS = ["code", "tests", "name"];
+var VIA = {
+  code: { reaches: "closure", readsAsText: false },
+  tests: { reaches: "roots", readsAsText: false },
+  name: { reaches: "closure", readsAsText: true }
+};
+var NAMED = { kind: "named" };
+var NO_LANES = /* @__PURE__ */ new Map();
+function compile(input) {
+  const { config, workspace } = input;
+  const lanes = config.lanes.map(({ name, floor, check }) => ({ name, floor, check }));
+  const graph = dependencyGraph(workspace, config.edges);
+  const reaches = {
+    closure: /* @__PURE__ */ new Map(),
+    roots: /* @__PURE__ */ new Map()
+  };
+  for (const lane of config.lanes) {
+    for (const [name, chain] of shortestChains(graph, lane.packages)) {
+      addReach(reaches.closure, name, lane.name, { kind: "reads", chain });
+    }
+    for (const name of lane.packages) addReach(reaches.roots, name, lane.name, { kind: "reads", chain: [name] });
+  }
+  const everyLane = new Map(lanes.map((lane) => [lane.name, NAMED]));
+  const rowReach = (target) => {
+    switch (target.kind) {
+      case "lanes": {
+        const named = target.lanes;
+        if (named === "all") return everyLane;
+        return new Map(lanes.filter((lane) => named.includes(lane.name)).map((lane) => [lane.name, NAMED]));
+      }
+      case "packages": {
+        const index = reaches[VIA[target.via].reaches];
+        const reach = /* @__PURE__ */ new Map();
+        for (const lane of lanes) {
+          const through = target.packages.map((name) => index.get(name)?.get(lane.name)).find((found) => !!found);
+          if (through) reach.set(lane.name, through);
+        }
+        return reach;
+      }
+      default: {
+        const _exhaustive = target;
+        return _exhaustive;
+      }
     }
   };
-  const prefix = async () => (await git(["rev-parse", "--show-prefix"])).trim();
   return {
-    resolve: async (ref) => {
-      try {
-        return (await git(["rev-parse", "--verify", "--quiet", "--end-of-options", `${ref}^{commit}`])).trim();
-      } catch {
-        return void 0;
-      }
-    },
-    treeAt: (commit) => {
-      let listing;
-      const files = () => listing ??= git(["ls-tree", "-r", "--name-only", "-z", commit]).then((output) => new Set(split(output)));
-      return {
-        files: async () => [...await files()].sort(),
-        read: async (path) => (await files()).has(path) ? git(["cat-file", "blob", `${commit}:./${path}`]) : void 0
-      };
-    },
-    changes: async (range) => {
-      if (range.base === null) return incomplete({ kind: "no-base" });
-      const output = await git([...DIFF, `${range.base}...${range.head}`]);
-      return changedFiles(
-        split(output).map((path) => ({ path, previousPath: null })),
-        await prefix()
-      );
-    },
-    prefix
+    configPath: input.configPath,
+    lanes,
+    rows: config.rows.map(({ match, target, why }, index) => ({
+      row: { index, why, target },
+      hits: compileGlobs({ match, except: [] }),
+      reach: rowReach(target)
+    })),
+    isDocs: compileGlobs(config.docsOnly),
+    packagesByDir: new Map(
+      [...workspace.packages.values()].map(
+        ({ name, dir }) => [dir, { name, dir, reach: reaches.closure.get(name) ?? NO_LANES }]
+      )
+    ),
+    everyLane
   };
 }
-function split(output) {
-  return output.split("\0").filter((entry) => entry !== "");
+function dependencyGraph(workspace, edges) {
+  const graph = /* @__PURE__ */ new Map();
+  for (const { name, dependencies } of workspace.packages.values()) graph.set(name, [...dependencies]);
+  for (const { from, to } of edges) graph.get(from)?.push(to);
+  return graph;
 }
-function stderrOf(error2) {
-  const stderr = error2 instanceof Error && "stderr" in error2 ? error2.stderr : void 0;
-  return typeof stderr === "string" && stderr.trim() !== "" ? stderr.trim() : String(error2);
+function shortestChains(graph, roots) {
+  const chains = /* @__PURE__ */ new Map();
+  const queue = [];
+  const visit = (name, chain) => {
+    if (chains.has(name)) return;
+    chains.set(name, chain);
+    queue.push({ name, chain });
+  };
+  for (const root of roots) visit(root, [root]);
+  for (const { name, chain } of queue) {
+    for (const next of graph.get(name) ?? []) visit(next, [...chain, next]);
+  }
+  return chains;
+}
+function addReach(index, name, lane, through) {
+  const reach = index.get(name) ?? /* @__PURE__ */ new Map();
+  index.set(name, reach);
+  reach.set(lane, through);
 }
 
 // src/decode.ts
@@ -29018,396 +29027,6 @@ function editDistance(a, b) {
     previous = current;
   }
   return previous[b.length] ?? 0;
-}
-
-// src/adapters/github.ts
-var COMPARE_LIMIT = 300;
-var PAGE = 100;
-var IGNORE = { unknownKeys: "ignore" };
-var sha = (key) => object((field) => field(key, nonEmptyString), IGNORE);
-var pullRequestEvent = object(
-  (field) => field(
-    "pull_request",
-    object((pull) => {
-      const base = pull("base", sha("sha"));
-      const head = pull("head", sha("sha"));
-      const changedFiles2 = pull("changed_files", integer(0));
-      return isValid(base) && isValid(head) && isValid(changedFiles2) ? { kind: "pull_request", base, head, changedFiles: changedFiles2 } : INVALID;
-    }, IGNORE)
-  ),
-  IGNORE
-);
-var pushEvent = object((field) => {
-  const before = field("before", nonEmptyString);
-  const after = field("after", nonEmptyString);
-  if (!isValid(before) || !isValid(after)) return INVALID;
-  return { kind: "push", before: /^0+$/.test(before) ? null : before, after };
-}, IGNORE);
-var EVENT_DECODERS = /* @__PURE__ */ new Map([
-  ["pull_request", pullRequestEvent],
-  ["pull_request_target", pullRequestEvent],
-  ["push", pushEvent]
-]);
-function readEvent(name, payload) {
-  const decoder = EVENT_DECODERS.get(name);
-  if (decoder === void 0) return ok({ kind: "other", name });
-  const decoded = decode(decoder, payload);
-  return decoded.ok ? decoded : err(mapNonEmpty(decoded.error, (issue2) => `the ${name} event payload ${describe(issue2)}`));
-}
-var compareResponse = object(
-  (field) => field(
-    "files",
-    array(
-      object((file) => {
-        const path = file("filename", nonEmptyString);
-        const previousPath = file("previous_filename", optional(string));
-        return isValid(path) && isValid(previousPath) ? { path, previousPath: previousPath ?? null } : INVALID;
-      }, IGNORE)
-    )
-  ),
-  IGNORE
-);
-var commitsResponse = array(
-  object((field) => {
-    const sha2 = field("sha", nonEmptyString);
-    const parents = field("parents", array(object((parent) => parent("sha", nonEmptyString), IGNORE)));
-    return isValid(sha2) && isValid(parents) ? { sha: sha2, firstParent: parents[0] ?? null } : INVALID;
-  }, IGNORE)
-);
-var checkRunsResponse = object((field) => {
-  const total = field("total_count", integer(0));
-  const runs = field(
-    "check_runs",
-    array(
-      object((run) => {
-        const fields = {
-          name: run("name", string),
-          status: run("status", string),
-          conclusion: run("conclusion", nullable(string))
-        };
-        return allValid(fields) ? fields : INVALID;
-      }, IGNORE)
-    )
-  );
-  return isValid(total) && isValid(runs) ? { total, runs } : INVALID;
-}, IGNORE);
-function passed(runs, check) {
-  const named = runs.filter((run) => run.name === check);
-  return named.length > 0 && named.every((run) => run.status === "completed" && run.conclusion === "success");
-}
-function githubRepo(options) {
-  const get = async (path, decoder) => {
-    const response = await fetch(`${options.apiUrl}/repos/${options.repository}${path}`, {
-      headers: {
-        Accept: "application/vnd.github+json",
-        "User-Agent": "lane-router",
-        "X-GitHub-Api-Version": "2022-11-28",
-        ...options.token === "" ? {} : { Authorization: `Bearer ${options.token}` }
-      }
-    });
-    if (!response.ok) throw new Error(`GET ${path} returned ${String(response.status)} ${response.statusText}`.trim());
-    const body = await response.json();
-    const decoded = decode(decoder, body);
-    if (!decoded.ok)
-      throw new Error(`GET ${path} returned a body lane-router cannot read: ${describe(decoded.error[0])}`);
-    return decoded.value;
-  };
-  const checkRuns = async (commit) => {
-    const runs = [];
-    for (let page = 1; ; page++) {
-      const body = await get(
-        `/commits/${commit}/check-runs?filter=latest&per_page=${String(PAGE)}&page=${String(page)}`,
-        checkRunsResponse
-      );
-      runs.push(...body.runs);
-      if (body.runs.length < PAGE || runs.length >= body.total) return runs;
-    }
-  };
-  const firstParents = async function* (head, depth) {
-    const parentOf = /* @__PURE__ */ new Map();
-    let page = 1;
-    let more = true;
-    let cursor = head;
-    for (let step = 0; step < depth; step++) {
-      while (!parentOf.has(cursor) && more && page <= depth) {
-        const commits = await get(
-          `/commits?sha=${encodeURIComponent(head)}&per_page=${String(PAGE)}&page=${String(page)}`,
-          commitsResponse
-        );
-        for (const { sha: sha2, firstParent } of commits) parentOf.set(sha2, firstParent);
-        more = commits.length === PAGE;
-        page += 1;
-      }
-      const parent = parentOf.get(cursor);
-      if (parent === void 0 || parent === null) return;
-      yield parent;
-      cursor = parent;
-    }
-  };
-  return {
-    lastGreen: ({ head, depth }) => ({
-      depth,
-      proofs: async (lanes) => {
-        const found = /* @__PURE__ */ new Map();
-        for await (const commit of firstParents(head, depth)) {
-          const runs = await checkRuns(commit);
-          for (const lane of lanes) {
-            if (!found.has(lane.name) && passed(runs, lane.check)) found.set(lane.name, commit);
-          }
-          if (found.size === lanes.length) break;
-        }
-        return found;
-      }
-    }),
-    compare: async (range, { expectedCount, under }) => {
-      if (range.base === null) return incomplete({ kind: "no-base" });
-      const listed = await get(
-        `/compare/${encodeURIComponent(range.base)}...${encodeURIComponent(range.head)}`,
-        compareResponse
-      );
-      const files = changedFiles(listed, under);
-      if (listed.length >= COMPARE_LIMIT) {
-        return incomplete({ kind: "truncated", listed: listed.length, limit: COMPARE_LIMIT }, files.paths);
-      }
-      if (expectedCount !== null && listed.length !== expectedCount) {
-        return incomplete({ kind: "count-mismatch", listed: listed.length, expected: expectedCount }, files.paths);
-      }
-      return files;
-    }
-  };
-}
-function describe({ path, message }) {
-  return path.length === 0 ? message : `${formatDataPath(path)} ${message}`;
-}
-
-// src/core/glob.ts
-var import_posix = __toESM(require_posix(), 1);
-var OPTIONS = { dot: true };
-function compileGlobs({ match, except }) {
-  if (match.length === 0) return () => false;
-  return (0, import_posix.default)([...match], { ...OPTIONS, ignore: [...except] });
-}
-function globProblem(glob2) {
-  if (glob2.trim() === "") return "a glob cannot be empty";
-  if (glob2.includes("\\")) return "use / as the path separator";
-  if (glob2.startsWith("/") || glob2.startsWith("./")) return "globs are relative to the repository root";
-  if (glob2.startsWith("!")) return "a glob cannot start with !";
-  try {
-    (0, import_posix.default)(glob2, OPTIONS);
-    return void 0;
-  } catch (error2) {
-    return messageOf(error2);
-  }
-}
-
-// src/core/model.ts
-var VIAS = ["code", "tests", "name"];
-var VIA = {
-  code: { reaches: "closure", readsAsText: false },
-  tests: { reaches: "roots", readsAsText: false },
-  name: { reaches: "closure", readsAsText: true }
-};
-var NAMED = { kind: "named" };
-var NO_LANES = /* @__PURE__ */ new Map();
-function compile(input) {
-  const { config, workspace } = input;
-  const lanes = config.lanes.map(({ name, floor, check }) => ({ name, floor, check }));
-  const graph = dependencyGraph(workspace, config.edges);
-  const reaches = {
-    closure: /* @__PURE__ */ new Map(),
-    roots: /* @__PURE__ */ new Map()
-  };
-  for (const lane of config.lanes) {
-    for (const [name, chain] of shortestChains(graph, lane.packages)) {
-      addReach(reaches.closure, name, lane.name, { kind: "reads", chain });
-    }
-    for (const name of lane.packages) addReach(reaches.roots, name, lane.name, { kind: "reads", chain: [name] });
-  }
-  const everyLane = new Map(lanes.map((lane) => [lane.name, NAMED]));
-  const rowReach = (target) => {
-    switch (target.kind) {
-      case "lanes": {
-        const named = target.lanes;
-        if (named === "all") return everyLane;
-        return new Map(lanes.filter((lane) => named.includes(lane.name)).map((lane) => [lane.name, NAMED]));
-      }
-      case "packages": {
-        const index = reaches[VIA[target.via].reaches];
-        const reach = /* @__PURE__ */ new Map();
-        for (const lane of lanes) {
-          const through = target.packages.map((name) => index.get(name)?.get(lane.name)).find((found) => !!found);
-          if (through) reach.set(lane.name, through);
-        }
-        return reach;
-      }
-      default: {
-        const _exhaustive = target;
-        return _exhaustive;
-      }
-    }
-  };
-  return {
-    configPath: input.configPath,
-    lanes,
-    rows: config.rows.map(({ match, target, why }, index) => ({
-      row: { index, why, target },
-      hits: compileGlobs({ match, except: [] }),
-      reach: rowReach(target)
-    })),
-    isDocs: compileGlobs(config.docsOnly),
-    packagesByDir: new Map(
-      [...workspace.packages.values()].map(
-        ({ name, dir }) => [dir, { name, dir, reach: reaches.closure.get(name) ?? NO_LANES }]
-      )
-    ),
-    everyLane
-  };
-}
-function dependencyGraph(workspace, edges) {
-  const graph = /* @__PURE__ */ new Map();
-  for (const { name, dependencies } of workspace.packages.values()) graph.set(name, [...dependencies]);
-  for (const { from, to } of edges) graph.get(from)?.push(to);
-  return graph;
-}
-function shortestChains(graph, roots) {
-  const chains = /* @__PURE__ */ new Map();
-  const queue = [];
-  const visit = (name, chain) => {
-    if (chains.has(name)) return;
-    chains.set(name, chain);
-    queue.push({ name, chain });
-  };
-  for (const root of roots) visit(root, [root]);
-  for (const { name, chain } of queue) {
-    for (const next of graph.get(name) ?? []) visit(next, [...chain, next]);
-  }
-  return chains;
-}
-function addReach(index, name, lane, through) {
-  const reach = index.get(name) ?? /* @__PURE__ */ new Map();
-  index.set(name, reach);
-  reach.set(lane, through);
-}
-
-// src/core/route.ts
-var proven = /* @__PURE__ */ Symbol("proven");
-var NO_LANES2 = /* @__PURE__ */ new Map();
-function route(model, range, files) {
-  const paths = files.paths.map((path) => ({ path, placements: place(model, path) }));
-  if (files.kind === "incomplete") return { kind: "incomplete", range, cause: files.cause, paths };
-  if (!isNonEmpty(paths)) return { kind: "empty", range };
-  return { kind: paths.every(({ path }) => model.isDocs(path)) ? "docs-only" : "ordinary", range, paths };
-}
-function place(model, path) {
-  const placements = [];
-  if (path === model.configPath) placements.push({ kind: "config", reach: model.everyLane });
-  for (const { row, hits, reach } of model.rows) {
-    if (hits(path)) placements.push({ kind: "row", row, reach });
-  }
-  const owner = owningPackage(model, path);
-  if (owner !== void 0) placements.push({ kind: "package", package: owner.name, reach: owner.reach });
-  if (model.isDocs(path)) placements.push({ kind: "docs", reach: NO_LANES2 });
-  return isNonEmpty(placements) ? placements : [{ kind: "unmatched", reach: model.everyLane }];
-}
-function owningPackage(model, path) {
-  const segments = path.split("/");
-  for (let depth = segments.length - 1; depth > 0; depth--) {
-    const scope = model.packagesByDir.get(segments.slice(0, depth).join("/"));
-    if (scope !== void 0) return scope;
-  }
-  return void 0;
-}
-function decide(routing, lane) {
-  switch (routing.kind) {
-    case "incomplete":
-      return { kind: "run", because: [{ kind: "incomplete", cause: routing.cause }] };
-    case "empty":
-      return skip("no-changes");
-    case "docs-only":
-    case "ordinary": {
-      const because = routing.paths.flatMap(
-        ({ path, placements }) => placements.flatMap((placement) => {
-          const through = placement.reach.get(lane.name);
-          return through !== void 0 && counts(routing, placement) ? [{ kind: "placement", path, placement, through }] : [];
-        })
-      );
-      if (routing.kind === "ordinary" && lane.floor) because.push({ kind: "floor" });
-      if (isNonEmpty(because)) return { kind: "run", because };
-      return skip(routing.kind === "docs-only" ? "docs-only" : "untouched");
-    }
-    default: {
-      const _exhaustive = routing;
-      return _exhaustive;
-    }
-  }
-}
-function skip(because) {
-  return { kind: "skip", because, [proven]: true };
-}
-function counts(routing, placement) {
-  return routing.kind !== "docs-only" || readsAsText(placement);
-}
-function readsAsText(placement) {
-  switch (placement.kind) {
-    case "config":
-      return true;
-    case "row": {
-      const { target } = placement.row;
-      return target.kind === "lanes" || VIA[target.via].readsAsText;
-    }
-    case "package":
-      return false;
-    case "docs":
-    case "unmatched":
-      return true;
-    default: {
-      const _exhaustive = placement;
-      return _exhaustive;
-    }
-  }
-}
-
-// src/core/plan.ts
-var planned = /* @__PURE__ */ Symbol("planned");
-async function planLanes(model, request) {
-  try {
-    return await plan(model, request);
-  } catch (error2) {
-    const event = route(model, request.range, incomplete({ kind: "error", message: messageOf(error2) }));
-    return sealed(request.mode, event, decideOver(model, event));
-  }
-}
-async function plan(model, request) {
-  const event = route(model, request.range, await request.changes(request.range));
-  if (request.mode === "pr" || request.lastGreen === null) return sealed(request.mode, event, decideOver(model, event));
-  const { depth, proofs: findProofs } = request.lastGreen;
-  const proofs = await findProofs(model.lanes);
-  const routeSince = async (proof) => {
-    if (proof === request.range.base) return [proof, event];
-    const range = { base: proof, head: request.range.head };
-    return [proof, route(model, range, await request.changes(range))];
-  };
-  const sinceProof = new Map(await Promise.all([...new Set(proofs.values())].map(routeSince)));
-  const lanes = model.lanes.map((lane) => {
-    const proof = proofs.get(lane.name);
-    const since = proof === void 0 ? void 0 : sinceProof.get(proof);
-    if (since === void 0)
-      return { lane, since: null, decision: { kind: "run", because: [{ kind: "no-proof", depth }] } };
-    return { lane, since, decision: decide(since, lane) };
-  });
-  return sealed(request.mode, event, lanes);
-}
-function decideOver(model, event) {
-  return model.lanes.map((lane) => ({ lane, since: null, decision: decide(event, lane) }));
-}
-function sealed(mode, event, lanes) {
-  return { mode, event, lanes, [planned]: true };
-}
-function isComplete(plan2) {
-  return [plan2.event, ...plan2.lanes.map(({ since }) => since)].every((routing) => routing?.kind !== "incomplete");
-}
-function baseOf(plan2, lane) {
-  return lane.since?.range.base ?? plan2.event.range.base;
 }
 
 // src/load/yaml.ts
@@ -29614,7 +29233,8 @@ function compareText(a, b) {
 }
 
 // src/load/tree.ts
-async function readFile2(tree, path) {
+var IGNORED_DIRECTORIES = /* @__PURE__ */ new Set([".git", "node_modules"]);
+async function readFile(tree, path) {
   try {
     return ok(await tree.read(path));
   } catch (error2) {
@@ -29623,7 +29243,8 @@ async function readFile2(tree, path) {
 }
 async function listFiles(tree) {
   try {
-    return ok(await tree.files());
+    const files = await tree.files();
+    return ok(files.filter((path) => !path.split("/").some((segment) => IGNORED_DIRECTORIES.has(segment))));
   } catch (error2) {
     return err([fileProblem(".", `cannot list the repository files: ${messageOf(error2)}`)]);
   }
@@ -29634,7 +29255,7 @@ var PNPM_FILE = "pnpm-workspace.yaml";
 var ROOT_MANIFEST = "package.json";
 var MANIFEST = "/package.json";
 var DEPENDENCY_FIELDS = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"];
-var IGNORE2 = { unknownKeys: "ignore" };
+var IGNORE = { unknownKeys: "ignore" };
 async function discoverWorkspace(tree, discovery) {
   const globs = await workspaceGlobs(tree, discovery);
   if (!globs.ok) return globs;
@@ -29670,12 +29291,12 @@ async function discoverWorkspace(tree, discovery) {
 }
 async function workspaceGlobs(tree, discovery) {
   if (discovery !== "npm") {
-    const pnpm = await readFile2(tree, PNPM_FILE);
+    const pnpm = await readFile(tree, PNPM_FILE);
     if (!pnpm.ok) return pnpm;
     if (pnpm.value !== void 0) return pnpmGlobs(pnpm.value);
     if (discovery === "pnpm") return err([fileProblem(PNPM_FILE, "not found, and workspace.discovery is pnpm")]);
   }
-  const manifest = await readFile2(tree, ROOT_MANIFEST);
+  const manifest = await readFile(tree, ROOT_MANIFEST);
   if (!manifest.ok) return manifest;
   if (manifest.value === void 0) {
     return err([
@@ -29691,17 +29312,17 @@ function pnpmGlobs(source) {
   const file = parseYaml(PNPM_FILE, source);
   if (!file.ok) return file;
   const decoded = decode(
-    object((field) => field("packages", withDefault(array(workspaceGlob), [])), IGNORE2),
+    object((field) => field("packages", withDefault(array(workspaceGlob), [])), IGNORE),
     file.value.value
   );
   return decoded.ok ? ok(globSet(decoded.value)) : err(mapNonEmpty(decoded.error, file.value.locate));
 }
-var npmWorkspaces = (input, context) => Array.isArray(input) ? array(workspaceGlob)(input, context) : object((field) => field("packages", array(workspaceGlob)), IGNORE2)(input, context);
+var npmWorkspaces = (input, context) => Array.isArray(input) ? array(workspaceGlob)(input, context) : object((field) => field("packages", array(workspaceGlob)), IGNORE)(input, context);
 function npmGlobs(source) {
   const json = parseJson(ROOT_MANIFEST, source);
   if (!json.ok) return json;
   const decoded = decode(
-    object((field) => field("workspaces", npmWorkspaces), IGNORE2),
+    object((field) => field("workspaces", npmWorkspaces), IGNORE),
     json.value
   );
   return decoded.ok ? ok(globSet(decoded.value)) : err(jsonProblems(ROOT_MANIFEST, decoded.error));
@@ -29723,10 +29344,10 @@ var manifestDecoder = object((field) => {
   const dependencies = DEPENDENCY_FIELDS.map((key) => field(key, withDefault(entries(string, unknownValue), [])));
   if (!isValid(name) || !dependencies.every(isValid)) return INVALID;
   return { name, dependencies: dependencies.flat().map(([dependency]) => dependency) };
-}, IGNORE2);
+}, IGNORE);
 async function readManifest(tree, dir) {
   const file = dir + MANIFEST;
-  const source = await readFile2(tree, file);
+  const source = await readFile(tree, file);
   if (!source.ok || source.value === void 0) return source.ok ? ok(void 0) : source;
   const json = parseJson(file, source.value);
   if (!json.ok) return json;
@@ -29756,7 +29377,7 @@ function jsonProblems(file, issues) {
 async function loadModel(tree, configPath) {
   const path = parseRepoPath(configPath);
   if (path === void 0) return err([fileProblem(configPath, "is not a path inside the repository")]);
-  const source = await readFile2(tree, path);
+  const source = await readFile(tree, path);
   if (!source.ok) return source;
   if (source.value === void 0) return err([fileProblem(path, "not found")]);
   const config = openConfig(path, source.value);
@@ -29769,6 +29390,388 @@ async function loadModel(tree, configPath) {
   const resolved = config.value.resolve(workspace.value);
   if (!resolved.ok) return resolved;
   return ok(compile({ configPath: path, config: resolved.value, workspace: workspace.value }));
+}
+
+// src/adapters/directory.ts
+function directoryTree(root) {
+  return {
+    files: async () => (await walk(root, "")).sort(),
+    read: async (path) => {
+      try {
+        return await readFile2(join(root, path), "utf8");
+      } catch (error2) {
+        if (isMissing(error2)) return void 0;
+        throw error2;
+      }
+    }
+  };
+}
+async function walk(root, dir) {
+  const found = await readdir2(join(root, dir), { withFileTypes: true });
+  const nested = await Promise.all(
+    found.map(async (entry) => {
+      const path = dir === "" ? entry.name : `${dir}/${entry.name}`;
+      if (entry.isDirectory()) return IGNORED_DIRECTORIES.has(entry.name) ? [] : walk(root, path);
+      return entry.isFile() ? [path] : [];
+    })
+  );
+  return nested.flat();
+}
+function isMissing(error2) {
+  return error2 instanceof Error && "code" in error2 && (error2.code === "ENOENT" || error2.code === "ENOTDIR");
+}
+
+// src/adapters/git.ts
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+// src/core/change.ts
+var vetted = /* @__PURE__ */ Symbol("vetted");
+function changedFiles(entries2, under = "") {
+  const prefix = under === "" ? "" : `${under.replace(/\/+$/, "")}/`;
+  const paths = /* @__PURE__ */ new Set();
+  let outside;
+  const listed = entries2.flatMap(({ path, previousPath }) => previousPath === null ? [path] : [previousPath, path]);
+  for (const raw of listed) {
+    const path = raw.startsWith(prefix) ? parseRepoPath(raw.slice(prefix.length)) : void 0;
+    if (path === void 0) outside ??= raw;
+    else paths.add(path);
+  }
+  const sorted = [...paths].sort();
+  if (outside !== void 0) return incomplete({ kind: "invalid-path", raw: outside }, sorted);
+  return { kind: "complete", paths: sorted, [vetted]: true };
+}
+function incomplete(cause, paths = []) {
+  return { kind: "incomplete", cause, paths };
+}
+
+// src/adapters/git.ts
+var execFileAsync = promisify(execFile);
+var DIFF = ["diff", "--name-only", "--no-renames", "--no-relative", "-z"];
+function gitRepo(cwd) {
+  const git = async (args) => {
+    try {
+      const { stdout } = await execFileAsync("git", args, { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+      return stdout;
+    } catch (error2) {
+      throw new Error(`git ${args.join(" ")} failed: ${stderrOf(error2)}`, { cause: error2 });
+    }
+  };
+  const prefix = async () => (await git(["rev-parse", "--show-prefix"])).trim();
+  return {
+    resolve: async (ref) => {
+      try {
+        return (await git(["rev-parse", "--verify", "--quiet", "--end-of-options", `${ref}^{commit}`])).trim();
+      } catch {
+        return void 0;
+      }
+    },
+    treeAt: (commit) => {
+      let listing;
+      const files = () => listing ??= git(["ls-tree", "-r", "--name-only", "-z", commit]).then((output) => new Set(split(output)));
+      return {
+        files: async () => [...await files()].sort(),
+        read: async (path) => (await files()).has(path) ? git(["cat-file", "blob", `${commit}:./${path}`]) : void 0
+      };
+    },
+    changes: async (range) => {
+      if (range.base === null) return incomplete({ kind: "no-base" });
+      const output = await git([...DIFF, `${range.base}...${range.head}`]);
+      return changedFiles(
+        split(output).map((path) => ({ path, previousPath: null })),
+        await prefix()
+      );
+    },
+    prefix
+  };
+}
+function split(output) {
+  return output.split("\0").filter((entry) => entry !== "");
+}
+function stderrOf(error2) {
+  const stderr = error2 instanceof Error && "stderr" in error2 ? error2.stderr : void 0;
+  return typeof stderr === "string" && stderr.trim() !== "" ? stderr.trim() : String(error2);
+}
+
+// src/adapters/github.ts
+var COMPARE_LIMIT = 300;
+var PAGE = 100;
+var IGNORE2 = { unknownKeys: "ignore" };
+var sha = (key) => object((field) => field(key, nonEmptyString), IGNORE2);
+var pullRequestEvent = object(
+  (field) => field(
+    "pull_request",
+    object((pull) => {
+      const base = pull("base", sha("sha"));
+      const head = pull("head", sha("sha"));
+      const changedFiles2 = pull("changed_files", integer(0));
+      return isValid(base) && isValid(head) && isValid(changedFiles2) ? { kind: "pull_request", base, head, changedFiles: changedFiles2 } : INVALID;
+    }, IGNORE2)
+  ),
+  IGNORE2
+);
+var pushEvent = object((field) => {
+  const before = field("before", nonEmptyString);
+  const after = field("after", nonEmptyString);
+  if (!isValid(before) || !isValid(after)) return INVALID;
+  return { kind: "push", before: /^0+$/.test(before) ? null : before, after };
+}, IGNORE2);
+var EVENT_DECODERS = /* @__PURE__ */ new Map([
+  ["pull_request", pullRequestEvent],
+  ["pull_request_target", pullRequestEvent],
+  ["push", pushEvent]
+]);
+function readEvent(name, payload) {
+  const decoder = EVENT_DECODERS.get(name);
+  if (decoder === void 0) return ok({ kind: "other", name });
+  const decoded = decode(decoder, payload);
+  return decoded.ok ? decoded : err(mapNonEmpty(decoded.error, (issue2) => `the ${name} event payload ${describe(issue2)}`));
+}
+var compareResponse = object(
+  (field) => field(
+    "files",
+    array(
+      object((file) => {
+        const path = file("filename", nonEmptyString);
+        const previousPath = file("previous_filename", optional(string));
+        return isValid(path) && isValid(previousPath) ? { path, previousPath: previousPath ?? null } : INVALID;
+      }, IGNORE2)
+    )
+  ),
+  IGNORE2
+);
+var commitsResponse = array(
+  object((field) => {
+    const sha2 = field("sha", nonEmptyString);
+    const parents = field("parents", array(object((parent) => parent("sha", nonEmptyString), IGNORE2)));
+    return isValid(sha2) && isValid(parents) ? { sha: sha2, firstParent: parents[0] ?? null } : INVALID;
+  }, IGNORE2)
+);
+var checkRunsResponse = object((field) => {
+  const total = field("total_count", integer(0));
+  const runs = field(
+    "check_runs",
+    array(
+      object((run) => {
+        const fields = {
+          name: run("name", string),
+          status: run("status", string),
+          conclusion: run("conclusion", nullable(string))
+        };
+        return allValid(fields) ? fields : INVALID;
+      }, IGNORE2)
+    )
+  );
+  return isValid(total) && isValid(runs) ? { total, runs } : INVALID;
+}, IGNORE2);
+function passed(runs, check) {
+  const named = runs.filter((run) => run.name === check);
+  return named.length > 0 && named.every((run) => run.status === "completed" && run.conclusion === "success");
+}
+function githubRepo(options) {
+  const get = async (path, decoder) => {
+    const response = await fetch(`${options.apiUrl}/repos/${options.repository}${path}`, {
+      headers: {
+        Accept: "application/vnd.github+json",
+        "User-Agent": "lane-router",
+        "X-GitHub-Api-Version": "2022-11-28",
+        ...options.token === "" ? {} : { Authorization: `Bearer ${options.token}` }
+      }
+    });
+    if (!response.ok) throw new Error(`GET ${path} returned ${String(response.status)} ${response.statusText}`.trim());
+    const body = await response.json();
+    const decoded = decode(decoder, body);
+    if (!decoded.ok)
+      throw new Error(`GET ${path} returned a body lane-router cannot read: ${describe(decoded.error[0])}`);
+    return decoded.value;
+  };
+  const checkRuns = async (commit) => {
+    const runs = [];
+    for (let page = 1; ; page++) {
+      const body = await get(
+        `/commits/${commit}/check-runs?filter=latest&per_page=${String(PAGE)}&page=${String(page)}`,
+        checkRunsResponse
+      );
+      runs.push(...body.runs);
+      if (body.runs.length < PAGE || runs.length >= body.total) return runs;
+    }
+  };
+  const firstParents = async function* (head, depth) {
+    const parentOf = /* @__PURE__ */ new Map();
+    let page = 1;
+    let more = true;
+    let cursor = head;
+    for (let step = 0; step < depth; step++) {
+      while (!parentOf.has(cursor) && more && page <= depth) {
+        const commits = await get(
+          `/commits?sha=${encodeURIComponent(head)}&per_page=${String(PAGE)}&page=${String(page)}`,
+          commitsResponse
+        );
+        for (const { sha: sha2, firstParent } of commits) parentOf.set(sha2, firstParent);
+        more = commits.length === PAGE;
+        page += 1;
+      }
+      const parent = parentOf.get(cursor);
+      if (parent === void 0 || parent === null) return;
+      yield parent;
+      cursor = parent;
+    }
+  };
+  return {
+    lastGreen: ({ head, depth }) => ({
+      depth,
+      proofs: async (lanes) => {
+        const found = /* @__PURE__ */ new Map();
+        for await (const commit of firstParents(head, depth)) {
+          const runs = await checkRuns(commit);
+          for (const lane of lanes) {
+            if (!found.has(lane.name) && passed(runs, lane.check)) found.set(lane.name, commit);
+          }
+          if (found.size === lanes.length) break;
+        }
+        return found;
+      }
+    }),
+    compare: async (range, { expectedCount, under }) => {
+      if (range.base === null) return incomplete({ kind: "no-base" });
+      const listed = await get(
+        `/compare/${encodeURIComponent(range.base)}...${encodeURIComponent(range.head)}`,
+        compareResponse
+      );
+      const files = changedFiles(listed, under);
+      if (listed.length >= COMPARE_LIMIT) {
+        return incomplete({ kind: "truncated", listed: listed.length, limit: COMPARE_LIMIT }, files.paths);
+      }
+      if (expectedCount !== null && listed.length !== expectedCount) {
+        return incomplete({ kind: "count-mismatch", listed: listed.length, expected: expectedCount }, files.paths);
+      }
+      return files;
+    }
+  };
+}
+function describe({ path, message }) {
+  return path.length === 0 ? message : `${formatDataPath(path)} ${message}`;
+}
+
+// src/core/route.ts
+var proven = /* @__PURE__ */ Symbol("proven");
+var NO_LANES2 = /* @__PURE__ */ new Map();
+function route(model, range, files) {
+  const paths = files.paths.map((path) => ({ path, placements: place(model, path) }));
+  if (files.kind === "incomplete") return { kind: "incomplete", range, cause: files.cause, paths };
+  if (!isNonEmpty(paths)) return { kind: "empty", range };
+  return { kind: paths.every(({ path }) => model.isDocs(path)) ? "docs-only" : "ordinary", range, paths };
+}
+function place(model, path) {
+  const placements = [];
+  if (path === model.configPath) placements.push({ kind: "config", reach: model.everyLane });
+  for (const { row, hits, reach } of model.rows) {
+    if (hits(path)) placements.push({ kind: "row", row, reach });
+  }
+  const owner = owningPackage(model, path);
+  if (owner !== void 0) placements.push({ kind: "package", package: owner.name, reach: owner.reach });
+  if (model.isDocs(path)) placements.push({ kind: "docs", reach: NO_LANES2 });
+  return isNonEmpty(placements) ? placements : [{ kind: "unmatched", reach: model.everyLane }];
+}
+function owningPackage(model, path) {
+  const segments = path.split("/");
+  for (let depth = segments.length - 1; depth > 0; depth--) {
+    const scope = model.packagesByDir.get(segments.slice(0, depth).join("/"));
+    if (scope !== void 0) return scope;
+  }
+  return void 0;
+}
+function decide(routing, lane) {
+  switch (routing.kind) {
+    case "incomplete":
+      return { kind: "run", because: [{ kind: "incomplete", cause: routing.cause }] };
+    case "empty":
+      return skip("no-changes");
+    case "docs-only":
+    case "ordinary": {
+      const because = routing.paths.flatMap(
+        ({ path, placements }) => placements.flatMap((placement) => {
+          const through = placement.reach.get(lane.name);
+          return through !== void 0 && counts(routing, placement) ? [{ kind: "placement", path, placement, through }] : [];
+        })
+      );
+      if (routing.kind === "ordinary" && lane.floor) because.push({ kind: "floor" });
+      if (isNonEmpty(because)) return { kind: "run", because };
+      return skip(routing.kind === "docs-only" ? "docs-only" : "untouched");
+    }
+    default: {
+      const _exhaustive = routing;
+      return _exhaustive;
+    }
+  }
+}
+function skip(because) {
+  return { kind: "skip", because, [proven]: true };
+}
+function counts(routing, placement) {
+  return routing.kind !== "docs-only" || readsAsText(placement);
+}
+function readsAsText(placement) {
+  switch (placement.kind) {
+    case "config":
+      return true;
+    case "row": {
+      const { target } = placement.row;
+      return target.kind === "lanes" || VIA[target.via].readsAsText;
+    }
+    case "package":
+      return false;
+    case "docs":
+    case "unmatched":
+      return true;
+    default: {
+      const _exhaustive = placement;
+      return _exhaustive;
+    }
+  }
+}
+
+// src/core/plan.ts
+var planned = /* @__PURE__ */ Symbol("planned");
+async function planLanes(model, request) {
+  try {
+    return await plan(model, request);
+  } catch (error2) {
+    const event = route(model, request.range, incomplete({ kind: "error", message: messageOf(error2) }));
+    return sealed(request.mode, event, decideOver(model, event));
+  }
+}
+async function plan(model, request) {
+  const event = route(model, request.range, await request.changes(request.range));
+  if (request.mode === "pr" || request.lastGreen === null) return sealed(request.mode, event, decideOver(model, event));
+  const { depth, proofs: findProofs } = request.lastGreen;
+  const proofs = await findProofs(model.lanes);
+  const routeSince = async (proof) => {
+    if (proof === request.range.base) return [proof, event];
+    const range = { base: proof, head: request.range.head };
+    return [proof, route(model, range, await request.changes(range))];
+  };
+  const sinceProof = new Map(await Promise.all([...new Set(proofs.values())].map(routeSince)));
+  const lanes = model.lanes.map((lane) => {
+    const proof = proofs.get(lane.name);
+    const since = proof === void 0 ? void 0 : sinceProof.get(proof);
+    if (since === void 0)
+      return { lane, since: null, decision: { kind: "run", because: [{ kind: "no-proof", depth }] } };
+    return { lane, since, decision: decide(since, lane) };
+  });
+  return sealed(request.mode, event, lanes);
+}
+function decideOver(model, event) {
+  return model.lanes.map((lane) => ({ lane, since: null, decision: decide(event, lane) }));
+}
+function sealed(mode, event, lanes) {
+  return { mode, event, lanes, [planned]: true };
+}
+function isComplete(plan2) {
+  return [plan2.event, ...plan2.lanes.map(({ since }) => since)].every((routing) => routing?.kind !== "incomplete");
+}
+function baseOf(plan2, lane) {
+  return lane.since?.range.base ?? plan2.event.range.base;
 }
 
 // src/render.ts
