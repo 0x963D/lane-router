@@ -185,11 +185,14 @@ export function summaryMarkdown(plan: Plan): string {
   ].join("\n");
 }
 
+/** Aligned columns. A row's last cell is never padded, so it does not widen its column. */
 function table(rows: readonly (readonly string[])[]): string[] {
-  const widths = rows.reduce<number[]>(
-    (max, row) => row.map((cell, index) => Math.max(max[index] ?? 0, cell.length)),
-    [],
-  );
+  const widths: number[] = [];
+  for (const row of rows) {
+    row.slice(0, -1).forEach((cell, index) => {
+      widths[index] = Math.max(widths[index] ?? 0, cell.length);
+    });
+  }
   return rows.map((row) =>
     row
       .map((cell, index) => (index === row.length - 1 ? cell : cell.padEnd(widths[index] ?? 0)))

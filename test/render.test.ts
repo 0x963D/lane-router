@@ -15,6 +15,28 @@ const MIXED = [
 ];
 
 describe("rendered wording", () => {
+  it("aligns every placement column, whatever order the paths come in", async () => {
+    const plan = await planFor("acme", [
+      ".vscode/settings.json",
+      "docs/api/users.md",
+      "fixtures/browser/login.json",
+      "packages/ui/src/button.tsx",
+    ]);
+    expect(explainText(plan).split("\n").slice(8)).toMatchInlineSnapshot(`
+      [
+        ".vscode/settings.json",
+        "  paths[6]                      no lane        Editor settings affect no lane.",
+        "docs/api/users.md",
+        "  paths[3] @acme/api via name   api, web, e2e  The api serves these files by name.",
+        "  docs                          no lane",
+        "fixtures/browser/login.json",
+        "  paths[2] @acme/web via tests  web            The browser tests load these fixtures.",
+        "packages/ui/src/button.tsx",
+        "  package @acme/ui              web, e2e",
+      ]
+    `);
+  });
+
   it("explains a mixed change lane by lane and path by path", async () => {
     expect(explainText(await planFor("acme", MIXED))).toMatchInlineSnapshot(`
       "mode pr, base base, head head, 5 files, complete, not docs-only
@@ -49,11 +71,11 @@ describe("rendered wording", () => {
       lint  skip      docs-only change, and nothing it reads as text changed
 
       docs/guide.md
-        paths[4]              web                                                The web build inlines the guide.
-        docs                  no lane
+        paths[4]           web                                                The web build inlines the guide.
+        docs               no lane
       packages/api/README.md
-        package @acme/api     api, web, e2e (not counted in a docs-only change)
-        docs                  no lane"
+        package @acme/api  api, web, e2e (not counted in a docs-only change)
+        docs               no lane"
     `);
   });
 
@@ -87,7 +109,7 @@ describe("rendered wording", () => {
       fail closed, the compare API listed 1 file but the pull request changes 2. The listed paths below decide nothing.
 
       README.md
-        docs     no lane"
+        docs  no lane"
     `);
   });
 
