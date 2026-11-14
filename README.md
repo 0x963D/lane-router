@@ -92,6 +92,13 @@ paths:
     packages: ["@acme/api"]
     via: name
     why: The api serves these files by name.
+  - match: ["docs/guide.md"]
+    lanes: [web]
+    why: The web build inlines the guide.
+  - match: ["packages/ui/tokens.json"]
+    packages: ["@acme/api"]
+    via: code
+    why: The api reads the design tokens.
   - match: [".vscode/**", ".idea/**"]
     lanes: []
     why: Editor settings affect no lane.
