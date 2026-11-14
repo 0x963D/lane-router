@@ -3,7 +3,7 @@ import { relative, resolve } from "node:path";
 import * as core from "@actions/core";
 import { directoryTree } from "./adapters/directory.ts";
 import { gitRepo } from "./adapters/git.ts";
-import { githubRepo, readEvent, runningWorkflow, type GitHubEvent, type Trust } from "./adapters/github.ts";
+import { githubRepo, readEvent, type GitHubEvent } from "./adapters/github.ts";
 import { changedFiles, type ChangedFiles, type ChangeSource, type Range } from "./core/change.ts";
 import { planLanes, type Mode, type Plan, type PlanRequest } from "./core/plan.ts";
 import {
@@ -12,7 +12,6 @@ import {
   formatDataPath,
   INVALID,
   literal,
-  nonEmptyString,
   object,
   parseJson,
   refine,
@@ -33,19 +32,7 @@ import { err, mapNonEmpty, messageOf, type NonEmpty, type Result } from "./resul
  */
 
 /** The inputs `action.yml` declares. Defaults live only there, where the runner applies them. */
-export const INPUT_NAMES = [
-  "config",
-  "working-directory",
-  "base",
-  "head",
-  "files",
-  "token",
-  "mode",
-  "last-green",
-  "last-green-depth",
-  "last-green-branch",
-  "trusted-app",
-] as const;
+export const INPUT_NAMES = ["config", "working-directory", "base", "head", "files", "token", "mode"] as const;
 
 type InputName = (typeof INPUT_NAMES)[number];
 
@@ -59,8 +46,6 @@ interface Invocation {
     | { readonly kind: "files"; readonly files: ChangedFiles }
     /** `expectedCount` is the pull request's `changed_files` when the range is the event's own. */
     | { readonly kind: "compare"; readonly expectedCount: number | null };
-  /** Set only for `last-green: auto` on a push. */
-  readonly lastGreen: { readonly depth: number; readonly ref: string | null; readonly trust: Trust } | null;
   readonly github: { readonly apiUrl: string; readonly repository: string; readonly token: string };
 }
 
@@ -123,10 +108,6 @@ function blankOr<T>(decoder: Decoder<T>): Decoder<T | undefined> {
   return (input, context) => (input === "" ? undefined : decoder(input, context));
 }
 
-const positiveInteger: Decoder<number> = refine(string, (text, context) =>
-  /^[1-9][0-9]*$/.test(text) ? Number(text) : context.fail("expected a whole number of at least 1"),
-);
-
 const inputsDecoder = object(
   (field) => {
     const fields = {
@@ -137,10 +118,6 @@ const inputsDecoder = object(
       files: field("files", string),
       token: field("token", string),
       mode: field("mode", blankOr(literal("pr", "push"))),
-      lastGreen: field("last-green", literal("auto", "off")),
-      depth: field("last-green-depth", positiveInteger),
-      branch: field("last-green-branch", string),
-      trustedApp: field("trusted-app", nonEmptyString),
     };
     return allValid(fields) ? fields : INVALID;
   },
@@ -159,7 +136,6 @@ function toInvocation(inputs: Inputs, event: GitHubEvent, env: NodeJS.ProcessEnv
   const base = inputs.base === "" ? fromEvent?.base : inputs.base;
   const head = inputs.head === "" ? (fromEvent?.head ?? env.GITHUB_SHA ?? "") : inputs.head;
   const repository = env.GITHUB_REPOSITORY ?? "";
-  const usesApi = inputs.files === "" || (mode === "push" && inputs.lastGreen === "auto");
   const eventText = event.kind === "other" ? `a ${event.name || "manual"} event` : `a ${event.kind} event`;
 
   const failures = [
@@ -168,15 +144,9 @@ function toInvocation(inputs: Inputs, event: GitHubEvent, env: NodeJS.ProcessEnv
       base === undefined &&
       context.at("base").fail(`is required for ${eventText} unless files is set`),
     inputs.files === "" && head === "" && context.at("head").fail(`is required for ${eventText} unless files is set`),
-    inputs.files !== "" &&
-      mode === "push" &&
-      inputs.lastGreen === "auto" &&
-      context
-        .at("files")
-        .fail(
-          "cannot be combined with last-green: auto on a push, which compares each lane's proof commit through the API",
-        ),
-    usesApi && repository === "" && context.fail("GITHUB_REPOSITORY is not set, so the GitHub API cannot be called"),
+    inputs.files === "" &&
+      repository === "" &&
+      context.fail("GITHUB_REPOSITORY is not set, so the compare API cannot be called"),
   ];
   if (mode === undefined || failures.some((failure) => failure !== false)) return INVALID;
 
@@ -196,18 +166,6 @@ function toInvocation(inputs: Inputs, event: GitHubEvent, env: NodeJS.ProcessEnv
               { mergeBase: inputs.base === "" ? null : inputs.base },
             ),
           },
-    lastGreen:
-      mode === "push" && inputs.lastGreen === "auto"
-        ? {
-            depth: inputs.depth,
-            ref: event.kind === "push" && event.after === head ? event.ref : null,
-            trust: {
-              app: inputs.trustedApp,
-              branch: inputs.branch === "" ? (event.kind === "push" ? event.defaultBranch : null) : inputs.branch,
-              workflow: runningWorkflow(env.GITHUB_WORKFLOW_REF, repository),
-            },
-          }
-        : null,
     github: { apiUrl: env.GITHUB_API_URL ?? "https://api.github.com", repository, token: inputs.token },
   } satisfies Invocation;
 }
@@ -242,7 +200,7 @@ function lines(text: string): string[] {
  * checkout holds only head, so a base graph is read from git in `working-directory`'s repository.
  */
 function requestFor(invocation: Invocation, head: RepoTree): PlanRequest {
-  const { source, range } = invocation;
+  const { source, mode, range } = invocation;
   const github = githubRepo(invocation.github);
   const repo = gitRepo(invocation.root);
   const under = (): Promise<string> =>
@@ -251,11 +209,7 @@ function requestFor(invocation: Invocation, head: RepoTree): PlanRequest {
     source.kind === "files"
       ? () => Promise.resolve(source.files)
       : async (requested) => github.compare(requested, { expectedCount: source.expectedCount, under: await under() });
-  const baseGraph = baseGraphOf(head, invocation.config, repo);
-  if (invocation.mode === "pr") return { mode: "pr", range, changes, baseGraph };
-  const lastGreen =
-    invocation.lastGreen === null ? null : github.lastGreen({ head: range.head, ...invocation.lastGreen });
-  return { mode: "push", range, changes, baseGraph, lastGreen };
+  return { mode, range, changes, baseGraph: baseGraphOf(head, invocation.config, repo) };
 }
 
 /** Renders everything before the first write, so a rendering bug cannot leave half the outputs set. */

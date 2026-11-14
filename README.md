@@ -47,7 +47,7 @@ So a change is judged against two graphs. The head graph is the workspace the ch
 
 The graph comes from the config, `pnpm-workspace.yaml`, the root `package.json` and the package manifests. The first three are built in and select every lane. So lane-router reads the base graph only when a package manifest other than the root one changed. Every other change needs no base commit, so a shallow checkout routes it precisely.
 
-The base commit is the merge base the compare API reports for the event's range, or for each lane's last green commit under last-green. The CLI uses the merge base of `--base` and `--head`. With the `files` input it is the `base` input, when one is given. lane-router reads the base graph from git in `working-directory`'s repository.
+The base commit is the merge base the compare API reports for the event's range. The CLI uses the merge base of `--base` and `--head`. With the `files` input it is the `base` input, when one is given. lane-router reads the base graph from git in `working-directory`'s repository.
 
 Rules about the whole change come after that.
 
@@ -55,37 +55,6 @@ Rules about the whole change come after that.
 - **Floor.** A lane with `floor: true` runs for every change that has paths and is not docs-only.
 - **Empty.** A change with no paths requires no lane.
 - **Renames.** The old and the new path are both changed paths.
-
-### Last green, for pushes
-
-With `last-green: auto` on a push, each lane is decided from the change since its last green commit. That commit is the newest first-parent ancestor of the pushed head, head excluded, where the lane's trusted check runs concluded `success`. The search looks back at most `last-green-depth` commits.
-
-- A lane with no green commit in that window runs, and its reason says so.
-- A lane with a green commit S runs only when the change S...head selects it. Otherwise it skips with the reason `nothing it reads changed since <S>`.
-- Lanes that share a green commit share one diff.
-- A skipped, neutral, cancelled or unfinished check is not a pass. A missing check is not a pass. Two trusted runs of the same check that disagree are not a pass.
-
-A check run's name proves nothing by itself. Any GitHub App with `checks: write`, or any other workflow, can create a passing check run named `e2e` on a commit. So a check run proves lane L at commit S only when all of these hold:
-
-- it was created by the app that `trusted-app` names, `github-actions` by default,
-- its `head_sha` is S,
-- its check suite belongs to exactly one workflow run, and that run's workflow file is L's `workflow`, its event is `push`, its branch is `last-green-branch` and its `head_sha` is S.
-
-A lane's `workflow` defaults to the workflow that runs lane-router, taken from `GITHUB_WORKFLOW_REF`. `last-green-branch` defaults to the repository's default branch, taken from the push event. When either is unknown, no commit can prove the lane, so it runs. A check run that fails any of these is ignored. It can neither prove nor disprove a lane.
-
-Proofs are used only on the branch's own push. The event must be a push whose `ref` is `refs/heads/<last-green-branch>` and whose `after` is the head being routed. A push to another branch, a tag push, or a push without a `ref` runs every lane. The search starts at that head and follows only first parents, so every candidate is on the branch's first-parent history.
-
-A tag can also make a branch name ambiguous. For a tag push, a workflow run's branch is the tag's name, so a push of the tag `main` looks like a push to the branch `main`. Workflows often gate steps on `github.ref`, so such a run can conclude `success` with its real steps skipped. So before it takes any proof, lane-router looks up the tags that start with the branch name. When `refs/tags/<last-green-branch>` exists, no lane gets a proof. A tag that only starts with the name, such as `main-v2`, does not count.
-
-A lane without a proof runs, and its reason says why:
-
-- `no proof: no trusted green <check> check in the last <N> commits`,
-- `no proof: head was not pushed to branch main`,
-- `no proof: a tag is also named main`,
-- `no proof: last-green-branch is not set and the event names no default branch`,
-- `no proof: the lane names no workflow and the running workflow is unknown`.
-
-This lets a push to `main` skip a lane that already passed on everything the push changed.
 
 ## Config reference
 
@@ -99,7 +68,6 @@ lanes:
     packages: ["@acme/web"]
   e2e:
     packages: ["@acme/web-e2e"]
-    check: "e2e / chromium"
   lint:
     floor: true
 
@@ -139,8 +107,6 @@ unmatched: all
 | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `lanes.<name>.packages`               | The lane's root packages, by `package.json` name. Required unless the lane is a floor lane.                                                         |
 | `lanes.<name>.floor`                  | `true` to run the lane for every change that is not docs-only. Default `false`.                                                                     |
-| `lanes.<name>.check`                  | The check run name that proves the lane passed, for last-green. Default: the lane name.                                                             |
-| `lanes.<name>.workflow`               | The workflow file whose push runs prove the lane, such as `.github/workflows/ci.yml`. Default: the workflow that runs lane-router.                  |
 | `workspace.discovery`                 | `auto`, `pnpm` or `npm`. `auto` reads `pnpm-workspace.yaml` when it exists, else the `workspaces` field of the root `package.json`. Default `auto`. |
 | `workspace.edges`                     | Extra dependencies that the manifests do not declare. `from` reads `to`.                                                                            |
 | `paths[].match`                       | One or more globs.                                                                                                                                  |
@@ -167,22 +133,23 @@ Validation reports every problem in one error, each with its line and column. Th
 - a lane name that does not match `^[A-Za-z0-9][A-Za-z0-9_-]*$`, or that is a fixed output name such as `lanes` or `matrix`,
 - a package or lane name that does not exist,
 - a row without `match`, with both or neither of `lanes` and `packages`, with `via` on a `lanes` row, without `via` on a `packages` row, or without `why`,
-- a glob with a backslash, a leading `/`, a leading `!` or a `..` segment,
-- a lane `workflow` that is not a `.yml` or `.yaml` file directly in `.github/workflows`.
+- a glob with a backslash, a leading `/`, a leading `!` or a `..` segment.
 
 ## Outputs
 
 Every output is a string, as Actions requires.
 
-| Output          | Value                                                                                                                                                        |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `lanes`         | A JSON array of the lanes that run, in config order.                                                                                                         |
-| `matrix`        | A JSON object `{"include":[{"lane","base","reason"}]}` for `strategy.matrix`. `base` is the lane's last green commit when it has one, else the event's base. |
-| `<lane>`        | `run` or `skip`, one output per lane, keyed by the lane name.                                                                                                |
-| `reasons`       | A JSON object from every lane name to its one-line reason.                                                                                                   |
-| `complete`      | `true` when every file list the plan read was complete.                                                                                                      |
-| `docs-only`     | `true` when the event's change was docs-only.                                                                                                                |
-| `none-required` | `true` when no lane runs.                                                                                                                                    |
+| Output          | Value                                                                                                     |
+| --------------- | --------------------------------------------------------------------------------------------------------- |
+| `lanes`         | A JSON array of the lanes that run, in config order.                                                      |
+| `matrix`        | A JSON object `{"include":[{"lane","base","reason"}]}` for `strategy.matrix`. `base` is the event's base. |
+| `<lane>`        | `run` or `skip`, one output per lane, keyed by the lane name.                                             |
+| `reasons`       | A JSON object from every lane name to its one-line reason.                                                |
+| `complete`      | `true` when the list of changed files was complete.                                                       |
+| `docs-only`     | `true` when the event's change was docs-only.                                                             |
+| `none-required` | `true` when no lane runs.                                                                                 |
+
+Every lane in `matrix` gets the same `base`. It is the `base` input when one is set, else the pull request's base SHA or the push's `before`. It is empty when there is none.
 
 The step also writes a job summary. It opens with a line that gives the mode, base, head, file count, completeness and docs-only state. A table with one row per lane follows.
 
@@ -203,8 +170,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      checks: read
-      actions: read
     outputs:
       matrix: ${{ steps.lanes.outputs.matrix }}
       none-required: ${{ steps.lanes.outputs.none-required }}
@@ -214,8 +179,6 @@ jobs:
           fetch-depth: 0
       - id: lanes
         uses: OWNER/lane-router@v0
-        with:
-          last-green: auto
 
   test:
     needs: plan
@@ -238,14 +201,10 @@ jobs:
 | `working-directory` | `.`                   | The repository root to read the config and the workspace from.                                                                     |
 | `base`, `head`      | the event's           | The revisions to compare. Setting either skips the pull request file-count check.                                                  |
 | `files`             | empty                 | Newline-separated changed paths, relative to `working-directory`. They are trusted as complete, and the compare API is not called. |
-| `token`             | `${{ github.token }}` | The token for the compare, commits, matching-refs, check-runs and workflow-runs endpoints.                                         |
+| `token`             | `${{ github.token }}` | The token for the compare endpoint.                                                                                                |
 | `mode`              | from the event        | `pr` or `push`. Required for events other than `pull_request`, `pull_request_target` and `push`.                                   |
-| `last-green`        | `off`                 | `auto` turns on last-green for pushes. It is ignored on pull requests.                                                             |
-| `last-green-depth`  | `100`                 | How many first-parent ancestors last-green searches.                                                                               |
-| `last-green-branch` | the default branch    | The branch whose push runs can prove a lane passed. Only a push to it uses proofs.                                                 |
-| `trusted-app`       | `github-actions`      | The slug of the GitHub App whose check runs can prove a lane passed.                                                               |
 
-The token needs `contents: read` for the compare, commits and matching-refs endpoints. With `last-green: auto` it also needs `checks: read` for check runs and `actions: read` for workflow runs.
+The token needs only `contents: read`, which the compare endpoint requires.
 
 The Action reads the config and the workspace from the checked-out tree. On a pull request the default checkout is the merge commit, which is also what CI tests.
 
@@ -264,16 +223,6 @@ It also runs every lane decided from a change it cannot trust. Then `complete` i
 - a push that opens a new branch, whose `before` is all zeros and cannot be compared,
 - a changed path outside `working-directory`,
 - any API error, git error or unexpected exception after the config has loaded.
-
-Under last-green, a lane never skips without a trusted proof. It runs when:
-
-- the event is not a push of head to `refs/heads/<last-green-branch>`. That covers a push to another branch, a tag push, a push event without a `ref`, and a `head` input that is not the pushed commit,
-- a tag named `refs/tags/<last-green-branch>` exists,
-- the branch or the lane's workflow is unknown,
-- no first-parent ancestor within `last-green-depth` has a passing check run that the trusted app created for that commit, in a push run of the lane's workflow on the branch,
-- looking up tags, commits, check runs or workflow runs fails. Then `complete` is `false` and an annotation gives the cause.
-
-lane-router cannot see a tag that was deleted after its push ran. A run from that push still looks like a run on the branch. A tag ruleset that blocks creating tags named like the branch closes that gap.
 
 A shallow checkout, the `actions/checkout` default, has no base commit. A change to a package manifest then runs every lane. Check out with `fetch-depth: 0` to keep those changes precise. Other changes never need the base commit.
 
@@ -338,6 +287,19 @@ npm run lint
 npm run format:check
 npm run build
 ```
+
+## Not in v0.1: skipping lanes that already passed
+
+A push to `main` could skip a lane that already passed on an earlier commit, when nothing the lane reads changed since then. lane-router v0.1 does not do this. It routes every push from `before` to `after`, the same way it routes a pull request.
+
+Such a skip needs proof that the lane passed. The record of a past run that lane-router can read is metadata in the GitHub API: a check run's name and app, and the event and branch of the workflow run behind it. That metadata can be forged or confused:
+
+- Any GitHub App with `checks: write` can create a passing check run with the lane's name.
+- Any other workflow in the repository can do the same.
+- A tag can have the same name as a branch. A run for a push of the tag `main` reports the branch `main`.
+- Refs change between the run and the check. A tag named like the branch can be deleted before lane-router looks, and the API shows only the refs that exist now.
+
+Each extra check on the metadata closes one gap and leaves the others open. A safe version needs a proof that the lane itself signs and records when it passes. That is future work.
 
 ## What's next
 

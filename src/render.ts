@@ -2,14 +2,7 @@ import type { IncompleteCause } from "./core/change.ts";
 import type { FixedOutput, LaneName } from "./core/ids.ts";
 import type { BuiltIn, Graph, Through } from "./core/model.ts";
 import { baseOf, isComplete, type Mode, type Plan, type PlannedLane } from "./core/plan.ts";
-import {
-  isCounted,
-  type NoProofCause,
-  type Placement,
-  type Routing,
-  type RunReason,
-  type SkipReason,
-} from "./core/route.ts";
+import { isCounted, type Placement, type Routing, type RunReason, type SkipReason } from "./core/route.ts";
 
 /*
  * Plan in, text out. Every user-visible sentence about a plan comes from here, so the Action
@@ -21,13 +14,12 @@ type ReasonKind = Exclude<RunReason["kind"], "placement"> | Placement["kind"];
 /** The headline is the most decisive reason. A fail-closed cause beats any path. */
 const HEADLINE_RANK: Readonly<Record<ReasonKind, number>> = {
   incomplete: 0,
-  "no-proof": 1,
-  "built-in": 2,
-  unmatched: 3,
-  row: 4,
-  package: 5,
-  docs: 6,
-  floor: 7,
+  "built-in": 1,
+  unmatched: 2,
+  row: 3,
+  package: 4,
+  docs: 5,
+  floor: 6,
 };
 
 function reasonKind(reason: RunReason): ReasonKind {
@@ -35,15 +27,13 @@ function reasonKind(reason: RunReason): ReasonKind {
 }
 
 export function reasonLine(planned: PlannedLane): string {
-  const { decision, since, lane } = planned;
-  const proof = since?.range.base;
-  const suffix = proof === undefined || proof === null ? "" : ` since ${shortRevision(proof)}`;
-  if (decision.kind === "skip") return `${SKIP_TEXT[decision.because]}${suffix}`;
+  const { decision } = planned;
+  if (decision.kind === "skip") return SKIP_TEXT[decision.because];
   const [headline, ...rest] = [...decision.because].sort(
     (a, b) => HEADLINE_RANK[reasonKind(a)] - HEADLINE_RANK[reasonKind(b)],
   );
   const more = rest.length === 0 ? "" : ` (+${String(rest.length)} more)`;
-  return `${headline === undefined ? "" : describeReason(headline, lane.check)}${more}${suffix}`;
+  return `${headline === undefined ? "" : describeReason(headline)}${more}`;
 }
 
 const SKIP_TEXT: Readonly<Record<SkipReason, string>> = {
@@ -52,37 +42,16 @@ const SKIP_TEXT: Readonly<Record<SkipReason, string>> = {
   "no-changes": "no changed files",
 };
 
-function describeReason(reason: RunReason, check: string): string {
+function describeReason(reason: RunReason): string {
   switch (reason.kind) {
     case "incomplete":
       return `fail closed, ${describeCause(reason.cause)}`;
-    case "no-proof":
-      return `no proof: ${describeNoProof(reason.cause, check)}`;
     case "floor":
       return "floor lane, runs for every change that is not docs-only";
     case "placement":
       return describePlacement(reason.path, reason.placement, reason.through);
     default: {
       const _exhaustive: never = reason;
-      return _exhaustive;
-    }
-  }
-}
-
-function describeNoProof(cause: NoProofCause, check: string): string {
-  switch (cause.kind) {
-    case "none-within-depth":
-      return `no trusted green ${check} check in the last ${String(cause.depth)} commits`;
-    case "not-proof-branch-push":
-      return `head was not pushed to branch ${cause.branch}`;
-    case "branch-shares-tag-name":
-      return `a tag is also named ${cause.branch}`;
-    case "unknown-branch":
-      return "last-green-branch is not set and the event names no default branch";
-    case "unknown-workflow":
-      return "the lane names no workflow and the running workflow is unknown";
-    default: {
-      const _exhaustive: never = cause;
       return _exhaustive;
     }
   }
@@ -168,7 +137,7 @@ export function actionOutputs(plan: Plan): ActionOutputs {
   const running = plan.lanes.filter(({ decision }) => decision.kind === "run");
   const include = running.map((planned) => ({
     lane: planned.lane.name,
-    base: baseOf(plan, planned) ?? "",
+    base: baseOf(plan) ?? "",
     reason: reasonLine(planned),
   }));
   return {
@@ -308,13 +277,7 @@ export interface PlanJson {
   readonly paths: readonly { readonly path: string; readonly placements: readonly PlacementJson[] }[];
 }
 
-export type LaneJson = {
-  readonly lane: string;
-  readonly base: string | null;
-  /** The last-green proof commit the lane was decided against, or null. */
-  readonly since: string | null;
-  readonly reason: string;
-} & (
+export type LaneJson = { readonly lane: string; readonly base: string | null; readonly reason: string } & (
   | { readonly decision: "run"; readonly because: readonly RunReasonJson[] }
   | { readonly decision: "skip"; readonly because: SkipReason }
 );
@@ -337,8 +300,7 @@ export type RunReasonJson =
       readonly counted: boolean;
     }
   | { readonly kind: "floor" }
-  | { readonly kind: "incomplete"; readonly cause: IncompleteCause }
-  | { readonly kind: "no-proof"; readonly cause: NoProofCause };
+  | { readonly kind: "incomplete"; readonly cause: IncompleteCause };
 
 function placementJson(placement: Placement): PlacementJson {
   const lanes = [...placement.reach.keys()];
@@ -372,7 +334,6 @@ function reasonJson(routing: Routing, reason: RunReason): RunReasonJson {
       };
     case "floor":
     case "incomplete":
-    case "no-proof":
       return reason;
     default: {
       const _exhaustive: never = reason;
@@ -384,15 +345,10 @@ function reasonJson(routing: Routing, reason: RunReason): RunReasonJson {
 export function explainJson(plan: Plan): string {
   const { event } = plan;
   const lanes = plan.lanes.map((planned): LaneJson => {
-    const { decision, since } = planned;
-    const common = {
-      lane: planned.lane.name,
-      base: baseOf(plan, planned),
-      since: since?.range.base ?? null,
-      reason: reasonLine(planned),
-    };
+    const { decision } = planned;
+    const common = { lane: planned.lane.name, base: baseOf(plan), reason: reasonLine(planned) };
     return decision.kind === "run"
-      ? { ...common, decision: "run", because: decision.because.map((reason) => reasonJson(since ?? event, reason)) }
+      ? { ...common, decision: "run", because: decision.because.map((reason) => reasonJson(event, reason)) }
       : { ...common, decision: "skip", because: decision.because };
   });
   const json: PlanJson = {
@@ -416,12 +372,12 @@ export interface Notice {
 }
 
 export function notices(plan: Plan): readonly Notice[] {
-  const causes = new Map<string, IncompleteCause>();
-  for (const routing of [plan.event, ...plan.lanes.map(({ since }) => since)]) {
-    if (routing?.kind === "incomplete") causes.set(JSON.stringify(routing.cause), routing.cause);
-  }
-  return [...causes.values()].map((cause) => ({
-    level: cause.kind === "error" ? "error" : "warning",
-    message: `lane-router could not trust a file list, so every lane decided from it runs: ${describeCause(cause)}`,
-  }));
+  const { event } = plan;
+  if (event.kind !== "incomplete") return [];
+  return [
+    {
+      level: event.cause.kind === "error" ? "error" : "warning",
+      message: `lane-router failed closed and selected every lane: ${describeCause(event.cause)}`,
+    },
+  ];
 }

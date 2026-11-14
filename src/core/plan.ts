@@ -2,17 +2,9 @@ import { err, messageOf, type Result } from "../result.ts";
 import { incomplete, type ChangeSource, type Range } from "./change.ts";
 import type { RepoPath } from "./ids.ts";
 import { MANIFEST, type Lane, type RoutingModel } from "./model.ts";
-import { decide, route, type LaneDecision, type NoProofCause, type Routing } from "./route.ts";
+import { decide, route, type LaneDecision, type Routing } from "./route.ts";
 
 export type Mode = "pr" | "push";
-
-/**
- * The port for `last-green: auto`. `proofs` resolves a lookup that gives each lane its proof: the
- * newest first-parent ancestor of head, head excluded, where the lane's check passed. Or why it has none.
- */
-export interface LastGreen {
-  readonly proofs: (lanes: readonly Lane[]) => Promise<(lane: Lane) => Result<string, NoProofCause>>;
-}
 
 /**
  * The port for the base graph: the model again, with the workspace at `commit` as a second graph.
@@ -20,24 +12,16 @@ export interface LastGreen {
  */
 export type BaseGraph = (commit: string) => Promise<Result<RoutingModel, string>>;
 
-export type PlanRequest =
-  | { readonly mode: "pr"; readonly range: Range; readonly changes: ChangeSource; readonly baseGraph: BaseGraph }
-  | {
-      readonly mode: "push";
-      readonly range: Range;
-      readonly changes: ChangeSource;
-      readonly baseGraph: BaseGraph;
-      readonly lastGreen: LastGreen | null;
-    };
+export interface PlanRequest {
+  readonly mode: Mode;
+  readonly range: Range;
+  readonly changes: ChangeSource;
+  readonly baseGraph: BaseGraph;
+}
 
 export interface PlannedLane {
   readonly lane: Lane;
   readonly decision: LaneDecision;
-  /**
-   * The change since this lane's proof commit, when last-green found one. Its base is the proof.
-   * Lanes that share a proof hold the same routing, because one diff was fetched for all of them.
-   */
-  readonly since: Routing | null;
 }
 
 const planned: unique symbol = Symbol("planned");
@@ -48,7 +32,6 @@ const planned: unique symbol = Symbol("planned");
  */
 export interface Plan {
   readonly mode: Mode;
-  /** The event's own change. The header, the file count and `docs-only` describe it in every mode. */
   readonly event: Routing;
   /** One entry per lane of the model, in config order. */
   readonly lanes: readonly PlannedLane[];
@@ -58,42 +41,15 @@ export interface Plan {
 /** Total: resolves a plan for every input. Anything that throws, a bug included, runs every lane. */
 export async function planLanes(model: RoutingModel, request: PlanRequest): Promise<Plan> {
   try {
-    return await plan(model, request);
+    return decideAll(model, request.mode, await routeChange(model, request));
   } catch (error) {
-    const event = route(model, request.range, incomplete({ kind: "error", message: messageOf(error) }));
-    return sealed(request.mode, event, decideOver(model, event));
+    const files = incomplete({ kind: "error", message: messageOf(error) });
+    return decideAll(model, request.mode, route(model, request.range, files));
   }
 }
 
-async function plan(model: RoutingModel, request: PlanRequest): Promise<Plan> {
-  const event = await routeChange(model, request, request.range);
-  if (request.mode === "pr" || request.lastGreen === null) return sealed(request.mode, event, decideOver(model, event));
-
-  const proofOf = await request.lastGreen.proofs(model.lanes);
-  const sinceProof = new Map<string, Promise<Routing>>();
-  const routeSince = (proof: string): Promise<Routing> => {
-    const routing =
-      sinceProof.get(proof) ??
-      (proof === request.range.base
-        ? Promise.resolve(event)
-        : routeChange(model, request, { base: proof, head: request.range.head }));
-    sinceProof.set(proof, routing);
-    return routing;
-  };
-
-  const lanes = await Promise.all(
-    model.lanes.map(async (lane): Promise<PlannedLane> => {
-      const proof = proofOf(lane);
-      if (!proof.ok)
-        return { lane, since: null, decision: { kind: "run", because: [{ kind: "no-proof", cause: proof.error }] } };
-      const since = await routeSince(proof.value);
-      return { lane, since, decision: decide(since, lane) };
-    }),
-  );
-  return sealed(request.mode, event, lanes);
-}
-
-async function routeChange(model: RoutingModel, request: PlanRequest, range: Range): Promise<Routing> {
+async function routeChange(model: RoutingModel, request: PlanRequest): Promise<Routing> {
+  const { range } = request;
   const files = await request.changes(range);
   // The graph is a function of the config, the workspace file, the root manifest and the package
   // manifests. A change to any of the first three already reaches every lane as a built-in, so the
@@ -117,20 +73,14 @@ function isPackageManifest(path: RepoPath): boolean {
   return path.endsWith(`/${MANIFEST}`);
 }
 
-function decideOver(model: RoutingModel, event: Routing): readonly PlannedLane[] {
-  return model.lanes.map((lane) => ({ lane, since: null, decision: decide(event, lane) }));
+function decideAll(model: RoutingModel, mode: Mode, event: Routing): Plan {
+  return { mode, event, lanes: model.lanes.map((lane) => ({ lane, decision: decide(event, lane) })), [planned]: true };
 }
 
-function sealed(mode: Mode, event: Routing, lanes: readonly PlannedLane[]): Plan {
-  return { mode, event, lanes, [planned]: true };
-}
-
-/** True when every file list the plan read was complete. */
 export function isComplete(plan: Plan): boolean {
-  return [plan.event, ...plan.lanes.map(({ since }) => since)].every((routing) => routing?.kind !== "incomplete");
+  return plan.event.kind !== "incomplete";
 }
 
-/** The revision a lane's job diffs against: its proof commit, else the event base. Null when there is none. */
-export function baseOf(plan: Plan, lane: PlannedLane): string | null {
-  return lane.since?.range.base ?? plan.event.range.base;
+export function baseOf(plan: Plan): string | null {
+  return plan.event.range.base;
 }

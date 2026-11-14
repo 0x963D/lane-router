@@ -177,10 +177,6 @@ export function optional<T>(decoder: Decoder<T>): Decoder<T | undefined> {
   return (input, context) => (input === undefined ? undefined : decoder(input, context));
 }
 
-export function nullable<T>(decoder: Decoder<T>): Decoder<T | null> {
-  return (input, context) => (input === null ? null : decoder(input, context));
-}
-
 export function withDefault<T>(decoder: Decoder<T>, fallback: NoInfer<T>): Decoder<T> {
   return (input, context) => (input === undefined ? fallback : decoder(input, context));
 }

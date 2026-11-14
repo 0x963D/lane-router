@@ -35,8 +35,6 @@ export interface LaneSpec {
   readonly name: LaneName;
   readonly packages: readonly PackageName[];
   readonly floor: boolean;
-  readonly check: string;
-  readonly workflow: string | null;
 }
 
 export type RowTarget =
@@ -77,9 +75,6 @@ export interface Workspace {
 export interface Lane {
   readonly name: LaneName;
   readonly floor: boolean;
-  readonly check: string;
-  /** The workflow file whose push runs prove the lane. Null for the workflow that runs lane-router. */
-  readonly workflow: string | null;
 }
 
 /** `base` is the workspace at the commit the change was diffed from, `head` the one it ends in. */
@@ -144,12 +139,7 @@ export function compile(input: {
   readonly base?: Workspace;
 }): RoutingModel {
   const { config } = input;
-  const lanes: readonly Lane[] = config.lanes.map(({ name, floor, check, workflow }) => ({
-    name,
-    floor,
-    check,
-    workflow,
-  }));
+  const lanes: readonly Lane[] = config.lanes.map(({ name, floor }) => ({ name, floor }));
   const head = compileGraph(input.workspace, config, "head");
   const base = input.base === undefined ? undefined : compileGraph(input.base, config, "base");
   const graphs = base === undefined ? [head] : [head, base];

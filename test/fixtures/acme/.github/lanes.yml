@@ -5,7 +5,6 @@ lanes:
     packages: ["@acme/web"]
   e2e:
     packages: ["@acme/web-e2e"]
-    check: "e2e / chromium"
   lint:
     floor: true
 

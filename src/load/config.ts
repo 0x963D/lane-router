@@ -76,13 +76,6 @@ const glob: Decoder<string> = refine(string, (value, context) => {
   return problem === undefined ? value : context.fail(problem);
 });
 
-/** GitHub runs workflows only from files directly in .github/workflows. */
-const workflowFile: Decoder<string> = refine(string, (path, context) =>
-  /^\.github\/workflows\/[^/]+\.ya?ml$/.test(path)
-    ? path
-    : context.fail("a workflow is a file in .github/workflows, such as .github/workflows/ci.yml"),
-);
-
 const laneKey: Decoder<LaneName> = refine(string, (name, context) => {
   const parsed = parseLaneName(name);
   if (parsed.ok) return parsed.value;
@@ -112,8 +105,6 @@ function documentDecoder<P>(laneNames: ReadonlyMap<string, LaneName>, packageRef
       const fields = {
         packages: field("packages", withDefault(array(packageRef), [])),
         floor: field("floor", withDefault(boolean, false)),
-        check: field("check", optional(nonEmptyString)),
-        workflow: field("workflow", optional(workflowFile)),
       };
       return allValid(fields) ? fields : INVALID;
     }, REJECT),
@@ -185,13 +176,7 @@ type Document = Exclude<ReturnType<ReturnType<typeof documentDecoder<PackageName
 
 function toConfig(document: Document): Config {
   return {
-    lanes: document.lanes.map(([name, spec]) => ({
-      name,
-      packages: spec.packages,
-      floor: spec.floor,
-      check: spec.check ?? name,
-      workflow: spec.workflow ?? null,
-    })),
+    lanes: document.lanes.map(([name, spec]) => ({ name, packages: spec.packages, floor: spec.floor })),
     edges: document.workspace.edges,
     rows: document.paths,
     docsOnly: document.docsOnly,

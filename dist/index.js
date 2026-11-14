@@ -28823,12 +28823,7 @@ var NAMED = { kind: "named" };
 var NO_LANES = /* @__PURE__ */ new Map();
 function compile(input) {
   const { config } = input;
-  const lanes = config.lanes.map(({ name, floor, check, workflow }) => ({
-    name,
-    floor,
-    check,
-    workflow
-  }));
+  const lanes = config.lanes.map(({ name, floor }) => ({ name, floor }));
   const head = compileGraph(input.workspace, config, "head");
   const base = input.base === void 0 ? void 0 : compileGraph(input.base, config, "base");
   const graphs = base === void 0 ? [head] : [head, base];
@@ -29021,9 +29016,6 @@ function allValid(fields) {
 function optional(decoder) {
   return (input, context) => input === void 0 ? void 0 : decoder(input, context);
 }
-function nullable(decoder) {
-  return (input, context) => input === null ? null : decoder(input, context);
-}
 function withDefault(decoder, fallback) {
   return (input, context) => input === void 0 ? fallback : decoder(input, context);
 }
@@ -29146,10 +29138,6 @@ var glob = refine(string, (value, context) => {
   const problem = globProblem(value);
   return problem === void 0 ? value : context.fail(problem);
 });
-var workflowFile = refine(
-  string,
-  (path, context) => /^\.github\/workflows\/[^/]+\.ya?ml$/.test(path) ? path : context.fail("a workflow is a file in .github/workflows, such as .github/workflows/ci.yml")
-);
 var laneKey = refine(string, (name, context) => {
   const parsed = parseLaneName(name);
   if (parsed.ok) return parsed.value;
@@ -29172,9 +29160,7 @@ function documentDecoder(laneNames, packageRef) {
     object((field) => {
       const fields = {
         packages: field("packages", withDefault(array(packageRef), [])),
-        floor: field("floor", withDefault(boolean, false)),
-        check: field("check", optional(nonEmptyString)),
-        workflow: field("workflow", optional(workflowFile))
+        floor: field("floor", withDefault(boolean, false))
       };
       return allValid(fields) ? fields : INVALID;
     }, REJECT),
@@ -29233,13 +29219,7 @@ function documentDecoder(laneNames, packageRef) {
 }
 function toConfig(document) {
   return {
-    lanes: document.lanes.map(([name, spec]) => ({
-      name,
-      packages: spec.packages,
-      floor: spec.floor,
-      check: spec.check ?? name,
-      workflow: spec.workflow ?? null
-    })),
+    lanes: document.lanes.map(([name, spec]) => ({ name, packages: spec.packages, floor: spec.floor })),
     edges: document.workspace.edges,
     rows: document.paths,
     docsOnly: document.docsOnly
@@ -29609,7 +29589,6 @@ function stderrOf(error2) {
 
 // src/adapters/github.ts
 var COMPARE_LIMIT = 300;
-var PAGE = 100;
 var IGNORE2 = { unknownKeys: "ignore" };
 var sha = (key) => object((field) => field(key, nonEmptyString), IGNORE2);
 var pullRequestEvent = object(
@@ -29625,21 +29604,10 @@ var pullRequestEvent = object(
   IGNORE2
 );
 var pushEvent = object((field) => {
-  const ref = field("ref", optional(nonEmptyString));
   const before = field("before", nonEmptyString);
   const after = field("after", nonEmptyString);
-  const repository = field(
-    "repository",
-    optional(object((repo) => repo("default_branch", optional(nonEmptyString)), IGNORE2))
-  );
-  if (!isValid(ref) || !isValid(before) || !isValid(after) || !isValid(repository)) return INVALID;
-  return {
-    kind: "push",
-    ref: ref ?? null,
-    before: /^0+$/.test(before) ? null : before,
-    after,
-    defaultBranch: repository ?? null
-  };
+  if (!isValid(before) || !isValid(after)) return INVALID;
+  return { kind: "push", before: /^0+$/.test(before) ? null : before, after };
 }, IGNORE2);
 var EVENT_DECODERS = /* @__PURE__ */ new Map([
   ["pull_request", pullRequestEvent],
@@ -29666,62 +29634,6 @@ var compareResponse = object((field) => {
   );
   return isValid(mergeBase) && isValid(files) ? { mergeBase, files } : INVALID;
 }, IGNORE2);
-var commitsResponse = array(
-  object((field) => {
-    const sha2 = field("sha", nonEmptyString);
-    const parents = field("parents", array(object((parent) => parent("sha", nonEmptyString), IGNORE2)));
-    return isValid(sha2) && isValid(parents) ? { sha: sha2, firstParent: parents[0] ?? null } : INVALID;
-  }, IGNORE2)
-);
-var checkRunsResponse = object((field) => {
-  const total = field("total_count", integer(0));
-  const runs = field(
-    "check_runs",
-    array(
-      object((run) => {
-        const fields = {
-          name: run("name", string),
-          status: run("status", string),
-          conclusion: run("conclusion", nullable(string)),
-          headSha: run("head_sha", string),
-          app: run("app", nullable(object((app) => app("slug", optional(string)), IGNORE2))),
-          suite: run("check_suite", nullable(object((suite) => suite("id", integer(0)), IGNORE2)))
-        };
-        return allValid(fields) ? { ...fields, app: fields.app ?? null } : INVALID;
-      }, IGNORE2)
-    )
-  );
-  return isValid(total) && isValid(runs) ? { total, runs } : INVALID;
-}, IGNORE2);
-var workflowRunsResponse = object(
-  (field) => field(
-    "workflow_runs",
-    array(
-      object((run) => {
-        const fields = {
-          path: run("path", string),
-          event: run("event", string),
-          branch: run("head_branch", nullable(string)),
-          headSha: run("head_sha", string)
-        };
-        return allValid(fields) ? fields : INVALID;
-      }, IGNORE2)
-    )
-  ),
-  IGNORE2
-);
-var matchingRefsResponse = array(object((ref) => ref("ref", string), IGNORE2));
-function runningWorkflow(workflowRef, repository) {
-  const prefix = `${repository}/`;
-  if (workflowRef === void 0 || repository === "" || !workflowRef.startsWith(prefix)) return null;
-  return withoutRef(workflowRef.slice(prefix.length));
-}
-function withoutRef(path) {
-  return /^(.+?\.ya?ml)@/.exec(path)?.[1] ?? path;
-}
-function passed(trusted) {
-  return trusted.length > 0 && trusted.every((run) => run.status === "completed" && run.conclusion === "success");
-}
 function githubRepo(options) {
   const get = async (path, decoder) => {
     const response = await fetch(`${options.apiUrl}/repos/${options.repository}${path}`, {
@@ -29740,86 +29652,7 @@ function githubRepo(options) {
       throw new Error(`GET ${path} returned a body lane-router cannot read: ${describe(decoded.error[0])}`);
     return decoded.value;
   };
-  const checkRuns = async (commit) => {
-    const runs = [];
-    for (let page = 1; ; page++) {
-      const body = await get(
-        `/commits/${commit}/check-runs?filter=latest&per_page=${String(PAGE)}&page=${String(page)}`,
-        checkRunsResponse
-      );
-      runs.push(...body.runs);
-      if (body.runs.length < PAGE || runs.length >= body.total) return runs;
-    }
-  };
-  const firstParents = async function* (head, depth) {
-    const parentOf = /* @__PURE__ */ new Map();
-    let page = 1;
-    let more = true;
-    let cursor = head;
-    for (let step = 0; step < depth; step++) {
-      while (!parentOf.has(cursor) && more && page <= depth) {
-        const commits = await get(
-          `/commits?sha=${encodeURIComponent(head)}&per_page=${String(PAGE)}&page=${String(page)}`,
-          commitsResponse
-        );
-        for (const { sha: sha2, firstParent } of commits) parentOf.set(sha2, firstParent);
-        more = commits.length === PAGE;
-        page += 1;
-      }
-      const parent = parentOf.get(cursor);
-      if (parent === void 0 || parent === null) return;
-      yield parent;
-      cursor = parent;
-    }
-  };
-  const workflowRuns = /* @__PURE__ */ new Map();
-  const workflowRunsOf = (suite) => {
-    const cached = workflowRuns.get(suite) ?? get(`/actions/runs?check_suite_id=${String(suite)}`, workflowRunsResponse);
-    workflowRuns.set(suite, cached);
-    return cached;
-  };
-  const isTrusted = async (run, proof) => {
-    if (run.app !== proof.app || run.headSha !== proof.commit || run.suite === null) return false;
-    const [only, ...more] = await workflowRunsOf(run.suite);
-    return only !== void 0 && more.length === 0 && withoutRef(only.path) === proof.workflow && only.event === "push" && only.branch === proof.branch && only.headSha === proof.commit;
-  };
-  const tagExists = async (name) => {
-    const refs = await get(`/git/matching-refs/tags/${encodeURIComponent(name)}`, matchingRefsResponse);
-    return refs.includes(`refs/tags/${name}`);
-  };
   return {
-    lastGreen: ({ head, ref, depth, trust }) => ({
-      proofs: async (lanes) => {
-        const { branch } = trust;
-        if (branch === null) return () => err({ kind: "unknown-branch" });
-        if (ref !== `refs/heads/${branch}`) return () => err({ kind: "not-proof-branch-push", branch });
-        if (await tagExists(branch)) return () => err({ kind: "branch-shares-tag-name", branch });
-        const workflowOf = (lane) => lane.workflow ?? trust.workflow;
-        const provable = lanes.flatMap((lane) => {
-          const workflow = workflowOf(lane);
-          return workflow === null ? [] : [{ lane, workflow }];
-        });
-        if (provable.length === 0) return () => err({ kind: "unknown-workflow" });
-        const found = /* @__PURE__ */ new Map();
-        for await (const commit of firstParents(head, depth)) {
-          const runs = await checkRuns(commit);
-          for (const { lane, workflow } of provable) {
-            if (found.has(lane.name)) continue;
-            const proof = { commit, workflow, branch, app: trust.app };
-            const named = runs.filter((run) => run.name === lane.check);
-            const trusted = await Promise.all(named.map(async (run) => await isTrusted(run, proof) ? [run] : []));
-            if (passed(trusted.flat())) found.set(lane.name, commit);
-          }
-          if (found.size === provable.length) break;
-        }
-        return (lane) => {
-          const commit = found.get(lane.name);
-          if (commit !== void 0) return ok(commit);
-          const cause = workflowOf(lane) === null ? { kind: "unknown-workflow" } : { kind: "none-within-depth", depth };
-          return err(cause);
-        };
-      }
-    }),
     compare: async (range, { expectedCount, under }) => {
       if (range.base === null) return incomplete({ kind: "no-base" });
       const { mergeBase, files: listed } = await get(
@@ -29931,34 +29764,14 @@ function readsAsText(placement) {
 var planned = /* @__PURE__ */ Symbol("planned");
 async function planLanes(model, request) {
   try {
-    return await plan(model, request);
+    return decideAll(model, request.mode, await routeChange(model, request));
   } catch (error2) {
-    const event = route(model, request.range, incomplete({ kind: "error", message: messageOf(error2) }));
-    return sealed(request.mode, event, decideOver(model, event));
+    const files = incomplete({ kind: "error", message: messageOf(error2) });
+    return decideAll(model, request.mode, route(model, request.range, files));
   }
 }
-async function plan(model, request) {
-  const event = await routeChange(model, request, request.range);
-  if (request.mode === "pr" || request.lastGreen === null) return sealed(request.mode, event, decideOver(model, event));
-  const proofOf = await request.lastGreen.proofs(model.lanes);
-  const sinceProof = /* @__PURE__ */ new Map();
-  const routeSince = (proof) => {
-    const routing = sinceProof.get(proof) ?? (proof === request.range.base ? Promise.resolve(event) : routeChange(model, request, { base: proof, head: request.range.head }));
-    sinceProof.set(proof, routing);
-    return routing;
-  };
-  const lanes = await Promise.all(
-    model.lanes.map(async (lane) => {
-      const proof = proofOf(lane);
-      if (!proof.ok)
-        return { lane, since: null, decision: { kind: "run", because: [{ kind: "no-proof", cause: proof.error }] } };
-      const since = await routeSince(proof.value);
-      return { lane, since, decision: decide(since, lane) };
-    })
-  );
-  return sealed(request.mode, event, lanes);
-}
-async function routeChange(model, request, range) {
+async function routeChange(model, request) {
+  const { range } = request;
   const files = await request.changes(range);
   if (files.kind === "incomplete" || !files.paths.some(isPackageManifest)) return route(model, range, files);
   const { mergeBase } = files;
@@ -29973,79 +29786,53 @@ async function routeChange(model, request, range) {
 function isPackageManifest(path) {
   return path.endsWith(`/${MANIFEST}`);
 }
-function decideOver(model, event) {
-  return model.lanes.map((lane) => ({ lane, since: null, decision: decide(event, lane) }));
+function decideAll(model, mode, event) {
+  return { mode, event, lanes: model.lanes.map((lane) => ({ lane, decision: decide(event, lane) })), [planned]: true };
 }
-function sealed(mode, event, lanes) {
-  return { mode, event, lanes, [planned]: true };
+function isComplete(plan) {
+  return plan.event.kind !== "incomplete";
 }
-function isComplete(plan2) {
-  return [plan2.event, ...plan2.lanes.map(({ since }) => since)].every((routing) => routing?.kind !== "incomplete");
-}
-function baseOf(plan2, lane) {
-  return lane.since?.range.base ?? plan2.event.range.base;
+function baseOf(plan) {
+  return plan.event.range.base;
 }
 
 // src/render.ts
 var HEADLINE_RANK = {
   incomplete: 0,
-  "no-proof": 1,
-  "built-in": 2,
-  unmatched: 3,
-  row: 4,
-  package: 5,
-  docs: 6,
-  floor: 7
+  "built-in": 1,
+  unmatched: 2,
+  row: 3,
+  package: 4,
+  docs: 5,
+  floor: 6
 };
 function reasonKind(reason) {
   return reason.kind === "placement" ? reason.placement.kind : reason.kind;
 }
 function reasonLine(planned2) {
-  const { decision, since, lane } = planned2;
-  const proof = since?.range.base;
-  const suffix = proof === void 0 || proof === null ? "" : ` since ${shortRevision(proof)}`;
-  if (decision.kind === "skip") return `${SKIP_TEXT[decision.because]}${suffix}`;
+  const { decision } = planned2;
+  if (decision.kind === "skip") return SKIP_TEXT[decision.because];
   const [headline, ...rest] = [...decision.because].sort(
     (a, b) => HEADLINE_RANK[reasonKind(a)] - HEADLINE_RANK[reasonKind(b)]
   );
   const more = rest.length === 0 ? "" : ` (+${String(rest.length)} more)`;
-  return `${headline === void 0 ? "" : describeReason(headline, lane.check)}${more}${suffix}`;
+  return `${headline === void 0 ? "" : describeReason(headline)}${more}`;
 }
 var SKIP_TEXT = {
   untouched: "nothing it reads changed",
   "docs-only": "docs-only change, and nothing it reads as text changed",
   "no-changes": "no changed files"
 };
-function describeReason(reason, check) {
+function describeReason(reason) {
   switch (reason.kind) {
     case "incomplete":
       return `fail closed, ${describeCause(reason.cause)}`;
-    case "no-proof":
-      return `no proof: ${describeNoProof(reason.cause, check)}`;
     case "floor":
       return "floor lane, runs for every change that is not docs-only";
     case "placement":
       return describePlacement(reason.path, reason.placement, reason.through);
     default: {
       const _exhaustive = reason;
-      return _exhaustive;
-    }
-  }
-}
-function describeNoProof(cause, check) {
-  switch (cause.kind) {
-    case "none-within-depth":
-      return `no trusted green ${check} check in the last ${String(cause.depth)} commits`;
-    case "not-proof-branch-push":
-      return `head was not pushed to branch ${cause.branch}`;
-    case "branch-shares-tag-name":
-      return `a tag is also named ${cause.branch}`;
-    case "unknown-branch":
-      return "last-green-branch is not set and the event names no default branch";
-    case "unknown-workflow":
-      return "the lane names no workflow and the running workflow is unknown";
-    default: {
-      const _exhaustive = cause;
       return _exhaustive;
     }
   }
@@ -30109,11 +29896,11 @@ function describeCause(cause) {
     }
   }
 }
-function actionOutputs(plan2) {
-  const running = plan2.lanes.filter(({ decision }) => decision.kind === "run");
+function actionOutputs(plan) {
+  const running = plan.lanes.filter(({ decision }) => decision.kind === "run");
   const include = running.map((planned2) => ({
     lane: planned2.lane.name,
-    base: baseOf(plan2, planned2) ?? "",
+    base: baseOf(plan) ?? "",
     reason: reasonLine(planned2)
   }));
   return {
@@ -30121,13 +29908,13 @@ function actionOutputs(plan2) {
       lanes: JSON.stringify(running.map(({ lane }) => lane.name)),
       matrix: JSON.stringify({ include }),
       reasons: JSON.stringify(
-        Object.fromEntries(plan2.lanes.map((planned2) => [planned2.lane.name, reasonLine(planned2)]))
+        Object.fromEntries(plan.lanes.map((planned2) => [planned2.lane.name, reasonLine(planned2)]))
       ),
-      complete: String(isComplete(plan2)),
-      "docs-only": String(plan2.event.kind === "docs-only"),
+      complete: String(isComplete(plan)),
+      "docs-only": String(plan.event.kind === "docs-only"),
       "none-required": String(running.length === 0)
     },
-    lanes: plan2.lanes.map(({ lane, decision }) => [lane.name, decision.kind])
+    lanes: plan.lanes.map(({ lane, decision }) => [lane.name, decision.kind])
   };
 }
 function pathsOf(routing) {
@@ -30137,26 +29924,26 @@ function shortRevision(revision) {
   if (revision === null) return "none";
   return /^[0-9a-f]{40}$/.test(revision) ? revision.slice(0, 7) : revision;
 }
-function headerLine(plan2) {
-  const files = pathsOf(plan2.event).length;
+function headerLine(plan) {
+  const files = pathsOf(plan.event).length;
   return [
-    `mode ${plan2.mode}`,
-    `base ${shortRevision(plan2.event.range.base)}`,
-    `head ${shortRevision(plan2.event.range.head)}`,
-    `${fileCount(files)}${plan2.event.kind === "incomplete" ? " listed" : ""}`,
-    isComplete(plan2) ? "complete" : "incomplete",
-    plan2.event.kind === "docs-only" ? "docs-only" : "not docs-only"
+    `mode ${plan.mode}`,
+    `base ${shortRevision(plan.event.range.base)}`,
+    `head ${shortRevision(plan.event.range.head)}`,
+    `${fileCount(files)}${plan.event.kind === "incomplete" ? " listed" : ""}`,
+    isComplete(plan) ? "complete" : "incomplete",
+    plan.event.kind === "docs-only" ? "docs-only" : "not docs-only"
   ].join(", ");
 }
-function summaryMarkdown(plan2) {
+function summaryMarkdown(plan) {
   const cell = (text) => text.replaceAll("|", "\\|").replaceAll("\n", " ");
-  const rows = plan2.lanes.map(
+  const rows = plan.lanes.map(
     (planned2) => `| ${cell(planned2.lane.name)} | ${planned2.decision.kind} | ${cell(reasonLine(planned2))} |`
   );
   return [
     "### lane-router",
     "",
-    headerLine(plan2),
+    headerLine(plan),
     "",
     "| Lane | Decision | Reason |",
     "| --- | --- | --- |",
@@ -30164,31 +29951,19 @@ function summaryMarkdown(plan2) {
     ""
   ].join("\n");
 }
-function notices(plan2) {
-  const causes = /* @__PURE__ */ new Map();
-  for (const routing of [plan2.event, ...plan2.lanes.map(({ since }) => since)]) {
-    if (routing?.kind === "incomplete") causes.set(JSON.stringify(routing.cause), routing.cause);
-  }
-  return [...causes.values()].map((cause) => ({
-    level: cause.kind === "error" ? "error" : "warning",
-    message: `lane-router could not trust a file list, so every lane decided from it runs: ${describeCause(cause)}`
-  }));
+function notices(plan) {
+  const { event } = plan;
+  if (event.kind !== "incomplete") return [];
+  return [
+    {
+      level: event.cause.kind === "error" ? "error" : "warning",
+      message: `lane-router failed closed and selected every lane: ${describeCause(event.cause)}`
+    }
+  ];
 }
 
 // src/action.ts
-var INPUT_NAMES = [
-  "config",
-  "working-directory",
-  "base",
-  "head",
-  "files",
-  "token",
-  "mode",
-  "last-green",
-  "last-green-depth",
-  "last-green-branch",
-  "trusted-app"
-];
+var INPUT_NAMES = ["config", "working-directory", "base", "head", "files", "token", "mode"];
 async function runAction() {
   try {
     const invocation = readInvocation((name) => getInput(name), process.env);
@@ -30236,10 +30011,6 @@ function readEventFile(name, path) {
 function blankOr(decoder) {
   return (input, context) => input === "" ? void 0 : decoder(input, context);
 }
-var positiveInteger = refine(
-  string,
-  (text, context) => /^[1-9][0-9]*$/.test(text) ? Number(text) : context.fail("expected a whole number of at least 1")
-);
 var inputsDecoder = object(
   (field) => {
     const fields = {
@@ -30249,11 +30020,7 @@ var inputsDecoder = object(
       head: field("head", string),
       files: field("files", string),
       token: field("token", string),
-      mode: field("mode", blankOr(literal("pr", "push"))),
-      lastGreen: field("last-green", literal("auto", "off")),
-      depth: field("last-green-depth", positiveInteger),
-      branch: field("last-green-branch", string),
-      trustedApp: field("trusted-app", nonEmptyString)
+      mode: field("mode", blankOr(literal("pr", "push")))
     };
     return allValid(fields) ? fields : INVALID;
   },
@@ -30268,16 +30035,12 @@ function toInvocation(inputs, event, env, context) {
   const base = inputs.base === "" ? fromEvent?.base : inputs.base;
   const head = inputs.head === "" ? fromEvent?.head ?? env.GITHUB_SHA ?? "" : inputs.head;
   const repository = env.GITHUB_REPOSITORY ?? "";
-  const usesApi = inputs.files === "" || mode === "push" && inputs.lastGreen === "auto";
   const eventText = event.kind === "other" ? `a ${event.name || "manual"} event` : `a ${event.kind} event`;
   const failures = [
     mode === void 0 && context.at("mode").fail(`is required for ${eventText}`),
     inputs.files === "" && base === void 0 && context.at("base").fail(`is required for ${eventText} unless files is set`),
     inputs.files === "" && head === "" && context.at("head").fail(`is required for ${eventText} unless files is set`),
-    inputs.files !== "" && mode === "push" && inputs.lastGreen === "auto" && context.at("files").fail(
-      "cannot be combined with last-green: auto on a push, which compares each lane's proof commit through the API"
-    ),
-    usesApi && repository === "" && context.fail("GITHUB_REPOSITORY is not set, so the GitHub API cannot be called")
+    inputs.files === "" && repository === "" && context.fail("GITHUB_REPOSITORY is not set, so the compare API cannot be called")
   ];
   if (mode === void 0 || failures.some((failure) => failure !== false)) return INVALID;
   const ownRange = inputs.base === "" && inputs.head === "";
@@ -30293,15 +30056,6 @@ function toInvocation(inputs, event, env, context) {
         { mergeBase: inputs.base === "" ? null : inputs.base }
       )
     },
-    lastGreen: mode === "push" && inputs.lastGreen === "auto" ? {
-      depth: inputs.depth,
-      ref: event.kind === "push" && event.after === head ? event.ref : null,
-      trust: {
-        app: inputs.trustedApp,
-        branch: inputs.branch === "" ? event.kind === "push" ? event.defaultBranch : null : inputs.branch,
-        workflow: runningWorkflow(env.GITHUB_WORKFLOW_REF, repository)
-      }
-    } : null,
     github: { apiUrl: env.GITHUB_API_URL ?? "https://api.github.com", repository, token: inputs.token }
   };
 }
@@ -30323,20 +30077,17 @@ function lines(text) {
   return text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== "");
 }
 function requestFor(invocation, head) {
-  const { source, range } = invocation;
+  const { source, mode, range } = invocation;
   const github = githubRepo(invocation.github);
   const repo = gitRepo(invocation.root);
   const under = () => relative2(process.cwd(), invocation.root) === "" ? Promise.resolve("") : repo.prefix();
   const changes = source.kind === "files" ? () => Promise.resolve(source.files) : async (requested) => github.compare(requested, { expectedCount: source.expectedCount, under: await under() });
-  const baseGraph = baseGraphOf(head, invocation.config, repo);
-  if (invocation.mode === "pr") return { mode: "pr", range, changes, baseGraph };
-  const lastGreen = invocation.lastGreen === null ? null : github.lastGreen({ head: range.head, ...invocation.lastGreen });
-  return { mode: "push", range, changes, baseGraph, lastGreen };
+  return { mode, range, changes, baseGraph: baseGraphOf(head, invocation.config, repo) };
 }
-async function publish(plan2) {
-  const outputs = actionOutputs(plan2);
-  const summary2 = summaryMarkdown(plan2);
-  const annotations = notices(plan2);
+async function publish(plan) {
+  const outputs = actionOutputs(plan);
+  const summary2 = summaryMarkdown(plan);
+  const annotations = notices(plan);
   for (const [name, value] of Object.entries(outputs.fixed)) setOutput(name, value);
   for (const [lane, decision] of outputs.lanes) setOutput(lane, decision);
   for (const { level, message } of annotations) {

@@ -9236,12 +9236,7 @@ var NAMED = { kind: "named" };
 var NO_LANES = /* @__PURE__ */ new Map();
 function compile(input) {
   const { config } = input;
-  const lanes = config.lanes.map(({ name, floor, check, workflow }) => ({
-    name,
-    floor,
-    check,
-    workflow
-  }));
+  const lanes = config.lanes.map(({ name, floor }) => ({ name, floor }));
   const head = compileGraph(input.workspace, config, "head");
   const base = input.base === void 0 ? void 0 : compileGraph(input.base, config, "base");
   const graphs = base === void 0 ? [head] : [head, base];
@@ -9553,10 +9548,6 @@ var glob = refine(string, (value, context) => {
   const problem = globProblem(value);
   return problem === void 0 ? value : context.fail(problem);
 });
-var workflowFile = refine(
-  string,
-  (path, context) => /^\.github\/workflows\/[^/]+\.ya?ml$/.test(path) ? path : context.fail("a workflow is a file in .github/workflows, such as .github/workflows/ci.yml")
-);
 var laneKey = refine(string, (name, context) => {
   const parsed = parseLaneName(name);
   if (parsed.ok) return parsed.value;
@@ -9579,9 +9570,7 @@ function documentDecoder(laneNames, packageRef) {
     object((field) => {
       const fields = {
         packages: field("packages", withDefault(array(packageRef), [])),
-        floor: field("floor", withDefault(boolean, false)),
-        check: field("check", optional(nonEmptyString)),
-        workflow: field("workflow", optional(workflowFile))
+        floor: field("floor", withDefault(boolean, false))
       };
       return allValid(fields) ? fields : INVALID;
     }, REJECT),
@@ -9640,13 +9629,7 @@ function documentDecoder(laneNames, packageRef) {
 }
 function toConfig(document) {
   return {
-    lanes: document.lanes.map(([name, spec]) => ({
-      name,
-      packages: spec.packages,
-      floor: spec.floor,
-      check: spec.check ?? name,
-      workflow: spec.workflow ?? null
-    })),
+    lanes: document.lanes.map(([name, spec]) => ({ name, packages: spec.packages, floor: spec.floor })),
     edges: document.workspace.edges,
     rows: document.paths,
     docsOnly: document.docsOnly
@@ -10040,34 +10023,14 @@ function readsAsText(placement) {
 var planned = /* @__PURE__ */ Symbol("planned");
 async function planLanes(model, request) {
   try {
-    return await plan(model, request);
+    return decideAll(model, request.mode, await routeChange(model, request));
   } catch (error) {
-    const event = route(model, request.range, incomplete({ kind: "error", message: messageOf(error) }));
-    return sealed(request.mode, event, decideOver(model, event));
+    const files = incomplete({ kind: "error", message: messageOf(error) });
+    return decideAll(model, request.mode, route(model, request.range, files));
   }
 }
-async function plan(model, request) {
-  const event = await routeChange(model, request, request.range);
-  if (request.mode === "pr" || request.lastGreen === null) return sealed(request.mode, event, decideOver(model, event));
-  const proofOf = await request.lastGreen.proofs(model.lanes);
-  const sinceProof = /* @__PURE__ */ new Map();
-  const routeSince = (proof) => {
-    const routing = sinceProof.get(proof) ?? (proof === request.range.base ? Promise.resolve(event) : routeChange(model, request, { base: proof, head: request.range.head }));
-    sinceProof.set(proof, routing);
-    return routing;
-  };
-  const lanes = await Promise.all(
-    model.lanes.map(async (lane) => {
-      const proof = proofOf(lane);
-      if (!proof.ok)
-        return { lane, since: null, decision: { kind: "run", because: [{ kind: "no-proof", cause: proof.error }] } };
-      const since = await routeSince(proof.value);
-      return { lane, since, decision: decide(since, lane) };
-    })
-  );
-  return sealed(request.mode, event, lanes);
-}
-async function routeChange(model, request, range) {
+async function routeChange(model, request) {
+  const { range } = request;
   const files = await request.changes(range);
   if (files.kind === "incomplete" || !files.paths.some(isPackageManifest)) return route(model, range, files);
   const { mergeBase } = files;
@@ -10082,79 +10045,53 @@ async function routeChange(model, request, range) {
 function isPackageManifest(path) {
   return path.endsWith(`/${MANIFEST}`);
 }
-function decideOver(model, event) {
-  return model.lanes.map((lane) => ({ lane, since: null, decision: decide(event, lane) }));
+function decideAll(model, mode, event) {
+  return { mode, event, lanes: model.lanes.map((lane) => ({ lane, decision: decide(event, lane) })), [planned]: true };
 }
-function sealed(mode, event, lanes) {
-  return { mode, event, lanes, [planned]: true };
+function isComplete(plan) {
+  return plan.event.kind !== "incomplete";
 }
-function isComplete(plan2) {
-  return [plan2.event, ...plan2.lanes.map(({ since }) => since)].every((routing) => routing?.kind !== "incomplete");
-}
-function baseOf(plan2, lane) {
-  return lane.since?.range.base ?? plan2.event.range.base;
+function baseOf(plan) {
+  return plan.event.range.base;
 }
 
 // src/render.ts
 var HEADLINE_RANK = {
   incomplete: 0,
-  "no-proof": 1,
-  "built-in": 2,
-  unmatched: 3,
-  row: 4,
-  package: 5,
-  docs: 6,
-  floor: 7
+  "built-in": 1,
+  unmatched: 2,
+  row: 3,
+  package: 4,
+  docs: 5,
+  floor: 6
 };
 function reasonKind(reason) {
   return reason.kind === "placement" ? reason.placement.kind : reason.kind;
 }
 function reasonLine(planned2) {
-  const { decision, since, lane } = planned2;
-  const proof = since?.range.base;
-  const suffix = proof === void 0 || proof === null ? "" : ` since ${shortRevision(proof)}`;
-  if (decision.kind === "skip") return `${SKIP_TEXT[decision.because]}${suffix}`;
+  const { decision } = planned2;
+  if (decision.kind === "skip") return SKIP_TEXT[decision.because];
   const [headline, ...rest] = [...decision.because].sort(
     (a, b) => HEADLINE_RANK[reasonKind(a)] - HEADLINE_RANK[reasonKind(b)]
   );
   const more = rest.length === 0 ? "" : ` (+${String(rest.length)} more)`;
-  return `${headline === void 0 ? "" : describeReason(headline, lane.check)}${more}${suffix}`;
+  return `${headline === void 0 ? "" : describeReason(headline)}${more}`;
 }
 var SKIP_TEXT = {
   untouched: "nothing it reads changed",
   "docs-only": "docs-only change, and nothing it reads as text changed",
   "no-changes": "no changed files"
 };
-function describeReason(reason, check) {
+function describeReason(reason) {
   switch (reason.kind) {
     case "incomplete":
       return `fail closed, ${describeCause(reason.cause)}`;
-    case "no-proof":
-      return `no proof: ${describeNoProof(reason.cause, check)}`;
     case "floor":
       return "floor lane, runs for every change that is not docs-only";
     case "placement":
       return describePlacement(reason.path, reason.placement, reason.through);
     default: {
       const _exhaustive = reason;
-      return _exhaustive;
-    }
-  }
-}
-function describeNoProof(cause, check) {
-  switch (cause.kind) {
-    case "none-within-depth":
-      return `no trusted green ${check} check in the last ${String(cause.depth)} commits`;
-    case "not-proof-branch-push":
-      return `head was not pushed to branch ${cause.branch}`;
-    case "branch-shares-tag-name":
-      return `a tag is also named ${cause.branch}`;
-    case "unknown-branch":
-      return "last-green-branch is not set and the event names no default branch";
-    case "unknown-workflow":
-      return "the lane names no workflow and the running workflow is unknown";
-    default: {
-      const _exhaustive = cause;
       return _exhaustive;
     }
   }
@@ -10225,15 +10162,15 @@ function shortRevision(revision) {
   if (revision === null) return "none";
   return /^[0-9a-f]{40}$/.test(revision) ? revision.slice(0, 7) : revision;
 }
-function headerLine(plan2) {
-  const files = pathsOf(plan2.event).length;
+function headerLine(plan) {
+  const files = pathsOf(plan.event).length;
   return [
-    `mode ${plan2.mode}`,
-    `base ${shortRevision(plan2.event.range.base)}`,
-    `head ${shortRevision(plan2.event.range.head)}`,
-    `${fileCount(files)}${plan2.event.kind === "incomplete" ? " listed" : ""}`,
-    isComplete(plan2) ? "complete" : "incomplete",
-    plan2.event.kind === "docs-only" ? "docs-only" : "not docs-only"
+    `mode ${plan.mode}`,
+    `base ${shortRevision(plan.event.range.base)}`,
+    `head ${shortRevision(plan.event.range.head)}`,
+    `${fileCount(files)}${plan.event.kind === "incomplete" ? " listed" : ""}`,
+    isComplete(plan) ? "complete" : "incomplete",
+    plan.event.kind === "docs-only" ? "docs-only" : "not docs-only"
   ].join(", ");
 }
 function table(rows) {
@@ -10270,12 +10207,12 @@ function placementLanes(routing, placement) {
   const lanes = [...placement.reach.keys()].join(", ") || "no lane";
   return isCounted(routing, placement) ? lanes : `${lanes} (not counted in a docs-only change)`;
 }
-function explainText(plan2) {
+function explainText(plan) {
   const lanes = table([
     ["lane", "decision", "reason"],
-    ...plan2.lanes.map((planned2) => [planned2.lane.name, planned2.decision.kind, reasonLine(planned2)])
+    ...plan.lanes.map((planned2) => [planned2.lane.name, planned2.decision.kind, reasonLine(planned2)])
   ]);
-  const { event } = plan2;
+  const { event } = plan;
   const placed = pathsOf(event);
   const paths = table(
     placed.flatMap(({ path, placements }) => [
@@ -10287,7 +10224,7 @@ function explainText(plan2) {
       ])
     ])
   );
-  return [headerLine(plan2), "", ...lanes, "", ...pathsSection(event, paths)].join("\n");
+  return [headerLine(plan), "", ...lanes, "", ...pathsSection(event, paths)].join("\n");
 }
 function pathsSection(event, paths) {
   if (event.kind === "empty") return ["no changed files"];
@@ -10326,7 +10263,6 @@ function reasonJson(routing, reason) {
       };
     case "floor":
     case "incomplete":
-    case "no-proof":
       return reason;
     default: {
       const _exhaustive = reason;
@@ -10334,24 +10270,19 @@ function reasonJson(routing, reason) {
     }
   }
 }
-function explainJson(plan2) {
-  const { event } = plan2;
-  const lanes = plan2.lanes.map((planned2) => {
-    const { decision, since } = planned2;
-    const common = {
-      lane: planned2.lane.name,
-      base: baseOf(plan2, planned2),
-      since: since?.range.base ?? null,
-      reason: reasonLine(planned2)
-    };
-    return decision.kind === "run" ? { ...common, decision: "run", because: decision.because.map((reason) => reasonJson(since ?? event, reason)) } : { ...common, decision: "skip", because: decision.because };
+function explainJson(plan) {
+  const { event } = plan;
+  const lanes = plan.lanes.map((planned2) => {
+    const { decision } = planned2;
+    const common = { lane: planned2.lane.name, base: baseOf(plan), reason: reasonLine(planned2) };
+    return decision.kind === "run" ? { ...common, decision: "run", because: decision.because.map((reason) => reasonJson(event, reason)) } : { ...common, decision: "skip", because: decision.because };
   });
   const json = {
-    mode: plan2.mode,
+    mode: plan.mode,
     base: event.range.base,
     head: event.range.head,
     files: pathsOf(event).length,
-    complete: isComplete(plan2),
+    complete: isComplete(plan),
     docsOnly: event.kind === "docs-only",
     noneRequired: lanes.every((lane) => lane.decision === "skip"),
     incomplete: event.kind === "incomplete" ? event.cause : null,
@@ -10390,13 +10321,13 @@ ${USAGE}`);
       io.stderr(formatProblems(model.error));
       return 1;
     }
-    const plan2 = await planLanes(model.value, {
+    const plan = await planLanes(model.value, {
       mode: "pr",
       range: { base, head },
       changes: repo.changes,
       baseGraph: baseGraphOf(tree, config, repo)
     });
-    io.stdout(json ? explainJson(plan2) : explainText(plan2));
+    io.stdout(json ? explainJson(plan) : explainText(plan));
     return 0;
   } catch (error) {
     io.stderr(messageOf(error));

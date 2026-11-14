@@ -203,7 +203,7 @@ describe("parse errors", () => {
     expect(run.exitCode).toBe(0);
     expect(run.outputs.complete).toBe("false");
     expect(run.annotations.map(({ message }) => message)).toEqual([
-      `lane-router could not trust a file list, so every lane decided from it runs: GET /compare/${BASE}...${HEAD} returned a body that is not valid JSON`,
+      `lane-router failed closed and selected every lane: GET /compare/${BASE}...${HEAD} returned a body that is not valid JSON`,
     ]);
     expect(JSON.stringify(run)).not.toContain(SENTINEL);
   });

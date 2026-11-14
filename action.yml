@@ -22,23 +22,11 @@ inputs:
     description: Newline-separated changed paths, relative to working-directory and trusted as complete. Skips the compare API.
     default: ""
   token:
-    description: The token for the compare, commits, matching-refs, check-runs and workflow-runs APIs.
+    description: The token for the compare API.
     default: ${{ github.token }}
   mode:
     description: pr or push. Defaults from the event.
     default: ""
-  last-green:
-    description: auto or off. In push mode, auto decides each lane from the change since its newest passing commit.
-    default: "off"
-  last-green-depth:
-    description: How many first-parent ancestors last-green searches for a passing commit.
-    default: "100"
-  last-green-branch:
-    description: The branch whose push runs can prove a lane passed. Only a push to it uses proofs. Defaults to the repository's default branch.
-    default: ""
-  trusted-app:
-    description: The slug of the GitHub App whose check runs can prove a lane passed, for last-green.
-    default: github-actions
 
 outputs:
   lanes:
@@ -48,7 +36,7 @@ outputs:
   reasons:
     description: A JSON object from every lane name to its one-line reason.
   complete:
-    description: true when every file list the plan read was complete.
+    description: true when the list of changed files was complete.
   docs-only:
     description: true when the change was docs-only.
   none-required:
