@@ -13,6 +13,7 @@ import {
   nullable,
   object,
   optional,
+  parseJson,
   string,
   type Decoder,
   type Issue,
@@ -152,8 +153,9 @@ export function githubRepo(options: {
       },
     });
     if (!response.ok) throw new Error(`GET ${path} returned ${String(response.status)} ${response.statusText}`.trim());
-    const body: unknown = await response.json();
-    const decoded = decode(decoder, body);
+    const body = parseJson(await response.text());
+    if (!body.ok) throw new Error(`GET ${path} returned a body that is not valid JSON`);
+    const decoded = decode(decoder, body.value);
     if (!decoded.ok)
       throw new Error(`GET ${path} returned a body lane-router cannot read: ${describe(decoded.error[0])}`);
     return decoded.value;

@@ -22,6 +22,7 @@ export function globProblem(glob: string): string | undefined {
   if (glob.includes("\\")) return "use / as the path separator";
   if (glob.startsWith("/") || glob.startsWith("./")) return "globs are relative to the repository root";
   if (glob.startsWith("!")) return "a glob cannot start with !";
+  if (glob.split("/").includes("..")) return "a glob cannot reach outside the repository root";
   try {
     picomatch(glob, OPTIONS);
     return undefined;

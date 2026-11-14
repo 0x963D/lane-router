@@ -15,11 +15,12 @@ export function parseYaml(file: string, source: string): Result<YamlFile, NonEmp
     const { line, col } = lineCounter.linePos(offset);
     return { line, column: col };
   };
+  // The library's messages quote the source, which a pull request controls, so only the error code is kept.
   const syntax = document.errors.map((error): Problem => ({
     file,
     at: position(error.pos[0]),
     where: null,
-    message: error.message,
+    message: `is not valid YAML: ${error.code.toLowerCase().replaceAll("_", " ")}`,
   }));
   if (isNonEmpty(syntax)) return err(syntax);
 
@@ -38,7 +39,12 @@ export function parseYaml(file: string, source: string): Result<YamlFile, NonEmp
     return isNode(pair?.key) && pair.key.range ? pair.key.range[0] : valueOffset(path.slice(0, -1));
   };
 
-  const value: unknown = document.toJS();
+  let value: unknown;
+  try {
+    value = document.toJS();
+  } catch {
+    return err([{ file, at: null, where: null, message: "is not valid YAML: an alias cannot be expanded" }]);
+  }
   return ok({
     value,
     locate: (issue) => {

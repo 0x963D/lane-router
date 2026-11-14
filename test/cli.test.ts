@@ -1,24 +1,13 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { runCli } from "../src/cli.ts";
+import { cli } from "./support/cli.ts";
 import { fixtureDir, tempDir } from "./support/fixtures.ts";
 import { gitFixture, type GitFixture } from "./support/git-fixture.ts";
 import { CONFIG } from "./support/model.ts";
 
 function acmeRepo(options: { readonly at?: string } = {}): GitFixture {
   return gitFixture(fixtureDir("acme"), tempDir(), options);
-}
-
-async function cli(args: readonly string[], cwd: string) {
-  const stdout: string[] = [];
-  const stderr: string[] = [];
-  const code = await runCli(args, {
-    cwd,
-    stdout: (text) => stdout.push(text),
-    stderr: (text) => stderr.push(text),
-  });
-  return { code, stdout: stdout.join("\n"), stderr: stderr.join("\n") };
 }
 
 function decisions(lanes: Readonly<Record<string, "run" | "skip">>) {

@@ -4,10 +4,9 @@ import { onTestFinished } from "vitest";
 
 export const REPOSITORY = "acme/mono";
 
-export interface FakeResponse {
-  readonly status?: number;
-  readonly body: unknown;
-}
+/** `text` is sent as is, for a body that is not JSON. */
+export type FakeResponse =
+  { readonly status?: number; readonly body: unknown } | { readonly status?: number; readonly text: string };
 
 export interface FakeGitHub {
   readonly url: string;
@@ -25,7 +24,7 @@ export async function fakeGitHub(): Promise<FakeGitHub> {
     requests.push(path);
     const route = routes.get(path) ?? { status: 404, body: { message: "Not Found" } };
     response.writeHead(route.status ?? 200, { "Content-Type": "application/json" });
-    response.end(JSON.stringify(route.body));
+    response.end("text" in route ? route.text : JSON.stringify(route.body));
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   onTestFinished(() => close(server));

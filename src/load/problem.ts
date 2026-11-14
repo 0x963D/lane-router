@@ -1,10 +1,11 @@
+import type { TextPosition } from "../decode.ts";
 import type { NonEmpty } from "../result.ts";
 
 export interface Problem {
   /** Relative to the routed root. */
   readonly file: string;
-  /** One-based. Null when no source position is known, as for a whole file or a JSON manifest. */
-  readonly at: { readonly line: number; readonly column: number } | null;
+  /** Null when no source position is known, as for a whole file. */
+  readonly at: TextPosition | null;
   /** A data path such as `lanes.unit.packages[0]` or `paths[2].via`. */
   readonly where: string | null;
   readonly message: string;

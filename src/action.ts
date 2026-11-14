@@ -13,6 +13,7 @@ import {
   INVALID,
   literal,
   object,
+  parseJson,
   refine,
   string,
   type DecodeContext,
@@ -101,12 +102,16 @@ function inputProblem({ path, message }: Issue): string {
 
 function readEventFile(name: string, path: string | undefined): Result<GitHubEvent, NonEmpty<string>> {
   if (path === undefined || path === "") return readEvent(name, {});
+  let text: string;
   try {
-    const payload: unknown = JSON.parse(readFileSync(path, "utf8"));
-    return readEvent(name, payload);
+    text = readFileSync(path, "utf8");
   } catch (error) {
     return err([`cannot read the event payload at ${path}: ${messageOf(error)}`]);
   }
+  const payload = parseJson(text);
+  return payload.ok
+    ? readEvent(name, payload.value)
+    : err([`cannot read the event payload at ${path}: it is not valid JSON`]);
 }
 
 /** An empty input means "use the default", so a choice input accepts "" as absent. */

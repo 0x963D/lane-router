@@ -9201,54 +9201,6 @@ function incomplete(cause, paths = []) {
   return { kind: "incomplete", cause, paths };
 }
 
-// src/adapters/git.ts
-var execFileAsync = promisify(execFile);
-var DIFF = ["diff", "--name-only", "--no-renames", "--no-relative", "-z"];
-function gitRepo(cwd) {
-  const git = async (args) => {
-    try {
-      const { stdout } = await execFileAsync("git", args, { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
-      return stdout;
-    } catch (error) {
-      throw new Error(`git ${args.join(" ")} failed: ${stderrOf(error)}`, { cause: error });
-    }
-  };
-  const prefix = async () => (await git(["rev-parse", "--show-prefix"])).trim();
-  return {
-    resolve: async (ref) => {
-      try {
-        return (await git(["rev-parse", "--verify", "--quiet", "--end-of-options", `${ref}^{commit}`])).trim();
-      } catch {
-        return void 0;
-      }
-    },
-    treeAt: (commit) => {
-      let listing;
-      const files = () => listing ??= git(["ls-tree", "-r", "--name-only", "-z", commit]).then((output) => new Set(split(output)));
-      return {
-        files: async () => [...await files()].sort(),
-        read: async (path) => (await files()).has(path) ? git(["cat-file", "blob", `${commit}:./${path}`]) : void 0
-      };
-    },
-    changes: async (range) => {
-      if (range.base === null) return incomplete({ kind: "no-base" });
-      const output = await git([...DIFF, `${range.base}...${range.head}`]);
-      return changedFiles(
-        split(output).map((path) => ({ path, previousPath: null })),
-        await prefix()
-      );
-    },
-    prefix
-  };
-}
-function split(output) {
-  return output.split("\0").filter((entry) => entry !== "");
-}
-function stderrOf(error) {
-  const stderr = error instanceof Error && "stderr" in error ? error.stderr : void 0;
-  return typeof stderr === "string" && stderr.trim() !== "" ? stderr.trim() : String(error);
-}
-
 // src/core/glob.ts
 var import_posix = __toESM(require_posix(), 1);
 var OPTIONS = { dot: true };
@@ -9261,6 +9213,7 @@ function globProblem(glob2) {
   if (glob2.includes("\\")) return "use / as the path separator";
   if (glob2.startsWith("/") || glob2.startsWith("./")) return "globs are relative to the repository root";
   if (glob2.startsWith("!")) return "a glob cannot start with !";
+  if (glob2.split("/").includes("..")) return "a glob cannot reach outside the repository root";
   try {
     (0, import_posix.default)(glob2, OPTIONS);
     return void 0;
@@ -9358,127 +9311,6 @@ function addReach(index, name, lane, through) {
   reach.set(lane, through);
 }
 
-// src/core/route.ts
-var proven = /* @__PURE__ */ Symbol("proven");
-var NO_LANES2 = /* @__PURE__ */ new Map();
-function route(model, range, files) {
-  const paths = files.paths.map((path) => ({ path, placements: place(model, path) }));
-  if (files.kind === "incomplete") return { kind: "incomplete", range, cause: files.cause, paths };
-  if (!isNonEmpty(paths)) return { kind: "empty", range };
-  return { kind: paths.every(({ path }) => model.isDocs(path)) ? "docs-only" : "ordinary", range, paths };
-}
-function place(model, path) {
-  const placements = [];
-  if (path === model.configPath) placements.push({ kind: "config", reach: model.everyLane });
-  for (const { row, hits, reach } of model.rows) {
-    if (hits(path)) placements.push({ kind: "row", row, reach });
-  }
-  const owner = owningPackage(model, path);
-  if (owner !== void 0) placements.push({ kind: "package", package: owner.name, reach: owner.reach });
-  if (model.isDocs(path)) placements.push({ kind: "docs", reach: NO_LANES2 });
-  return isNonEmpty(placements) ? placements : [{ kind: "unmatched", reach: model.everyLane }];
-}
-function owningPackage(model, path) {
-  const segments = path.split("/");
-  for (let depth = segments.length - 1; depth > 0; depth--) {
-    const scope = model.packagesByDir.get(segments.slice(0, depth).join("/"));
-    if (scope !== void 0) return scope;
-  }
-  return void 0;
-}
-function decide(routing, lane) {
-  switch (routing.kind) {
-    case "incomplete":
-      return { kind: "run", because: [{ kind: "incomplete", cause: routing.cause }] };
-    case "empty":
-      return skip("no-changes");
-    case "docs-only":
-    case "ordinary": {
-      const because = routing.paths.flatMap(
-        ({ path, placements }) => placements.flatMap((placement) => {
-          const through = placement.reach.get(lane.name);
-          return through !== void 0 && isCounted(routing, placement) ? [{ kind: "placement", path, placement, through }] : [];
-        })
-      );
-      if (routing.kind === "ordinary" && lane.floor) because.push({ kind: "floor" });
-      if (isNonEmpty(because)) return { kind: "run", because };
-      return skip(routing.kind === "docs-only" ? "docs-only" : "untouched");
-    }
-    default: {
-      const _exhaustive = routing;
-      return _exhaustive;
-    }
-  }
-}
-function skip(because) {
-  return { kind: "skip", because, [proven]: true };
-}
-function isCounted(routing, placement) {
-  return routing.kind !== "docs-only" || readsAsText(placement);
-}
-function readsAsText(placement) {
-  switch (placement.kind) {
-    case "config":
-      return true;
-    case "row": {
-      const { target } = placement.row;
-      return target.kind === "lanes" || VIA[target.via].readsAsText;
-    }
-    case "package":
-      return false;
-    case "docs":
-    case "unmatched":
-      return true;
-    default: {
-      const _exhaustive = placement;
-      return _exhaustive;
-    }
-  }
-}
-
-// src/core/plan.ts
-var planned = /* @__PURE__ */ Symbol("planned");
-async function planLanes(model, request) {
-  try {
-    return await plan(model, request);
-  } catch (error) {
-    const event = route(model, request.range, incomplete({ kind: "error", message: messageOf(error) }));
-    return sealed(request.mode, event, decideOver(model, event));
-  }
-}
-async function plan(model, request) {
-  const event = route(model, request.range, await request.changes(request.range));
-  if (request.mode === "pr" || request.lastGreen === null) return sealed(request.mode, event, decideOver(model, event));
-  const { depth, proofs: findProofs } = request.lastGreen;
-  const proofs = await findProofs(model.lanes);
-  const routeSince = async (proof) => {
-    if (proof === request.range.base) return [proof, event];
-    const range = { base: proof, head: request.range.head };
-    return [proof, route(model, range, await request.changes(range))];
-  };
-  const sinceProof = new Map(await Promise.all([...new Set(proofs.values())].map(routeSince)));
-  const lanes = model.lanes.map((lane) => {
-    const proof = proofs.get(lane.name);
-    const since = proof === void 0 ? void 0 : sinceProof.get(proof);
-    if (since === void 0)
-      return { lane, since: null, decision: { kind: "run", because: [{ kind: "no-proof", depth }] } };
-    return { lane, since, decision: decide(since, lane) };
-  });
-  return sealed(request.mode, event, lanes);
-}
-function decideOver(model, event) {
-  return model.lanes.map((lane) => ({ lane, since: null, decision: decide(event, lane) }));
-}
-function sealed(mode, event, lanes) {
-  return { mode, event, lanes, [planned]: true };
-}
-function isComplete(plan2) {
-  return [plan2.event, ...plan2.lanes.map(({ since }) => since)].every((routing) => routing?.kind !== "incomplete");
-}
-function baseOf(plan2, lane) {
-  return lane.since?.range.base ?? plan2.event.range.base;
-}
-
 // src/decode.ts
 var Invalid = class {
 };
@@ -9488,6 +9320,15 @@ function isValid(value) {
 }
 function isRecord(input) {
   return typeof input === "object" && input !== null && !Array.isArray(input);
+}
+function parseJson(text) {
+  try {
+    const value = JSON.parse(text);
+    return ok(value);
+  } catch (error) {
+    const [, line, column] = / in JSON at position \d+ \(line (\d+) column (\d+)\)$/.exec(messageOf(error)) ?? [];
+    return err(line === void 0 || column === void 0 ? null : { line: Number(line), column: Number(column) });
+  }
 }
 function decode(decoder, input) {
   const issues = [];
@@ -9618,7 +9459,7 @@ function parseYaml(file, source) {
     file,
     at: position(error.pos[0]),
     where: null,
-    message: error.message
+    message: `is not valid YAML: ${error.code.toLowerCase().replaceAll("_", " ")}`
   }));
   if (isNonEmpty(syntax)) return err(syntax);
   const nodeAt = (path) => path.length === 0 ? document.contents : document.getIn(path, true);
@@ -9635,7 +9476,12 @@ function parseYaml(file, source) {
     const pair = (0, import_yaml.isMap)(parent) ? parent.items.find((item) => (0, import_yaml.isScalar)(item.key) && item.key.value === key) : void 0;
     return (0, import_yaml.isNode)(pair?.key) && pair.key.range ? pair.key.range[0] : valueOffset(path.slice(0, -1));
   };
-  const value = document.toJS();
+  let value;
+  try {
+    value = document.toJS();
+  } catch {
+    return err([{ file, at: null, where: null, message: "is not valid YAML: an alias cannot be expanded" }]);
+  }
   return ok({
     value,
     locate: (issue) => {
@@ -9810,11 +9656,41 @@ function compareText(a, b) {
 
 // src/load/tree.ts
 var IGNORED_DIRECTORIES = /* @__PURE__ */ new Set([".git", "node_modules"]);
+var REFUSALS = {
+  absolute: "is an absolute path",
+  backslash: "contains a backslash, which is not a path separator in a repository",
+  "dot-segment": "has a . or .. segment",
+  "git-metadata": "is inside .git",
+  "symbolic-link": "is a symbolic link",
+  submodule: "is a git submodule",
+  "outside-root": "resolves outside the repository root"
+};
+function pathRefusal(path) {
+  if (path.startsWith("/") || /^[A-Za-z]:/.test(path)) return "absolute";
+  if (path.includes("\\")) return "backslash";
+  const segments = path.split("/");
+  if (segments.some((segment) => segment === "." || segment === "..")) return "dot-segment";
+  if (segments.includes(".git")) return "git-metadata";
+  return void 0;
+}
 async function readFile(tree, path) {
+  let read;
   try {
-    return ok(await tree.read(path));
+    read = await tree.read(path);
   } catch (error) {
     return err([fileProblem(path, `cannot be read: ${messageOf(error)}`)]);
+  }
+  switch (read.kind) {
+    case "file":
+      return ok(read.text);
+    case "missing":
+      return ok(void 0);
+    case "refused":
+      return err([fileProblem(path, REFUSALS[read.refusal])]);
+    default: {
+      const _exhaustive = read;
+      return _exhaustive;
+    }
   }
 }
 async function listFiles(tree) {
@@ -9895,7 +9771,7 @@ function pnpmGlobs(source) {
 }
 var npmWorkspaces = (input, context) => Array.isArray(input) ? array(workspaceGlob)(input, context) : object((field) => field("packages", array(workspaceGlob)), IGNORE)(input, context);
 function npmGlobs(source) {
-  const json = parseJson(ROOT_MANIFEST, source);
+  const json = jsonFile(ROOT_MANIFEST, source);
   if (!json.ok) return json;
   const decoded = decode(
     object((field) => field("workspaces", npmWorkspaces), IGNORE),
@@ -9925,20 +9801,16 @@ async function readManifest(tree, dir) {
   const file = dir + MANIFEST;
   const source = await readFile(tree, file);
   if (!source.ok || source.value === void 0) return source.ok ? ok(void 0) : source;
-  const json = parseJson(file, source.value);
+  const json = jsonFile(file, source.value);
   if (!json.ok) return json;
   const decoded = decode(manifestDecoder, json.value);
   if (!decoded.ok) return err(jsonProblems(file, decoded.error));
   const name = parsePackageName(decoded.value.name);
   return ok(name === void 0 ? void 0 : { name, dir, dependencies: decoded.value.dependencies });
 }
-function parseJson(file, source) {
-  try {
-    const value = JSON.parse(source);
-    return ok(value);
-  } catch (error) {
-    return err([fileProblem(file, `is not valid JSON: ${messageOf(error)}`)]);
-  }
+function jsonFile(file, source) {
+  const json = parseJson(source);
+  return json.ok ? json : err([{ file, at: json.error, where: null, message: "is not valid JSON" }]);
 }
 function jsonProblems(file, issues) {
   return mapNonEmpty(issues, ({ path, message }) => ({
@@ -9966,6 +9838,192 @@ async function loadModel(tree, configPath) {
   const resolved = config.value.resolve(workspace.value);
   if (!resolved.ok) return resolved;
   return ok(compile({ configPath: path, config: resolved.value, workspace: workspace.value }));
+}
+
+// src/adapters/git.ts
+var execFileAsync = promisify(execFile);
+var DIFF = ["diff", "--name-only", "--no-renames", "--no-relative", "-z"];
+var LINKS = /* @__PURE__ */ new Map([
+  ["120000", "symbolic-link"],
+  ["160000", "submodule"]
+]);
+function gitRepo(cwd) {
+  const git = async (args) => {
+    try {
+      const { stdout } = await execFileAsync("git", args, { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+      return stdout;
+    } catch (error) {
+      throw new Error(`git ${args.join(" ")} failed: ${stderrOf(error)}`, { cause: error });
+    }
+  };
+  const prefix = async () => (await git(["rev-parse", "--show-prefix"])).trim();
+  return {
+    resolve: async (ref) => {
+      try {
+        return (await git(["rev-parse", "--verify", "--quiet", "--end-of-options", `${ref}^{commit}`])).trim();
+      } catch {
+        return void 0;
+      }
+    },
+    treeAt: (commit) => {
+      let listing;
+      const modes = () => listing ??= git(["ls-tree", "-r", "-z", commit]).then(parseModes);
+      return {
+        files: async () => [...(await modes()).keys()].sort(),
+        read: async (path) => {
+          const refusal = pathRefusal(path);
+          if (refusal !== void 0) return { kind: "refused", refusal };
+          const mode = (await modes()).get(path);
+          if (mode === void 0) return { kind: "missing" };
+          const link = LINKS.get(mode);
+          if (link !== void 0) return { kind: "refused", refusal: link };
+          return { kind: "file", text: await git(["cat-file", "blob", `${commit}:./${path}`]) };
+        }
+      };
+    },
+    changes: async (range) => {
+      if (range.base === null) return incomplete({ kind: "no-base" });
+      const output = await git([...DIFF, `${range.base}...${range.head}`]);
+      return changedFiles(
+        split(output).map((path) => ({ path, previousPath: null })),
+        await prefix()
+      );
+    },
+    prefix
+  };
+}
+function parseModes(output) {
+  return new Map(
+    split(output).map((entry) => [entry.slice(entry.indexOf("	") + 1), entry.slice(0, entry.indexOf(" "))])
+  );
+}
+function split(output) {
+  return output.split("\0").filter((entry) => entry !== "");
+}
+function stderrOf(error) {
+  const stderr = error instanceof Error && "stderr" in error ? error.stderr : void 0;
+  return typeof stderr === "string" && stderr.trim() !== "" ? stderr.trim() : String(error);
+}
+
+// src/core/route.ts
+var proven = /* @__PURE__ */ Symbol("proven");
+var NO_LANES2 = /* @__PURE__ */ new Map();
+function route(model, range, files) {
+  const paths = files.paths.map((path) => ({ path, placements: place(model, path) }));
+  if (files.kind === "incomplete") return { kind: "incomplete", range, cause: files.cause, paths };
+  if (!isNonEmpty(paths)) return { kind: "empty", range };
+  return { kind: paths.every(({ path }) => model.isDocs(path)) ? "docs-only" : "ordinary", range, paths };
+}
+function place(model, path) {
+  const placements = [];
+  if (path === model.configPath) placements.push({ kind: "config", reach: model.everyLane });
+  for (const { row, hits, reach } of model.rows) {
+    if (hits(path)) placements.push({ kind: "row", row, reach });
+  }
+  const owner = owningPackage(model, path);
+  if (owner !== void 0) placements.push({ kind: "package", package: owner.name, reach: owner.reach });
+  if (model.isDocs(path)) placements.push({ kind: "docs", reach: NO_LANES2 });
+  return isNonEmpty(placements) ? placements : [{ kind: "unmatched", reach: model.everyLane }];
+}
+function owningPackage(model, path) {
+  const segments = path.split("/");
+  for (let depth = segments.length - 1; depth > 0; depth--) {
+    const scope = model.packagesByDir.get(segments.slice(0, depth).join("/"));
+    if (scope !== void 0) return scope;
+  }
+  return void 0;
+}
+function decide(routing, lane) {
+  switch (routing.kind) {
+    case "incomplete":
+      return { kind: "run", because: [{ kind: "incomplete", cause: routing.cause }] };
+    case "empty":
+      return skip("no-changes");
+    case "docs-only":
+    case "ordinary": {
+      const because = routing.paths.flatMap(
+        ({ path, placements }) => placements.flatMap((placement) => {
+          const through = placement.reach.get(lane.name);
+          return through !== void 0 && isCounted(routing, placement) ? [{ kind: "placement", path, placement, through }] : [];
+        })
+      );
+      if (routing.kind === "ordinary" && lane.floor) because.push({ kind: "floor" });
+      if (isNonEmpty(because)) return { kind: "run", because };
+      return skip(routing.kind === "docs-only" ? "docs-only" : "untouched");
+    }
+    default: {
+      const _exhaustive = routing;
+      return _exhaustive;
+    }
+  }
+}
+function skip(because) {
+  return { kind: "skip", because, [proven]: true };
+}
+function isCounted(routing, placement) {
+  return routing.kind !== "docs-only" || readsAsText(placement);
+}
+function readsAsText(placement) {
+  switch (placement.kind) {
+    case "config":
+      return true;
+    case "row": {
+      const { target } = placement.row;
+      return target.kind === "lanes" || VIA[target.via].readsAsText;
+    }
+    case "package":
+      return false;
+    case "docs":
+    case "unmatched":
+      return true;
+    default: {
+      const _exhaustive = placement;
+      return _exhaustive;
+    }
+  }
+}
+
+// src/core/plan.ts
+var planned = /* @__PURE__ */ Symbol("planned");
+async function planLanes(model, request) {
+  try {
+    return await plan(model, request);
+  } catch (error) {
+    const event = route(model, request.range, incomplete({ kind: "error", message: messageOf(error) }));
+    return sealed(request.mode, event, decideOver(model, event));
+  }
+}
+async function plan(model, request) {
+  const event = route(model, request.range, await request.changes(request.range));
+  if (request.mode === "pr" || request.lastGreen === null) return sealed(request.mode, event, decideOver(model, event));
+  const { depth, proofs: findProofs } = request.lastGreen;
+  const proofs = await findProofs(model.lanes);
+  const routeSince = async (proof) => {
+    if (proof === request.range.base) return [proof, event];
+    const range = { base: proof, head: request.range.head };
+    return [proof, route(model, range, await request.changes(range))];
+  };
+  const sinceProof = new Map(await Promise.all([...new Set(proofs.values())].map(routeSince)));
+  const lanes = model.lanes.map((lane) => {
+    const proof = proofs.get(lane.name);
+    const since = proof === void 0 ? void 0 : sinceProof.get(proof);
+    if (since === void 0)
+      return { lane, since: null, decision: { kind: "run", because: [{ kind: "no-proof", depth }] } };
+    return { lane, since, decision: decide(since, lane) };
+  });
+  return sealed(request.mode, event, lanes);
+}
+function decideOver(model, event) {
+  return model.lanes.map((lane) => ({ lane, since: null, decision: decide(event, lane) }));
+}
+function sealed(mode, event, lanes) {
+  return { mode, event, lanes, [planned]: true };
+}
+function isComplete(plan2) {
+  return [plan2.event, ...plan2.lanes.map(({ since }) => since)].every((routing) => routing?.kind !== "incomplete");
+}
+function baseOf(plan2, lane) {
+  return lane.since?.range.base ?? plan2.event.range.base;
 }
 
 // src/render.ts

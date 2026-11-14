@@ -21,10 +21,9 @@ export interface ActionRun {
   readonly annotations: readonly { readonly level: string; readonly message: string }[];
 }
 
-export interface ActionEvent {
-  readonly name: string;
-  readonly payload: unknown;
-}
+/** `text` is written to the event file as is, for a payload that is not JSON. */
+export type ActionEvent =
+  { readonly name: string; readonly payload: unknown } | { readonly name: string; readonly text: string };
 
 function isMapping(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -71,7 +70,7 @@ export async function runAction(options: {
   };
   writeFileSync(files.output, "");
   writeFileSync(files.summary, "");
-  writeFileSync(files.event, JSON.stringify(options.event.payload));
+  writeFileSync(files.event, "text" in options.event ? options.event.text : JSON.stringify(options.event.payload));
 
   const inputs: Record<string, string> = {};
   for (const [name, spec] of Object.entries(actionYml().inputs)) {

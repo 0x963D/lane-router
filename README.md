@@ -136,7 +136,7 @@ Validation reports every problem in one error, each with its line and column. Th
 - a lane name that does not match `^[A-Za-z0-9][A-Za-z0-9_-]*$`, or that is a fixed output name such as `lanes` or `matrix`,
 - a package or lane name that does not exist,
 - a row without `match`, with both or neither of `lanes` and `packages`, with `via` on a `lanes` row, without `via` on a `packages` row, or without `why`,
-- a glob with a backslash, a leading `/` or a leading `!`.
+- a glob with a backslash, a leading `/`, a leading `!` or a `..` segment.
 
 ## Outputs
 
@@ -227,6 +227,16 @@ In each of these cases `complete` is `false` and the step succeeds, so the lanes
 A config or workspace error is different. The lane names are unknown, so lane-router fails the step and lists every problem. Downstream jobs never start, so the build stays red and no lane is skipped by mistake.
 
 The code enforces the rule as well. A skip decision and a complete file list each carry a key that only one module can name, so no other code can construct either one. `npm run typecheck` checks this in `test/type-claims.ts`. Every other module can build only a decision to run.
+
+### Reading the repository
+
+A pull request controls every file lane-router reads, and the Action may run in a privileged workflow such as `pull_request_target`. lane-router reads only inside the repository root, and it never shows what a file holds.
+
+- A path that is absolute, contains a backslash, has a `.` or `..` segment, or is inside `.git` is never read. This applies to the `config` input too.
+- A symbolic link is never followed. In a checked-out directory, a file that is a link is refused, and so is a file whose real path is outside the root, which catches a linked parent directory. A linked directory is never walked into. In a git commit, an entry stored as a link or a submodule is refused.
+- A workspace glob with a `..` segment is a config problem.
+- A refused read is a problem that names the path and the reason, such as `packages/api/package.json  is a symbolic link`. The Action fails the step and the CLI exits with 1, as for any other config or workspace error.
+- No problem, annotation, job summary or output quotes a file. A parse error gives the file, the line and column when they are known, and a fixed reason such as `is not valid JSON`. A message may still name a lane or package that the config refers to.
 
 ## Run locally
 

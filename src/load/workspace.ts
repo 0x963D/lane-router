@@ -9,6 +9,7 @@ import {
   INVALID,
   isValid,
   object,
+  parseJson,
   refine,
   string,
   unknownValue,
@@ -16,7 +17,7 @@ import {
   type Decoder,
   type Issue,
 } from "../decode.ts";
-import { err, isNonEmpty, mapNonEmpty, messageOf, ok, type NonEmpty, type Result } from "../result.ts";
+import { err, isNonEmpty, mapNonEmpty, ok, type NonEmpty, type Result } from "../result.ts";
 import type { Discovery } from "./config.ts";
 import { fileProblem, type Problem } from "./problem.ts";
 import { listFiles, readFile, type RepoTree } from "./tree.ts";
@@ -112,7 +113,7 @@ const npmWorkspaces: Decoder<readonly WorkspaceGlob[]> = (input, context) =>
     : object<readonly WorkspaceGlob[]>((field) => field("packages", array(workspaceGlob)), IGNORE)(input, context);
 
 function npmGlobs(source: string): Result<GlobSet, NonEmpty<Problem>> {
-  const json = parseJson(ROOT_MANIFEST, source);
+  const json = jsonFile(ROOT_MANIFEST, source);
   if (!json.ok) return json;
   const decoded = decode(
     object<readonly WorkspaceGlob[]>((field) => field("workspaces", npmWorkspaces), IGNORE),
@@ -153,7 +154,7 @@ async function readManifest(tree: RepoTree, dir: RepoPath): Promise<Result<Manif
   const file = dir + MANIFEST;
   const source = await readFile(tree, file);
   if (!source.ok || source.value === undefined) return source.ok ? ok(undefined) : source;
-  const json = parseJson(file, source.value);
+  const json = jsonFile(file, source.value);
   if (!json.ok) return json;
   const decoded = decode(manifestDecoder, json.value);
   if (!decoded.ok) return err(jsonProblems(file, decoded.error));
@@ -161,13 +162,9 @@ async function readManifest(tree: RepoTree, dir: RepoPath): Promise<Result<Manif
   return ok(name === undefined ? undefined : { name, dir, dependencies: decoded.value.dependencies });
 }
 
-function parseJson(file: string, source: string): Result<unknown, NonEmpty<Problem>> {
-  try {
-    const value: unknown = JSON.parse(source);
-    return ok(value);
-  } catch (error) {
-    return err([fileProblem(file, `is not valid JSON: ${messageOf(error)}`)]);
-  }
+function jsonFile(file: string, source: string): Result<unknown, NonEmpty<Problem>> {
+  const json = parseJson(source);
+  return json.ok ? json : err([{ file, at: json.error, where: null, message: "is not valid JSON" }]);
 }
 
 function jsonProblems(file: string, issues: NonEmpty<Issue>): NonEmpty<Problem> {

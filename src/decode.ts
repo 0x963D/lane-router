@@ -1,4 +1,4 @@
-import { err, isNonEmpty, ok, type NonEmpty, type Result } from "./result.ts";
+import { err, isNonEmpty, messageOf, ok, type NonEmpty, type Result } from "./result.ts";
 
 /*
  * The one way this codebase turns `unknown` into a typed value. Decoders keep going after a bad
@@ -40,6 +40,26 @@ export function isValid<T>(value: T | Invalid): value is T {
 
 export function isRecord(input: unknown): input is Readonly<Record<string, unknown>> {
   return typeof input === "object" && input !== null && !Array.isArray(input);
+}
+
+/** One-based. */
+export interface TextPosition {
+  readonly line: number;
+  readonly column: number;
+}
+
+/**
+ * JSON text as an untyped value. V8 quotes the input in some of its messages, so a failure keeps
+ * only the position V8 names, or null when it names none.
+ */
+export function parseJson(text: string): Result<unknown, TextPosition | null> {
+  try {
+    const value: unknown = JSON.parse(text);
+    return ok(value);
+  } catch (error) {
+    const [, line, column] = / in JSON at position \d+ \(line (\d+) column (\d+)\)$/.exec(messageOf(error)) ?? [];
+    return err(line === undefined || column === undefined ? null : { line: Number(line), column: Number(column) });
+  }
 }
 
 export function decode<T>(decoder: Decoder<T>, input: unknown): Result<T, NonEmpty<Issue>> {

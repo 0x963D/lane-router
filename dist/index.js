@@ -24879,10 +24879,10 @@ var require_resolve_block_map = __commonJS({
       let offset = bm.offset;
       let commentEnd = null;
       for (const collItem of bm.items) {
-        const { start, key, sep, value } = collItem;
+        const { start, key, sep: sep2, value } = collItem;
         const keyProps = resolveProps.resolveProps(start, {
           indicator: "explicit-key-ind",
-          next: key ?? sep?.[0],
+          next: key ?? sep2?.[0],
           offset,
           onError,
           parentIndent: bm.indent,
@@ -24896,7 +24896,7 @@ var require_resolve_block_map = __commonJS({
             else if ("indent" in key && key.indent !== bm.indent)
               onError(offset, "BAD_INDENT", startColMsg);
           }
-          if (!keyProps.anchor && !keyProps.tag && !sep) {
+          if (!keyProps.anchor && !keyProps.tag && !sep2) {
             commentEnd = keyProps.end;
             if (keyProps.comment) {
               if (map.comment)
@@ -24920,7 +24920,7 @@ var require_resolve_block_map = __commonJS({
         ctx.atKey = false;
         if (utilMapIncludes.mapIncludes(ctx, map.items, keyNode))
           onError(keyStart, "DUPLICATE_KEY", "Map keys must be unique");
-        const valueProps = resolveProps.resolveProps(sep ?? [], {
+        const valueProps = resolveProps.resolveProps(sep2 ?? [], {
           indicator: "map-value-ind",
           next: value,
           offset: keyNode.range[2],
@@ -24936,7 +24936,7 @@ var require_resolve_block_map = __commonJS({
             if (ctx.options.strict && keyProps.start < valueProps.found.offset - 1024)
               onError(keyNode.range, "KEY_OVER_1024_CHARS", "The : indicator must be at most 1024 chars after the start of an implicit block mapping key");
           }
-          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : composeEmptyNode(ctx, offset, sep, null, valueProps, onError);
+          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : composeEmptyNode(ctx, offset, sep2, null, valueProps, onError);
           if (ctx.schema.compat)
             utilFlowIndentCheck.flowIndentCheck(bm.indent, value, onError);
           offset = valueNode.range[2];
@@ -25027,7 +25027,7 @@ var require_resolve_end = __commonJS({
       let comment = "";
       if (end) {
         let hasSpace = false;
-        let sep = "";
+        let sep2 = "";
         for (const token of end) {
           const { source, type } = token;
           switch (type) {
@@ -25041,13 +25041,13 @@ var require_resolve_end = __commonJS({
               if (!comment)
                 comment = cb;
               else
-                comment += sep + cb;
-              sep = "";
+                comment += sep2 + cb;
+              sep2 = "";
               break;
             }
             case "newline":
               if (comment)
-                sep += source;
+                sep2 += source;
               hasSpace = true;
               break;
             default:
@@ -25090,18 +25090,18 @@ var require_resolve_flow_collection = __commonJS({
       let offset = fc.offset + fc.start.source.length;
       for (let i = 0; i < fc.items.length; ++i) {
         const collItem = fc.items[i];
-        const { start, key, sep, value } = collItem;
+        const { start, key, sep: sep2, value } = collItem;
         const props = resolveProps.resolveProps(start, {
           flow: fcName,
           indicator: "explicit-key-ind",
-          next: key ?? sep?.[0],
+          next: key ?? sep2?.[0],
           offset,
           onError,
           parentIndent: fc.indent,
           startOnNewline: false
         });
         if (!props.found) {
-          if (!props.anchor && !props.tag && !sep && !value) {
+          if (!props.anchor && !props.tag && !sep2 && !value) {
             if (i === 0 && props.comma)
               onError(props.comma, "UNEXPECTED_TOKEN", `Unexpected , in ${fcName}`);
             else if (i < fc.items.length - 1)
@@ -25155,8 +25155,8 @@ var require_resolve_flow_collection = __commonJS({
             }
           }
         }
-        if (!isMap2 && !sep && !props.found) {
-          const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep, null, props, onError);
+        if (!isMap2 && !sep2 && !props.found) {
+          const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep2, null, props, onError);
           coll.items.push(valueNode);
           offset = valueNode.range[2];
           if (isBlock(value))
@@ -25168,7 +25168,7 @@ var require_resolve_flow_collection = __commonJS({
           if (isBlock(key))
             onError(keyNode.range, "BLOCK_IN_FLOW", blockMsg);
           ctx.atKey = false;
-          const valueProps = resolveProps.resolveProps(sep ?? [], {
+          const valueProps = resolveProps.resolveProps(sep2 ?? [], {
             flow: fcName,
             indicator: "map-value-ind",
             next: value,
@@ -25179,8 +25179,8 @@ var require_resolve_flow_collection = __commonJS({
           });
           if (valueProps.found) {
             if (!isMap2 && !props.found && ctx.options.strict) {
-              if (sep)
-                for (const st of sep) {
+              if (sep2)
+                for (const st of sep2) {
                   if (st === valueProps.found)
                     break;
                   if (st.type === "newline") {
@@ -25197,7 +25197,7 @@ var require_resolve_flow_collection = __commonJS({
             else
               onError(valueProps.start, "MISSING_CHAR", `Missing , or : between ${fcName} items`);
           }
-          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode(ctx, valueProps.end, sep, null, valueProps, onError) : null;
+          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode(ctx, valueProps.end, sep2, null, valueProps, onError) : null;
           if (valueNode) {
             if (isBlock(value))
               onError(valueNode.range, "BLOCK_IN_FLOW", blockMsg);
@@ -25377,7 +25377,7 @@ var require_resolve_block_scalar = __commonJS({
           chompStart = i + 1;
       }
       let value = "";
-      let sep = "";
+      let sep2 = "";
       let prevMoreIndented = false;
       for (let i = 0; i < contentStart; ++i)
         value += lines2[i][0].slice(trimIndent) + "\n";
@@ -25394,24 +25394,24 @@ var require_resolve_block_scalar = __commonJS({
           indent = "";
         }
         if (type === Scalar.Scalar.BLOCK_LITERAL) {
-          value += sep + indent.slice(trimIndent) + content;
-          sep = "\n";
+          value += sep2 + indent.slice(trimIndent) + content;
+          sep2 = "\n";
         } else if (indent.length > trimIndent || content[0] === "	") {
-          if (sep === " ")
-            sep = "\n";
-          else if (!prevMoreIndented && sep === "\n")
-            sep = "\n\n";
-          value += sep + indent.slice(trimIndent) + content;
-          sep = "\n";
+          if (sep2 === " ")
+            sep2 = "\n";
+          else if (!prevMoreIndented && sep2 === "\n")
+            sep2 = "\n\n";
+          value += sep2 + indent.slice(trimIndent) + content;
+          sep2 = "\n";
           prevMoreIndented = true;
         } else if (content === "") {
-          if (sep === "\n")
+          if (sep2 === "\n")
             value += "\n";
           else
-            sep = "\n";
+            sep2 = "\n";
         } else {
-          value += sep + content;
-          sep = " ";
+          value += sep2 + content;
+          sep2 = " ";
           prevMoreIndented = false;
         }
       }
@@ -25594,25 +25594,25 @@ var require_resolve_flow_scalar = __commonJS({
         trimBoth = /^[ \t]+|[ \t]+$/g;
       }
       let res = match[1].replace(trimEnd, "");
-      let sep = " ";
+      let sep2 = " ";
       let pos = line.lastIndex;
       while (match = line.exec(source)) {
         const lm = match[1].replace(trimBoth, "");
         if (lm === "") {
-          if (sep === "\n")
-            res += sep;
+          if (sep2 === "\n")
+            res += sep2;
           else
-            sep = "\n";
+            sep2 = "\n";
         } else {
-          res += sep + lm;
-          sep = " ";
+          res += sep2 + lm;
+          sep2 = " ";
         }
         pos = line.lastIndex;
       }
       const last = /[ \t]*(.*)/sy;
       last.lastIndex = pos;
       match = last.exec(source);
-      return res + sep + (match?.[1] ?? "");
+      return res + sep2 + (match?.[1] ?? "");
     }
     function doubleQuotedValue(source, onError) {
       let res = "";
@@ -26422,14 +26422,14 @@ var require_cst_stringify = __commonJS({
         }
       }
     }
-    function stringifyItem({ start, key, sep, value }) {
+    function stringifyItem({ start, key, sep: sep2, value }) {
       let res = "";
       for (const st of start)
         res += st.source;
       if (key)
         res += stringifyToken(key);
-      if (sep)
-        for (const st of sep)
+      if (sep2)
+        for (const st of sep2)
           res += st.source;
       if (value)
         res += stringifyToken(value);
@@ -27596,18 +27596,18 @@ var require_parser = __commonJS({
         if (this.type === "map-value-ind") {
           const prev = getPrevProps(this.peek(2));
           const start = getFirstKeyStartProps(prev);
-          let sep;
+          let sep2;
           if (scalar.end) {
-            sep = scalar.end;
-            sep.push(this.sourceToken);
+            sep2 = scalar.end;
+            sep2.push(this.sourceToken);
             delete scalar.end;
           } else
-            sep = [this.sourceToken];
+            sep2 = [this.sourceToken];
           const map = {
             type: "block-map",
             offset: scalar.offset,
             indent: scalar.indent,
-            items: [{ start, key: scalar, sep }]
+            items: [{ start, key: scalar, sep: sep2 }]
           };
           this.onKeyLine = true;
           this.stack[this.stack.length - 1] = map;
@@ -27760,15 +27760,15 @@ var require_parser = __commonJS({
                 } else if (isFlowToken(it.key) && !includesToken(it.sep, "newline")) {
                   const start2 = getFirstKeyStartProps(it.start);
                   const key = it.key;
-                  const sep = it.sep;
-                  sep.push(this.sourceToken);
+                  const sep2 = it.sep;
+                  sep2.push(this.sourceToken);
                   delete it.key;
                   delete it.sep;
                   this.stack.push({
                     type: "block-map",
                     offset: this.offset,
                     indent: this.indent,
-                    items: [{ start: start2, key, sep }]
+                    items: [{ start: start2, key, sep: sep2 }]
                   });
                 } else if (start.length > 0) {
                   it.sep = it.sep.concat(start, this.sourceToken);
@@ -27962,13 +27962,13 @@ var require_parser = __commonJS({
             const prev = getPrevProps(parent);
             const start = getFirstKeyStartProps(prev);
             fixFlowSeqItems(fc);
-            const sep = fc.end.splice(1, fc.end.length);
-            sep.push(this.sourceToken);
+            const sep2 = fc.end.splice(1, fc.end.length);
+            sep2.push(this.sourceToken);
             const map = {
               type: "block-map",
               offset: fc.offset,
               indent: fc.indent,
-              items: [{ start, key: fc, sep }]
+              items: [{ start, key: fc, sep: sep2 }]
             };
             this.onKeyLine = true;
             this.stack[this.stack.length - 1] = map;
@@ -28248,7 +28248,7 @@ var require_dist = __commonJS({
 
 // src/action.ts
 import { readFileSync } from "node:fs";
-import { relative, resolve } from "node:path";
+import { relative as relative2, resolve } from "node:path";
 
 // node_modules/@actions/core/lib/command.js
 import * as os from "os";
@@ -28744,8 +28744,8 @@ function warning(message, properties = {}) {
 }
 
 // src/adapters/directory.ts
-import { readdir as readdir2, readFile as readFile2 } from "node:fs/promises";
-import { join } from "node:path";
+import { lstat as lstat2, readdir as readdir2, readFile as readFile2, realpath } from "node:fs/promises";
+import { isAbsolute, join, relative, sep } from "node:path";
 
 // src/result.ts
 function ok(value) {
@@ -28800,6 +28800,7 @@ function globProblem(glob2) {
   if (glob2.includes("\\")) return "use / as the path separator";
   if (glob2.startsWith("/") || glob2.startsWith("./")) return "globs are relative to the repository root";
   if (glob2.startsWith("!")) return "a glob cannot start with !";
+  if (glob2.split("/").includes("..")) return "a glob cannot reach outside the repository root";
   try {
     (0, import_posix.default)(glob2, OPTIONS);
     return void 0;
@@ -28906,6 +28907,15 @@ function isValid(value) {
 }
 function isRecord(input) {
   return typeof input === "object" && input !== null && !Array.isArray(input);
+}
+function parseJson(text) {
+  try {
+    const value = JSON.parse(text);
+    return ok(value);
+  } catch (error2) {
+    const [, line, column] = / in JSON at position \d+ \(line (\d+) column (\d+)\)$/.exec(messageOf(error2)) ?? [];
+    return err(line === void 0 || column === void 0 ? null : { line: Number(line), column: Number(column) });
+  }
 }
 function decode(decoder, input) {
   const issues = [];
@@ -29042,7 +29052,7 @@ function parseYaml(file, source) {
     file,
     at: position(error2.pos[0]),
     where: null,
-    message: error2.message
+    message: `is not valid YAML: ${error2.code.toLowerCase().replaceAll("_", " ")}`
   }));
   if (isNonEmpty(syntax)) return err(syntax);
   const nodeAt = (path) => path.length === 0 ? document.contents : document.getIn(path, true);
@@ -29059,7 +29069,12 @@ function parseYaml(file, source) {
     const pair = (0, import_yaml.isMap)(parent) ? parent.items.find((item) => (0, import_yaml.isScalar)(item.key) && item.key.value === key) : void 0;
     return (0, import_yaml.isNode)(pair?.key) && pair.key.range ? pair.key.range[0] : valueOffset(path.slice(0, -1));
   };
-  const value = document.toJS();
+  let value;
+  try {
+    value = document.toJS();
+  } catch {
+    return err([{ file, at: null, where: null, message: "is not valid YAML: an alias cannot be expanded" }]);
+  }
   return ok({
     value,
     locate: (issue2) => {
@@ -29234,11 +29249,41 @@ function compareText(a, b) {
 
 // src/load/tree.ts
 var IGNORED_DIRECTORIES = /* @__PURE__ */ new Set([".git", "node_modules"]);
+var REFUSALS = {
+  absolute: "is an absolute path",
+  backslash: "contains a backslash, which is not a path separator in a repository",
+  "dot-segment": "has a . or .. segment",
+  "git-metadata": "is inside .git",
+  "symbolic-link": "is a symbolic link",
+  submodule: "is a git submodule",
+  "outside-root": "resolves outside the repository root"
+};
+function pathRefusal(path) {
+  if (path.startsWith("/") || /^[A-Za-z]:/.test(path)) return "absolute";
+  if (path.includes("\\")) return "backslash";
+  const segments = path.split("/");
+  if (segments.some((segment) => segment === "." || segment === "..")) return "dot-segment";
+  if (segments.includes(".git")) return "git-metadata";
+  return void 0;
+}
 async function readFile(tree, path) {
+  let read;
   try {
-    return ok(await tree.read(path));
+    read = await tree.read(path);
   } catch (error2) {
     return err([fileProblem(path, `cannot be read: ${messageOf(error2)}`)]);
+  }
+  switch (read.kind) {
+    case "file":
+      return ok(read.text);
+    case "missing":
+      return ok(void 0);
+    case "refused":
+      return err([fileProblem(path, REFUSALS[read.refusal])]);
+    default: {
+      const _exhaustive = read;
+      return _exhaustive;
+    }
   }
 }
 async function listFiles(tree) {
@@ -29319,7 +29364,7 @@ function pnpmGlobs(source) {
 }
 var npmWorkspaces = (input, context) => Array.isArray(input) ? array(workspaceGlob)(input, context) : object((field) => field("packages", array(workspaceGlob)), IGNORE)(input, context);
 function npmGlobs(source) {
-  const json = parseJson(ROOT_MANIFEST, source);
+  const json = jsonFile(ROOT_MANIFEST, source);
   if (!json.ok) return json;
   const decoded = decode(
     object((field) => field("workspaces", npmWorkspaces), IGNORE),
@@ -29349,20 +29394,16 @@ async function readManifest(tree, dir) {
   const file = dir + MANIFEST;
   const source = await readFile(tree, file);
   if (!source.ok || source.value === void 0) return source.ok ? ok(void 0) : source;
-  const json = parseJson(file, source.value);
+  const json = jsonFile(file, source.value);
   if (!json.ok) return json;
   const decoded = decode(manifestDecoder, json.value);
   if (!decoded.ok) return err(jsonProblems(file, decoded.error));
   const name = parsePackageName(decoded.value.name);
   return ok(name === void 0 ? void 0 : { name, dir, dependencies: decoded.value.dependencies });
 }
-function parseJson(file, source) {
-  try {
-    const value = JSON.parse(source);
-    return ok(value);
-  } catch (error2) {
-    return err([fileProblem(file, `is not valid JSON: ${messageOf(error2)}`)]);
-  }
+function jsonFile(file, source) {
+  const json = parseJson(source);
+  return json.ok ? json : err([{ file, at: json.error, where: null, message: "is not valid JSON" }]);
 }
 function jsonProblems(file, issues) {
   return mapNonEmpty(issues, ({ path, message }) => ({
@@ -29394,17 +29435,28 @@ async function loadModel(tree, configPath) {
 
 // src/adapters/directory.ts
 function directoryTree(root) {
+  let realRoot;
   return {
     files: async () => (await walk(root, "")).sort(),
     read: async (path) => {
+      const refusal = pathRefusal(path);
+      if (refusal !== void 0) return { kind: "refused", refusal };
+      const file = join(root, path);
       try {
-        return await readFile2(join(root, path), "utf8");
+        if ((await lstat2(file)).isSymbolicLink()) return { kind: "refused", refusal: "symbolic-link" };
+        realRoot ??= realpath(root);
+        if (!isInside(await realRoot, await realpath(file))) return { kind: "refused", refusal: "outside-root" };
+        return { kind: "file", text: await readFile2(file, "utf8") };
       } catch (error2) {
-        if (isMissing(error2)) return void 0;
+        if (isMissing(error2)) return { kind: "missing" };
         throw error2;
       }
     }
   };
+}
+function isInside(root, file) {
+  const path = relative(root, file);
+  return path !== "" && path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path);
 }
 async function walk(root, dir) {
   const found = await readdir2(join(root, dir), { withFileTypes: true });
@@ -29412,7 +29464,7 @@ async function walk(root, dir) {
     found.map(async (entry) => {
       const path = dir === "" ? entry.name : `${dir}/${entry.name}`;
       if (entry.isDirectory()) return IGNORED_DIRECTORIES.has(entry.name) ? [] : walk(root, path);
-      return entry.isFile() ? [path] : [];
+      return entry.isFile() || entry.isSymbolicLink() ? [path] : [];
     })
   );
   return nested.flat();
@@ -29448,6 +29500,10 @@ function incomplete(cause, paths = []) {
 // src/adapters/git.ts
 var execFileAsync = promisify(execFile);
 var DIFF = ["diff", "--name-only", "--no-renames", "--no-relative", "-z"];
+var LINKS = /* @__PURE__ */ new Map([
+  ["120000", "symbolic-link"],
+  ["160000", "submodule"]
+]);
 function gitRepo(cwd) {
   const git = async (args) => {
     try {
@@ -29468,10 +29524,18 @@ function gitRepo(cwd) {
     },
     treeAt: (commit) => {
       let listing;
-      const files = () => listing ??= git(["ls-tree", "-r", "--name-only", "-z", commit]).then((output) => new Set(split(output)));
+      const modes = () => listing ??= git(["ls-tree", "-r", "-z", commit]).then(parseModes);
       return {
-        files: async () => [...await files()].sort(),
-        read: async (path) => (await files()).has(path) ? git(["cat-file", "blob", `${commit}:./${path}`]) : void 0
+        files: async () => [...(await modes()).keys()].sort(),
+        read: async (path) => {
+          const refusal = pathRefusal(path);
+          if (refusal !== void 0) return { kind: "refused", refusal };
+          const mode = (await modes()).get(path);
+          if (mode === void 0) return { kind: "missing" };
+          const link = LINKS.get(mode);
+          if (link !== void 0) return { kind: "refused", refusal: link };
+          return { kind: "file", text: await git(["cat-file", "blob", `${commit}:./${path}`]) };
+        }
       };
     },
     changes: async (range) => {
@@ -29484,6 +29548,11 @@ function gitRepo(cwd) {
     },
     prefix
   };
+}
+function parseModes(output) {
+  return new Map(
+    split(output).map((entry) => [entry.slice(entry.indexOf("	") + 1), entry.slice(0, entry.indexOf(" "))])
+  );
 }
 function split(output) {
   return output.split("\0").filter((entry) => entry !== "");
@@ -29579,8 +29648,9 @@ function githubRepo(options) {
       }
     });
     if (!response.ok) throw new Error(`GET ${path} returned ${String(response.status)} ${response.statusText}`.trim());
-    const body = await response.json();
-    const decoded = decode(decoder, body);
+    const body = parseJson(await response.text());
+    if (!body.ok) throw new Error(`GET ${path} returned a body that is not valid JSON`);
+    const decoded = decode(decoder, body.value);
     if (!decoded.ok)
       throw new Error(`GET ${path} returned a body lane-router cannot read: ${describe(decoded.error[0])}`);
     return decoded.value;
@@ -29978,12 +30048,14 @@ function inputProblem({ path, message }) {
 }
 function readEventFile(name, path) {
   if (path === void 0 || path === "") return readEvent(name, {});
+  let text;
   try {
-    const payload = JSON.parse(readFileSync(path, "utf8"));
-    return readEvent(name, payload);
+    text = readFileSync(path, "utf8");
   } catch (error2) {
     return err([`cannot read the event payload at ${path}: ${messageOf(error2)}`]);
   }
+  const payload = parseJson(text);
+  return payload.ok ? readEvent(name, payload.value) : err([`cannot read the event payload at ${path}: it is not valid JSON`]);
 }
 function blankOr(decoder) {
   return (input, context) => input === "" ? void 0 : decoder(input, context);
@@ -30061,7 +30133,7 @@ function lines(text) {
 function requestFor(invocation) {
   const { source, range, lastGreenDepth } = invocation;
   const github = githubRepo(invocation.github);
-  const under = () => relative(process.cwd(), invocation.root) === "" ? Promise.resolve("") : gitRepo(invocation.root).prefix();
+  const under = () => relative2(process.cwd(), invocation.root) === "" ? Promise.resolve("") : gitRepo(invocation.root).prefix();
   const changes = source.kind === "files" ? () => Promise.resolve(source.files) : async (requested) => github.compare(requested, { expectedCount: source.expectedCount, under: await under() });
   if (invocation.mode === "pr") return { mode: "pr", range, changes };
   const lastGreen = lastGreenDepth === null ? null : github.lastGreen({ head: range.head, depth: lastGreenDepth });
