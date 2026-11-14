@@ -7,6 +7,7 @@ import { CONFIG } from "./support/model.ts";
 
 const BASE = "a".repeat(40);
 const HEAD = "b".repeat(40);
+const MERGE_BASE = "c".repeat(40);
 const ACME = fixtureDir("acme");
 const ALL = ["api", "web", "e2e", "lint"];
 
@@ -140,22 +141,12 @@ describe("the compare API", () => {
     expect(run.outputs.complete).toBe("true");
   });
 
-  it("compares before...after on a push", async () => {
+  it("routes a pull request whose base branch moved on, which the compare API reports as diverged", async () => {
     const github = await fakeGitHub();
-    compare(github, BASE, HEAD, ["packages/api/src/user.ts"]);
-    const run = await runAction({ workspace: ACME, event: push(BASE), github });
-    expect(github.requests).toEqual([`/repos/acme/mono/compare/${BASE}...${HEAD}`]);
-    expect(run.summary).toContain("mode push");
+    compare(github, BASE, HEAD, ["packages/ui/src/button.tsx"], { status: "diverged", mergeBase: MERGE_BASE });
+    const run = await runAction({ workspace: ACME, event: pullRequest(1), github });
+    expect(parsed(run.outputs.lanes)).toEqual(["web", "e2e", "lint"]);
     expect(run.outputs.complete).toBe("true");
-  });
-
-  it("fails closed without a request when a push has an all-zero before", async () => {
-    const github = await fakeGitHub();
-    const run = await runAction({ workspace: ACME, event: push("0".repeat(40)), github });
-    expect(run.exitCode).toBe(0);
-    expect(github.requests).toEqual([]);
-    expect(parsed(run.outputs.lanes)).toEqual(ALL);
-    expect(run.outputs.complete).toBe("false");
   });
 
   it("re-roots paths under a nested working-directory and fails closed on a path outside it", async () => {
@@ -170,6 +161,95 @@ describe("the compare API", () => {
     const outside = await runAction({ workspace: repo.dir, inputs, event: pullRequest(2), github });
     expect(parsed(outside.outputs.lanes)).toEqual(ALL);
     expect(outside.outputs.complete).toBe("false");
+  });
+});
+
+describe("a push", () => {
+  const BUTTON = "packages/ui/src/button.tsx";
+
+  it("routes before...after precisely when head extends before", async () => {
+    const github = await fakeGitHub();
+    compare(github, BASE, HEAD, [BUTTON], { status: "ahead", mergeBase: BASE });
+    const run = await runAction({ workspace: ACME, event: push(BASE), github });
+    expect(github.requests).toEqual([`/repos/acme/mono/compare/${BASE}...${HEAD}`]);
+    expect(run.summary).toContain("mode push");
+    expect(parsed(run.outputs.lanes)).toEqual(["web", "e2e", "lint"]);
+    expect(run.outputs.api).toBe("skip");
+    expect(run.outputs.complete).toBe("true");
+  });
+
+  it("runs every lane after a force push, which the compare API reports as diverged", async () => {
+    const github = await fakeGitHub();
+    compare(github, BASE, HEAD, [BUTTON], { status: "diverged", mergeBase: MERGE_BASE });
+    const run = await runAction({ workspace: ACME, event: push(BASE), github });
+    expect(run.exitCode).toBe(0);
+    expect(parsed(run.outputs.lanes)).toEqual(ALL);
+    expect(run.outputs.complete).toBe("false");
+    expect(jsonObject(run.outputs.reasons).api).toBe(
+      "fail closed, head does not extend base, so the compare API omits what the push dropped: status diverged, merge base ccccccc",
+    );
+    expect(run.annotations.map(({ level }) => level)).toEqual(["warning"]);
+  });
+
+  it("runs every lane when the push moved the branch back, which the compare API reports as behind", async () => {
+    const github = await fakeGitHub();
+    compare(github, BASE, HEAD, [BUTTON], { status: "behind", mergeBase: HEAD });
+    const run = await runAction({ workspace: ACME, event: push(BASE), github });
+    expect(parsed(run.outputs.lanes)).toEqual(ALL);
+    expect(run.outputs.complete).toBe("false");
+    expect(jsonObject(run.outputs.reasons).api).toContain("status behind");
+  });
+
+  it("runs every lane when the merge base is not before, whatever the status says", async () => {
+    const github = await fakeGitHub();
+    compare(github, BASE, HEAD, [BUTTON], { status: "ahead", mergeBase: MERGE_BASE });
+    const run = await runAction({ workspace: ACME, event: push(BASE), github });
+    expect(parsed(run.outputs.lanes)).toEqual(ALL);
+    expect(run.outputs.complete).toBe("false");
+    expect(jsonObject(run.outputs.reasons).api).toContain("merge base ccccccc");
+  });
+
+  it("runs every lane without a request when the push names no before commit", async () => {
+    const github = await fakeGitHub();
+    const run = await runAction({ workspace: ACME, event: { name: "push", payload: { after: HEAD } }, github });
+    expect(run.exitCode).toBe(0);
+    expect(github.requests).toEqual([]);
+    expect(parsed(run.outputs.lanes)).toEqual(ALL);
+    expect(run.outputs.complete).toBe("false");
+    expect(jsonObject(run.outputs.reasons).api).toBe("fail closed, there is no base commit to compare against");
+  });
+
+  it("runs every lane without a request when a push has an all-zero before", async () => {
+    const github = await fakeGitHub();
+    const run = await runAction({ workspace: ACME, event: push("0".repeat(40)), github });
+    expect(run.exitCode).toBe(0);
+    expect(github.requests).toEqual([]);
+    expect(parsed(run.outputs.lanes)).toEqual(ALL);
+    expect(run.outputs.complete).toBe("false");
+  });
+
+  it("applies the same rule to a base and head given as inputs", async () => {
+    const github = await fakeGitHub();
+    compare(github, BASE, HEAD, [BUTTON], { status: "diverged", mergeBase: MERGE_BASE });
+    const run = await runAction({
+      workspace: ACME,
+      inputs: { mode: "push", base: BASE, head: HEAD },
+      event: { name: "workflow_dispatch", payload: {} },
+      github,
+    });
+    expect(parsed(run.outputs.lanes)).toEqual(ALL);
+    expect(run.outputs.complete).toBe("false");
+  });
+
+  it("runs every lane on a compare status it does not know", async () => {
+    const github = await fakeGitHub();
+    compare(github, BASE, HEAD, [BUTTON], { status: "sideways", mergeBase: BASE });
+    const run = await runAction({ workspace: ACME, event: push(BASE), github });
+    expect(run.exitCode).toBe(0);
+    expect(parsed(run.outputs.lanes)).toEqual(ALL);
+    expect(run.outputs.complete).toBe("false");
+    expect(run.annotations.map(({ level }) => level)).toEqual(["error"]);
+    expect(run.annotations[0]?.message).toContain("status");
   });
 });
 

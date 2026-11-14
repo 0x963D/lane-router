@@ -43,17 +43,16 @@ export interface CompareFile {
   readonly status?: string;
 }
 
-/** `mergeBase` defaults to `base`, as when head descends from base. */
 export function compare(
   github: FakeGitHub,
   base: string,
   head: string,
   files: readonly (string | CompareFile)[],
-  options: { readonly mergeBase?: string } = {},
+  options: { readonly mergeBase?: string; readonly status?: string } = {},
 ): void {
   github.on(`/compare/${base}...${head}`, {
     body: {
-      status: "ahead",
+      status: options.status ?? "ahead",
       merge_base_commit: { sha: options.mergeBase ?? base },
       files: files.map((file) => (typeof file === "string" ? { filename: file, status: "modified" } : file)),
     },

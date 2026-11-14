@@ -1,4 +1,5 @@
 import { changedFiles, incomplete, type ChangedFiles, type Range } from "../core/change.ts";
+import type { Mode } from "../core/plan.ts";
 import {
   array,
   decode,
@@ -6,6 +7,7 @@ import {
   INVALID,
   integer,
   isValid,
+  literal,
   nonEmptyString,
   object,
   optional,
@@ -19,6 +21,7 @@ import { err, mapNonEmpty, ok, type NonEmpty, type Result } from "../result.ts";
 /* Every GitHub-specific fact lives here. Wire shapes are decoded here and never leave this file. */
 
 const COMPARE_LIMIT = 300;
+const COMPARE_STATUSES = ["ahead", "identical", "behind", "diverged"] as const;
 const IGNORE = { unknownKeys: "ignore" } as const;
 
 export type GitHubEvent =
@@ -46,10 +49,10 @@ const pullRequestEvent = object(
 );
 
 const pushEvent = object((field) => {
-  const before = field("before", nonEmptyString);
+  const before = field("before", optional(nonEmptyString));
   const after = field("after", nonEmptyString);
   if (!isValid(before) || !isValid(after)) return INVALID;
-  return { kind: "push" as const, before: /^0+$/.test(before) ? null : before, after };
+  return { kind: "push" as const, before: before === undefined || /^0+$/.test(before) ? null : before, after };
 }, IGNORE);
 
 const EVENT_DECODERS = new Map<string, Decoder<GitHubEvent>>([
@@ -68,6 +71,7 @@ export function readEvent(name: string, payload: unknown): Result<GitHubEvent, N
 }
 
 const compareResponse = object((field) => {
+  const status = field("status", literal(...COMPARE_STATUSES));
   const mergeBase = field("merge_base_commit", sha("sha"));
   const files = field(
     "files",
@@ -79,18 +83,19 @@ const compareResponse = object((field) => {
       }, IGNORE),
     ),
   );
-  return isValid(mergeBase) && isValid(files) ? { mergeBase, files } : INVALID;
+  return isValid(status) && isValid(mergeBase) && isValid(files) ? { status, mergeBase, files } : INVALID;
 }, IGNORE);
 
 export interface GitHubRepo {
   /**
    * The files changed from the merge base of `range.base` and `range.head`, which the list carries,
    * from the compare endpoint. Resolves incomplete when there is no base, when the listing reaches
-   * the 300-file cap, or when it differs from `expectedCount`. Rejects on any HTTP or decoding failure.
+   * the 300-file cap, or when it differs from `expectedCount`. In push mode it also resolves
+   * incomplete unless head extends base. Rejects on any HTTP or decoding failure.
    */
   compare(
     range: Range,
-    options: { readonly expectedCount: number | null; readonly under: string },
+    options: { readonly mode: Mode; readonly expectedCount: number | null; readonly under: string },
   ): Promise<ChangedFiles>;
 }
 
@@ -118,13 +123,15 @@ export function githubRepo(options: {
   };
 
   return {
-    compare: async (range, { expectedCount, under }) => {
+    compare: async (range, { mode, expectedCount, under }) => {
       if (range.base === null) return incomplete({ kind: "no-base" });
-      const { mergeBase, files: listed } = await get(
-        `/compare/${encodeURIComponent(range.base)}...${encodeURIComponent(range.head)}`,
-        compareResponse,
-      );
+      const path = `/compare/${encodeURIComponent(range.base)}...${encodeURIComponent(range.head)}`;
+      const { status, mergeBase, files: listed } = await get(path, compareResponse);
       const files = changedFiles(listed, { under, mergeBase });
+      const extendsBase = (status === "ahead" || status === "identical") && mergeBase === range.base;
+      if (mode === "push" && !extendsBase) {
+        return incomplete({ kind: "not-fast-forward", status, mergeBase }, files.paths);
+      }
       if (listed.length >= COMPARE_LIMIT) {
         return incomplete({ kind: "truncated", listed: listed.length, limit: COMPARE_LIMIT }, files.paths);
       }

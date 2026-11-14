@@ -10141,6 +10141,10 @@ function describeCause(cause) {
       return `the compare API listed ${fileCount(cause.listed)} but the pull request changes ${String(cause.expected)}`;
     case "no-base":
       return "there is no base commit to compare against";
+    case "not-fast-forward": {
+      const reported = `status ${cause.status}, merge base ${shortRevision(cause.mergeBase)}`;
+      return `head does not extend base, so the compare API omits what the push dropped: ${reported}`;
+    }
     case "invalid-path":
       return `${cause.raw} is not a path inside the routed root`;
     case "no-base-graph": {

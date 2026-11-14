@@ -208,7 +208,8 @@ function requestFor(invocation: Invocation, head: RepoTree): PlanRequest {
   const changes: ChangeSource =
     source.kind === "files"
       ? () => Promise.resolve(source.files)
-      : async (requested) => github.compare(requested, { expectedCount: source.expectedCount, under: await under() });
+      : async (requested) =>
+          github.compare(requested, { mode, expectedCount: source.expectedCount, under: await under() });
   return { mode, range, changes, baseGraph: baseGraphOf(head, invocation.config, repo) };
 }
 

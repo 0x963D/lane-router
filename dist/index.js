@@ -29589,6 +29589,7 @@ function stderrOf(error2) {
 
 // src/adapters/github.ts
 var COMPARE_LIMIT = 300;
+var COMPARE_STATUSES = ["ahead", "identical", "behind", "diverged"];
 var IGNORE2 = { unknownKeys: "ignore" };
 var sha = (key) => object((field) => field(key, nonEmptyString), IGNORE2);
 var pullRequestEvent = object(
@@ -29604,10 +29605,10 @@ var pullRequestEvent = object(
   IGNORE2
 );
 var pushEvent = object((field) => {
-  const before = field("before", nonEmptyString);
+  const before = field("before", optional(nonEmptyString));
   const after = field("after", nonEmptyString);
   if (!isValid(before) || !isValid(after)) return INVALID;
-  return { kind: "push", before: /^0+$/.test(before) ? null : before, after };
+  return { kind: "push", before: before === void 0 || /^0+$/.test(before) ? null : before, after };
 }, IGNORE2);
 var EVENT_DECODERS = /* @__PURE__ */ new Map([
   ["pull_request", pullRequestEvent],
@@ -29621,6 +29622,7 @@ function readEvent(name, payload) {
   return decoded.ok ? decoded : err(mapNonEmpty(decoded.error, (issue2) => `the ${name} event payload ${describe(issue2)}`));
 }
 var compareResponse = object((field) => {
+  const status = field("status", literal(...COMPARE_STATUSES));
   const mergeBase = field("merge_base_commit", sha("sha"));
   const files = field(
     "files",
@@ -29632,7 +29634,7 @@ var compareResponse = object((field) => {
       }, IGNORE2)
     )
   );
-  return isValid(mergeBase) && isValid(files) ? { mergeBase, files } : INVALID;
+  return isValid(status) && isValid(mergeBase) && isValid(files) ? { status, mergeBase, files } : INVALID;
 }, IGNORE2);
 function githubRepo(options) {
   const get = async (path, decoder) => {
@@ -29653,13 +29655,15 @@ function githubRepo(options) {
     return decoded.value;
   };
   return {
-    compare: async (range, { expectedCount, under }) => {
+    compare: async (range, { mode, expectedCount, under }) => {
       if (range.base === null) return incomplete({ kind: "no-base" });
-      const { mergeBase, files: listed } = await get(
-        `/compare/${encodeURIComponent(range.base)}...${encodeURIComponent(range.head)}`,
-        compareResponse
-      );
+      const path = `/compare/${encodeURIComponent(range.base)}...${encodeURIComponent(range.head)}`;
+      const { status, mergeBase, files: listed } = await get(path, compareResponse);
       const files = changedFiles(listed, { under, mergeBase });
+      const extendsBase = (status === "ahead" || status === "identical") && mergeBase === range.base;
+      if (mode === "push" && !extendsBase) {
+        return incomplete({ kind: "not-fast-forward", status, mergeBase }, files.paths);
+      }
       if (listed.length >= COMPARE_LIMIT) {
         return incomplete({ kind: "truncated", listed: listed.length, limit: COMPARE_LIMIT }, files.paths);
       }
@@ -29882,6 +29886,10 @@ function describeCause(cause) {
       return `the compare API listed ${fileCount(cause.listed)} but the pull request changes ${String(cause.expected)}`;
     case "no-base":
       return "there is no base commit to compare against";
+    case "not-fast-forward": {
+      const reported = `status ${cause.status}, merge base ${shortRevision(cause.mergeBase)}`;
+      return `head does not extend base, so the compare API omits what the push dropped: ${reported}`;
+    }
     case "invalid-path":
       return `${cause.raw} is not a path inside the routed root`;
     case "no-base-graph": {
@@ -30081,7 +30089,7 @@ function requestFor(invocation, head) {
   const github = githubRepo(invocation.github);
   const repo = gitRepo(invocation.root);
   const under = () => relative2(process.cwd(), invocation.root) === "" ? Promise.resolve("") : repo.prefix();
-  const changes = source.kind === "files" ? () => Promise.resolve(source.files) : async (requested) => github.compare(requested, { expectedCount: source.expectedCount, under: await under() });
+  const changes = source.kind === "files" ? () => Promise.resolve(source.files) : async (requested) => github.compare(requested, { mode, expectedCount: source.expectedCount, under: await under() });
   return { mode, range, changes, baseGraph: baseGraphOf(head, invocation.config, repo) };
 }
 async function publish(plan) {

@@ -10,6 +10,11 @@ export type IncompleteCause =
   | { readonly kind: "truncated"; readonly listed: number; readonly limit: number }
   | { readonly kind: "count-mismatch"; readonly listed: number; readonly expected: number }
   | { readonly kind: "no-base" }
+  /**
+   * A push whose head does not extend base, such as a force push. A listing from their merge base
+   * omits what the dropped commits changed.
+   */
+  | { readonly kind: "not-fast-forward"; readonly status: string; readonly mergeBase: string }
   | { readonly kind: "invalid-path"; readonly raw: string }
   /** A package manifest changed, and the graph at `commit`, the commit the change was diffed from, cannot be built. */
   | { readonly kind: "no-base-graph"; readonly commit: string | null; readonly reason: string }
