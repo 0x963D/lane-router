@@ -29692,7 +29692,7 @@ function decide(routing, lane) {
       const because = routing.paths.flatMap(
         ({ path, placements }) => placements.flatMap((placement) => {
           const through = placement.reach.get(lane.name);
-          return through !== void 0 && counts(routing, placement) ? [{ kind: "placement", path, placement, through }] : [];
+          return through !== void 0 && isCounted(routing, placement) ? [{ kind: "placement", path, placement, through }] : [];
         })
       );
       if (routing.kind === "ordinary" && lane.floor) because.push({ kind: "floor" });
@@ -29708,7 +29708,7 @@ function decide(routing, lane) {
 function skip(because) {
   return { kind: "skip", because, [proven]: true };
 }
-function counts(routing, placement) {
+function isCounted(routing, placement) {
   return routing.kind !== "docs-only" || readsAsText(placement);
 }
 function readsAsText(placement) {
@@ -30013,10 +30013,10 @@ function invocationDecoder(event, env) {
   return refine(inputsDecoder, (inputs, context) => toInvocation(inputs, event, env, context));
 }
 function toInvocation(inputs, event, env, context) {
-  const fromEvent = eventRange(event);
-  const mode = inputs.mode ?? fromEvent.mode;
-  const base = inputs.base === "" ? fromEvent.base : inputs.base;
-  const head = inputs.head === "" ? fromEvent.head ?? env.GITHUB_SHA ?? "" : inputs.head;
+  const fromEvent = eventDefaults(event);
+  const mode = inputs.mode ?? fromEvent?.mode;
+  const base = inputs.base === "" ? fromEvent?.base : inputs.base;
+  const head = inputs.head === "" ? fromEvent?.head ?? env.GITHUB_SHA ?? "" : inputs.head;
   const repository = env.GITHUB_REPOSITORY ?? "";
   const usesApi = inputs.files === "" || mode === "push" && inputs.lastGreen === "auto";
   const eventText = event.kind === "other" ? `a ${event.name || "manual"} event` : `a ${event.kind} event`;
@@ -30041,14 +30041,14 @@ function toInvocation(inputs, event, env, context) {
     github: { apiUrl: env.GITHUB_API_URL ?? "https://api.github.com", repository, token: inputs.token }
   };
 }
-function eventRange(event) {
+function eventDefaults(event) {
   switch (event.kind) {
     case "pull_request":
       return { mode: "pr", base: event.base, head: event.head };
     case "push":
       return { mode: "push", base: event.before, head: event.after };
     case "other":
-      return { mode: void 0, base: void 0, head: void 0 };
+      return void 0;
     default: {
       const _exhaustive = event;
       return _exhaustive;

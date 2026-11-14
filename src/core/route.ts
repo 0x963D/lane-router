@@ -113,7 +113,7 @@ export function decide(routing: Routing, lane: Lane): LaneDecision {
       const because = routing.paths.flatMap(({ path, placements }) =>
         placements.flatMap((placement): RunReason[] => {
           const through = placement.reach.get(lane.name);
-          return through !== undefined && counts(routing, placement)
+          return through !== undefined && isCounted(routing, placement)
             ? [{ kind: "placement", path, placement, through }]
             : [];
         }),
@@ -134,7 +134,7 @@ function skip(because: SkipReason): Skip {
 }
 
 /** Whether a placement selects its lanes in this routing. The explanation marks the ones that do not. */
-export function counts(routing: Routing, placement: Placement): boolean {
+export function isCounted(routing: Routing, placement: Placement): boolean {
   return routing.kind !== "docs-only" || readsAsText(placement);
 }
 

@@ -2,7 +2,7 @@ import type { IncompleteCause } from "./core/change.ts";
 import type { FixedOutput, LaneName } from "./core/ids.ts";
 import type { Through } from "./core/model.ts";
 import { baseOf, isComplete, type Mode, type Plan, type PlannedLane } from "./core/plan.ts";
-import { counts, type Placement, type Routing, type RunReason, type SkipReason } from "./core/route.ts";
+import { isCounted, type Placement, type Routing, type RunReason, type SkipReason } from "./core/route.ts";
 
 /*
  * Plan in, text out. Every user-visible sentence about a plan comes from here, so the Action
@@ -224,7 +224,7 @@ function placementLabel(placement: Placement): string {
 
 function placementLanes(routing: Routing, placement: Placement): string {
   const lanes = [...placement.reach.keys()].join(", ") || "no lane";
-  return counts(routing, placement) ? lanes : `${lanes} (not counted in a docs-only change)`;
+  return isCounted(routing, placement) ? lanes : `${lanes} (not counted in a docs-only change)`;
 }
 
 /** The CLI's default output: the header, the lane table, then each changed path with its placements. */
@@ -324,7 +324,7 @@ function reasonJson(routing: Routing, reason: RunReason): RunReasonJson {
         path: reason.path,
         placement: placementJson(reason.placement),
         through: reason.through.kind === "reads" ? reason.through.chain : [],
-        counted: counts(routing, reason.placement),
+        counted: isCounted(routing, reason.placement),
       };
     case "floor":
     case "incomplete":

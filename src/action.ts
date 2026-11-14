@@ -144,10 +144,10 @@ function invocationDecoder(event: GitHubEvent, env: NodeJS.ProcessEnv): Decoder<
 
 /** The rules that relate inputs to each other and to the event. */
 function toInvocation(inputs: Inputs, event: GitHubEvent, env: NodeJS.ProcessEnv, context: DecodeContext) {
-  const fromEvent = eventRange(event);
-  const mode = inputs.mode ?? fromEvent.mode;
-  const base = inputs.base === "" ? fromEvent.base : inputs.base;
-  const head = inputs.head === "" ? (fromEvent.head ?? env.GITHUB_SHA ?? "") : inputs.head;
+  const fromEvent = eventDefaults(event);
+  const mode = inputs.mode ?? fromEvent?.mode;
+  const base = inputs.base === "" ? fromEvent?.base : inputs.base;
+  const head = inputs.head === "" ? (fromEvent?.head ?? env.GITHUB_SHA ?? "") : inputs.head;
   const repository = env.GITHUB_REPOSITORY ?? "";
   const usesApi = inputs.files === "" || (mode === "push" && inputs.lastGreen === "auto");
   const eventText = event.kind === "other" ? `a ${event.name || "manual"} event` : `a ${event.kind} event`;
@@ -185,19 +185,17 @@ function toInvocation(inputs: Inputs, event: GitHubEvent, env: NodeJS.ProcessEnv
   } satisfies Invocation;
 }
 
-/** `base` is undefined when the event has none, and null when it has one that cannot be compared. */
-function eventRange(event: GitHubEvent): {
-  readonly mode: Mode | undefined;
-  readonly base: string | null | undefined;
-  readonly head: string | undefined;
-} {
+/** The mode and range an event implies. Undefined for an event that carries neither, such as workflow_dispatch. */
+function eventDefaults(
+  event: GitHubEvent,
+): { readonly mode: Mode; readonly base: string | null; readonly head: string } | undefined {
   switch (event.kind) {
     case "pull_request":
       return { mode: "pr", base: event.base, head: event.head };
     case "push":
       return { mode: "push", base: event.before, head: event.after };
     case "other":
-      return { mode: undefined, base: undefined, head: undefined };
+      return undefined;
     default: {
       const _exhaustive: never = event;
       return _exhaustive;

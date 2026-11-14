@@ -9397,7 +9397,7 @@ function decide(routing, lane) {
       const because = routing.paths.flatMap(
         ({ path, placements }) => placements.flatMap((placement) => {
           const through = placement.reach.get(lane.name);
-          return through !== void 0 && counts(routing, placement) ? [{ kind: "placement", path, placement, through }] : [];
+          return through !== void 0 && isCounted(routing, placement) ? [{ kind: "placement", path, placement, through }] : [];
         })
       );
       if (routing.kind === "ordinary" && lane.floor) because.push({ kind: "floor" });
@@ -9413,7 +9413,7 @@ function decide(routing, lane) {
 function skip(because) {
   return { kind: "skip", because, [proven]: true };
 }
-function counts(routing, placement) {
+function isCounted(routing, placement) {
   return routing.kind !== "docs-only" || readsAsText(placement);
 }
 function readsAsText(placement) {
@@ -10109,7 +10109,7 @@ function placementLabel(placement) {
 }
 function placementLanes(routing, placement) {
   const lanes = [...placement.reach.keys()].join(", ") || "no lane";
-  return counts(routing, placement) ? lanes : `${lanes} (not counted in a docs-only change)`;
+  return isCounted(routing, placement) ? lanes : `${lanes} (not counted in a docs-only change)`;
 }
 function explainText(plan2) {
   const lanes = table([
@@ -10161,7 +10161,7 @@ function reasonJson(routing, reason) {
         path: reason.path,
         placement: placementJson(reason.placement),
         through: reason.through.kind === "reads" ? reason.through.chain : [],
-        counted: counts(routing, reason.placement)
+        counted: isCounted(routing, reason.placement)
       };
     case "floor":
     case "incomplete":
