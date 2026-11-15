@@ -3,7 +3,6 @@ import type { ChangedFiles, IncompleteCause, Range } from "./change.ts";
 import type { PackageName, RepoPath } from "./ids.ts";
 import {
   joinReach,
-  VIA,
   type BuiltIn,
   type Lane,
   type PackageDirs,
@@ -153,26 +152,5 @@ function skip(because: SkipReason): Skip {
 
 /** False for a placement that a docs-only change ignores. */
 export function isCounted(routing: Routing, placement: Placement): boolean {
-  return routing.kind !== "docs-only" || readsAsText(placement);
-}
-
-/** The docs-only rule. In a docs-only change only placements that read the file as text count. */
-function readsAsText(placement: Placement): boolean {
-  switch (placement.kind) {
-    case "built-in":
-      return true;
-    case "row": {
-      const { target } = placement.row;
-      return target.kind === "lanes" || VIA[target.via].readsAsText;
-    }
-    case "package":
-      return false;
-    case "docs":
-    case "unmatched":
-      return true;
-    default: {
-      const _exhaustive: never = placement;
-      return _exhaustive;
-    }
-  }
+  return routing.kind !== "docs-only" || placement.kind !== "package";
 }

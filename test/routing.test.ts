@@ -173,7 +173,7 @@ describe("unmatched paths", () => {
 });
 
 describe("docs-only changes", () => {
-  it("count only the placements that read the file as text", async () => {
+  it("count matching explicit rows", async () => {
     const plan = await planFor("acme", ["README.md", "docs/guide.md"]);
     expect(plan.event.kind).toBe("docs-only");
     expect(running(plan)).toEqual(["web"]);
@@ -185,20 +185,29 @@ describe("docs-only changes", () => {
     expect(running(plan)).toEqual(["api", "web", "e2e"]);
   });
 
-  it("do not count package placements, because Markdown is not compiled", async () => {
+  it("do not count package placements without an explicit row", async () => {
     const plan = await planFor("acme", ["packages/api/README.md"]);
     expect(placementKinds(plan, "packages/api/README.md")).toEqual(["package", "docs"]);
     expect(running(plan)).toEqual([]);
   });
 
-  it("do not count via: code or via: tests rows", async () => {
+  it("count via: code and via: tests rows", async () => {
     const rows = [
       '  - match: ["docs/gen/*.md"]\n    packages: ["@acme/api"]\n    via: code\n    why: Generated.\n',
       '  - match: ["docs/qa/*.md"]\n    packages: ["@acme/web"]\n    via: tests\n    why: Test notes.\n',
     ].join("");
     const plan = await planFor("acme", ["docs/gen/a.md", "docs/qa/b.md"], { [CONFIG]: acmeConfig({ paths: rows }) });
     expect(placementKinds(plan, "docs/gen/a.md")).toEqual(["row", "docs"]);
-    expect(running(plan)).toEqual([]);
+    expect(running(plan)).toEqual(["api", "web", "e2e"]);
+  });
+
+  it.each([
+    ["fixtures/browser/welcome.md", ["web"]],
+    ["tools/codegen/template.md", ["api", "web", "e2e"]],
+  ])("counts the fixture row for %s in a docs-only change", async (path, lanes) => {
+    const plan = await planFor("acme", [path]);
+    expect(plan.event.kind).toBe("docs-only");
+    expect(running(plan)).toEqual(lanes);
   });
 
   it("require no lane when nothing counts, floor lanes included", async () => {

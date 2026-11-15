@@ -6,15 +6,11 @@ export const VIAS = ["code", "tests", "name"] as const;
 
 export type Via = (typeof VIAS)[number];
 
-/**
- * `closure` reaches every lane whose packages read the named package, `roots` only the lanes that
- * list it. `readsAsText` placements still count in a docs-only change, because Markdown is read as
- * text and never compiled.
- */
-export const VIA: { readonly [V in Via]: { readonly reaches: "closure" | "roots"; readonly readsAsText: boolean } } = {
-  code: { reaches: "closure", readsAsText: false },
-  tests: { reaches: "roots", readsAsText: false },
-  name: { reaches: "closure", readsAsText: true },
+/** `closure` reaches every lane that reads the package, `roots` only lanes that list it. */
+export const VIA: { readonly [V in Via]: "closure" | "roots" } = {
+  code: "closure",
+  tests: "roots",
+  name: "closure",
 };
 
 /** The file name of every package manifest, the root one included. */
@@ -153,7 +149,7 @@ export function compile(input: {
         return new Map(lanes.filter((lane) => named.includes(lane.name)).map((lane) => [lane.name, NAMED] as const));
       }
       case "packages": {
-        const index = VIA[target.via].reaches;
+        const index = VIA[target.via];
         return joinReach(
           lanes,
           graphs.flatMap((graph) => target.packages.map((name) => graph[index].get(name) ?? NO_LANES)),

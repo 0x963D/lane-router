@@ -68,9 +68,11 @@ unmatched: all
 
 | `via`   | The path behaves like                                 | Selects                                        | Counts in a docs-only change |
 | ------- | ----------------------------------------------------- | ---------------------------------------------- | ---------------------------- |
-| `code`  | the package's source                                  | every lane whose closure holds the package     | no                           |
-| `tests` | a file only the package's own tests read              | only the lanes that list the package as a root | no                           |
+| `code`  | the package's source                                  | every lane whose closure holds the package     | yes                          |
+| `tests` | a file only the package's own tests read              | only the lanes that list the package as a root | yes                          |
 | `name`  | a file the package reads as text, by name, at runtime | every lane whose closure holds the package     | yes                          |
+
+In a docs-only change, every matching explicit `paths` row counts, whatever its `via`. Package placements do not count. A path claimed only by `docs-only.match` selects no lane. Markdown that a package reads at build or test time needs a `paths` row or a `docs-only.except` glob. Without either, a file such as `packages/api/src/welcome.md` selects nothing under this config.
 
 A package is a directory that matches a workspace glob and holds a `package.json` with a `name`. pnpm `!` negations are honoured. The repository root is never a package. Dependencies come from `dependencies`, `devDependencies`, `peerDependencies` and `optionalDependencies`. Each value must be a string.
 

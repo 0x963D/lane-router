@@ -28812,9 +28812,9 @@ function globProblem(glob2) {
 // src/core/model.ts
 var VIAS = ["code", "tests", "name"];
 var VIA = {
-  code: { reaches: "closure", readsAsText: false },
-  tests: { reaches: "roots", readsAsText: false },
-  name: { reaches: "closure", readsAsText: true }
+  code: "closure",
+  tests: "roots",
+  name: "closure"
 };
 var MANIFEST = "package.json";
 var WORKSPACE_FILE = "pnpm-workspace.yaml";
@@ -28836,7 +28836,7 @@ function compile(input) {
         return new Map(lanes.filter((lane) => named.includes(lane.name)).map((lane) => [lane.name, NAMED]));
       }
       case "packages": {
-        const index = VIA[target.via].reaches;
+        const index = VIA[target.via];
         return joinReach(
           lanes,
           graphs.flatMap((graph) => target.packages.map((name) => graph[index].get(name) ?? NO_LANES))
@@ -29777,26 +29777,7 @@ function skip(because) {
   return { kind: "skip", because, [proven]: true };
 }
 function isCounted(routing, placement) {
-  return routing.kind !== "docs-only" || readsAsText(placement);
-}
-function readsAsText(placement) {
-  switch (placement.kind) {
-    case "built-in":
-      return true;
-    case "row": {
-      const { target } = placement.row;
-      return target.kind === "lanes" || VIA[target.via].readsAsText;
-    }
-    case "package":
-      return false;
-    case "docs":
-    case "unmatched":
-      return true;
-    default: {
-      const _exhaustive = placement;
-      return _exhaustive;
-    }
-  }
+  return routing.kind !== "docs-only" || placement.kind !== "package";
 }
 
 // src/core/plan.ts
@@ -29859,7 +29840,7 @@ function reasonLine(planned2) {
 }
 var SKIP_TEXT = {
   untouched: "nothing it reads changed",
-  "docs-only": "docs-only change, and nothing it reads as text changed",
+  "docs-only": "docs-only change, and no explicit path rule selects this lane",
   "no-changes": "no changed files"
 };
 function describeReason(reason) {

@@ -49,7 +49,7 @@ The base commit is the merge base the compare API reports for the event's range.
 
 Rules about the whole change come after that.
 
-- **Docs-only.** A change is docs-only when it has at least one path and every path is docs. In a docs-only change, only the placements that read a file as text count. Those are the built-in files, `lanes` rows and `via: name` rows. Package placements and `via: code` or `via: tests` rows do not count, because Markdown is not compiled.
+- **Docs-only.** A change is docs-only when it has at least one path and every path is docs. In a docs-only change, built-in files and every matching explicit `paths` row count, whatever its `via`. A row says that the lane reads those files. Package placements do not count, and a path claimed only by `docs-only.match` selects no lane. Markdown that a package reads at build or test time needs a `paths` row or a `docs-only.except` glob. For example, `packages/api/src/welcome.md` selects nothing under the fixture config until one of those rules covers it. See [the decision record](decisions/006-explicit-rows-in-docs-only-changes.md).
 - **Floor.** A lane with `floor: true` runs for every change that has paths and is not docs-only.
 - **Empty.** A change with no paths requires no lane.
 - **Renames.** The old and the new path are both changed paths.

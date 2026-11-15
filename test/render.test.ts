@@ -63,10 +63,10 @@ describe("rendered wording", () => {
       "mode pr, base base, head head, 2 files, complete, docs-only
 
       lane  decision  reason
-      api   skip      docs-only change, and nothing it reads as text changed
+      api   skip      docs-only change, and no explicit path rule selects this lane
       web   run       docs/guide.md matches paths[4]: The web build inlines the guide.
-      e2e   skip      docs-only change, and nothing it reads as text changed
-      lint  skip      docs-only change, and nothing it reads as text changed
+      e2e   skip      docs-only change, and no explicit path rule selects this lane
+      lint  skip      docs-only change, and no explicit path rule selects this lane
 
       docs/guide.md
         paths[4]           web                                                The web build inlines the guide.
@@ -120,7 +120,7 @@ describe("rendered wording", () => {
     expect(skips).toMatchInlineSnapshot(`
       [
         "nothing it reads changed",
-        "docs-only change, and nothing it reads as text changed",
+        "docs-only change, and no explicit path rule selects this lane",
         "no changed files",
       ]
     `);

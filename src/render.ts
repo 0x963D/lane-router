@@ -38,7 +38,7 @@ export function reasonLine(planned: PlannedLane): string {
 
 const SKIP_TEXT: Readonly<Record<SkipReason, string>> = {
   untouched: "nothing it reads changed",
-  "docs-only": "docs-only change, and nothing it reads as text changed",
+  "docs-only": "docs-only change, and no explicit path rule selects this lane",
   "no-changes": "no changed files",
 };
 
