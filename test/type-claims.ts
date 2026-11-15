@@ -4,12 +4,25 @@
  * the directive is unused and the typecheck fails.
  */
 import type { ChangedFiles, CompleteFiles } from "../src/core/change.ts";
+import type { Lane } from "../src/core/model.ts";
 import type { RepoPath } from "../src/core/ids.ts";
 import type { Plan } from "../src/core/plan.ts";
 import type { LaneDecision, PlacedPath, Routing, Run, Skip } from "../src/core/route.ts";
 
 declare const somePath: RepoPath;
 declare const someRouting: Routing;
+declare const someLane: Lane;
+declare const decide: typeof import("../src/core/route.ts").decide;
+
+export const forgedRoutingDecision = decide(
+  // @ts-expect-error only route can construct the routing accepted by decide
+  {
+    kind: "docs-only",
+    range: { base: null, head: "head" },
+    paths: [{ path: somePath, placements: [{ kind: "docs", reach: new Map() }] }],
+  },
+  someLane,
+);
 
 // @ts-expect-error a Skip carries a key only route.ts can name
 export const forgedSkip: Skip = { kind: "skip", because: "untouched" };

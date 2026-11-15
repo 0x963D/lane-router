@@ -22,4 +22,6 @@ A shallow checkout, the `actions/checkout` default, has no base commit. A change
 
 A config or workspace error is different. The lane names are unknown, so lane-router fails the step and lists every problem. Downstream jobs never start, so the build stays red and no lane is skipped by mistake.
 
-The code enforces the rule as well. A skip decision and a complete file list each carry a key that only one module can name, so no other code can construct either one. `npm run typecheck` checks this in `test/type-claims.ts`. Every other module can build only a decision to run.
+The typed API requires private symbol keys on `Skip`, `Routing` and `CompleteFiles`. A plain object in another module cannot construct any of those types. `changedFiles` constructs complete file lists, `route` constructs routings, and `decide` constructs skips from a routing. Other modules can call these functions, but cannot pass a plain fabricated routing to `decide`. They can construct run decisions directly.
+
+`npm run typecheck` checks those restrictions in `test/type-claims.ts`. These are compile-time construction constraints, not runtime validation. They do not establish that a caller supplied an accurate model or file list, and they do not prevent copying an existing branded value or bypassing types with assertions.

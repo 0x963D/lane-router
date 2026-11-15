@@ -40,7 +40,9 @@ export interface PlacedPath {
   readonly placements: NonEmpty<Placement>;
 }
 
-export type Routing =
+const routed: unique symbol = Symbol("routed");
+
+export type Routing = { readonly [routed]: true } & (
   | {
       readonly kind: "incomplete";
       readonly range: Range;
@@ -49,7 +51,8 @@ export type Routing =
     }
   | { readonly kind: "empty"; readonly range: Range }
   | { readonly kind: "docs-only"; readonly range: Range; readonly paths: NonEmpty<PlacedPath> }
-  | { readonly kind: "ordinary"; readonly range: Range; readonly paths: NonEmpty<PlacedPath> };
+  | { readonly kind: "ordinary"; readonly range: Range; readonly paths: NonEmpty<PlacedPath> }
+);
 
 export type RunReason =
   | {
@@ -71,7 +74,7 @@ export interface Run {
 
 const proven: unique symbol = Symbol("proven");
 
-/** Only `decide` can name `proven`, so every other module can express "run" and nothing else. */
+/** Only this module can name `proven` to construct a skip literal. */
 export interface Skip {
   readonly kind: "skip";
   readonly because: SkipReason;
@@ -84,9 +87,14 @@ const NO_LANES: Reach = new Map();
 
 export function route(model: RoutingModel, range: Range, files: ChangedFiles): Routing {
   const paths = files.paths.map((path) => ({ path, placements: place(model, path) }));
-  if (files.kind === "incomplete") return { kind: "incomplete", range, cause: files.cause, paths };
-  if (!isNonEmpty(paths)) return { kind: "empty", range };
-  return { kind: paths.every(({ path }) => model.isDocs(path)) ? "docs-only" : "ordinary", range, paths };
+  if (files.kind === "incomplete") return { kind: "incomplete", range, cause: files.cause, paths, [routed]: true };
+  if (!isNonEmpty(paths)) return { kind: "empty", range, [routed]: true };
+  return {
+    kind: paths.every(({ path }) => model.isDocs(path)) ? "docs-only" : "ordinary",
+    range,
+    paths,
+    [routed]: true,
+  };
 }
 
 function place(model: RoutingModel, path: RepoPath): NonEmpty<Placement> {

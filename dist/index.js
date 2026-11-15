@@ -29714,13 +29714,19 @@ function describe({ path, message }) {
 }
 
 // src/core/route.ts
+var routed = /* @__PURE__ */ Symbol("routed");
 var proven = /* @__PURE__ */ Symbol("proven");
 var NO_LANES2 = /* @__PURE__ */ new Map();
 function route(model, range, files) {
   const paths = files.paths.map((path) => ({ path, placements: place(model, path) }));
-  if (files.kind === "incomplete") return { kind: "incomplete", range, cause: files.cause, paths };
-  if (!isNonEmpty(paths)) return { kind: "empty", range };
-  return { kind: paths.every(({ path }) => model.isDocs(path)) ? "docs-only" : "ordinary", range, paths };
+  if (files.kind === "incomplete") return { kind: "incomplete", range, cause: files.cause, paths, [routed]: true };
+  if (!isNonEmpty(paths)) return { kind: "empty", range, [routed]: true };
+  return {
+    kind: paths.every(({ path }) => model.isDocs(path)) ? "docs-only" : "ordinary",
+    range,
+    paths,
+    [routed]: true
+  };
 }
 function place(model, path) {
   const placements = [];

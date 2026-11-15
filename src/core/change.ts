@@ -24,7 +24,7 @@ const vetted: unique symbol = Symbol("vetted");
 
 /**
  * A file list known to be the whole change. `vetted` is a symbol no other module can name, so only
- * `changedFiles` can build one. It and `Skip` are the only values that can keep a lane from running.
+ * `changedFiles` can build one. `route` uses it to construct a routing from which `decide` can derive a skip.
  */
 export interface CompleteFiles {
   readonly kind: "complete";
