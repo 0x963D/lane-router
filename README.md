@@ -46,7 +46,7 @@ A shallow checkout runs every lane when a package manifest changes. Use the [ful
 
 [Fail-closed guarantees](docs/fail-closed.md) lists the cases that run every lane or fail the step. [Reading the repository](docs/reading-the-repository.md) explains path boundaries and error messages that do not quote file contents.
 
-The [prior-pass threat model](docs/prior-passes.md) explains why a past passing check is not proof that a lane can skip. [What's next](docs/limitations.md) lists unsupported cases.
+The [prior-pass threat model](docs/prior-passes.md) explains why a past passing check is not proof that a lane can skip. [What's next](docs/limitations.md) lists unsupported cases. The [decision records](docs/decisions/README.md) link the design choices to their implementation.
 
 ## When Turborepo or Nx is the better tool
 
