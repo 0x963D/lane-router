@@ -56,4 +56,4 @@ lane-router selects named CI lanes and emits decisions with reasons. It does not
 
 ## Origin
 
-Dan, write this section in your own words.
+lane-router started as CI routing I built for a private production monorepo, where every change ran every test lane. This repository is a rewrite of that idea as a standalone Action and CLI, built from a written description of the behaviour and not from the original code.
