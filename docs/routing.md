@@ -1,10 +1,12 @@
-# The problem
+# Routing
+
+## The problem
 
 A monorepo CI usually runs every test lane on every change. Most changes touch one package, so most of that time goes to lanes the change cannot affect.
 
 Skipping a lane is safe only when you can show that nothing it reads changed. A lane reads its own packages, their workspace dependencies, and files that no manifest mentions, such as code generators, test fixtures and docs served by name. A wrong skip is worse than a slow build, because it merges a break that no lane tested.
 
-# Why path filters are unsafe
+## Why path filters are unsafe
 
 The usual tool is a path filter on each workflow, such as `paths: ["packages/web/**"]`. It fails open in three ways.
 
@@ -14,7 +16,7 @@ The usual tool is a path filter on each workflow, such as `paths: ["packages/web
 
 lane-router handles each case. It follows dependencies, it runs every lane for a path that nothing claims, and it runs every lane when it cannot trust the file list.
 
-# How routing works
+## How routing works
 
 ```
 changed paths --> placements per path --> one decision per lane --> outputs
@@ -35,7 +37,7 @@ Each changed path gets every placement that applies to it.
 
 A lane's closure is its root packages, their workspace dependencies, and the configured extra edges, all followed transitively. When a lane reads a package indirectly, its reason names the chain, for example `packages/ui/src/button.tsx is in @acme/ui, read through @acme/web-e2e > @acme/web`.
 
-## The base graph
+### The base graph
 
 A change could reshape the graph that judges it. Say a pull request renames `@acme/ui` in `packages/ui/package.json` and edits `packages/ui/src/button.tsx`. `@acme/web` still depends on `@acme/ui` by name, which no longer resolves, so in the new graph no lane reads the button.
 
