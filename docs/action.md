@@ -18,7 +18,7 @@ The step also writes a job summary. It opens with a line that gives the mode, ba
 
 ## Use the outputs in a workflow
 
-`OWNER` is the account that hosts this repository. The `test` job uses `none-required` to skip the matrix when no lane runs.
+The `test` job uses `none-required` to skip the matrix when no lane runs.
 
 ```yaml
 name: ci
@@ -41,7 +41,7 @@ jobs:
         with:
           fetch-depth: 0
       - id: lanes
-        uses: OWNER/lane-router@v0
+        uses: 0x963D/lane-router@v0
 
   test:
     needs: plan

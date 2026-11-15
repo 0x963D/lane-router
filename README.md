@@ -4,16 +4,25 @@ lane-router works out the smallest set of CI test lanes a change can affect in a
 
 A wrong skip can merge a break that no lane tested. lane-router follows workspace dependencies and explicit file rules. An unclaimed path or an unverifiable change runs every lane. An invalid config or workspace fails the step.
 
-Run `npm run demo` to see a routing decision and its reason. This is an excerpt of its output.
+Run `npm run demo` to see two decisions on the bundled fixture. A change to one UI file skips the `api` lane.
 
 ```text
 lane  decision  reason
+api   skip      nothing it reads changed
+web   run       packages/ui/src/button.tsx is in @acme/ui, read through @acme/web
+e2e   run       packages/ui/src/button.tsx is in @acme/ui, read through @acme/web-e2e > @acme/web
+lint  run       floor lane, runs for every change that is not docs-only
+```
+
+A path filter would treat `docs/api/users.md` as documentation. The config says the api serves that file by name, so adding it to the change runs `api`.
+
+```text
 api   run       docs/api/users.md matches paths[3] for @acme/api via name: The api serves these files by name.
 ```
 
 ## Add it to a workflow
 
-Add [a routing config](docs/config.md). Replace `OWNER` with the account that will host this repository. This workflow runs an existing `test:api` script when the `api` lane is selected.
+Add [a routing config](docs/config.md). This workflow runs an existing `test:api` script when the `api` lane is selected.
 
 ```yaml
 on: pull_request
@@ -23,16 +32,16 @@ jobs:
   api:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@main
+      - uses: actions/checkout@v7
       - id: lanes
-        uses: OWNER/lane-router@main
+        uses: 0x963D/lane-router@v0
       - run: npm ci
         if: steps.lanes.outputs.api == 'run'
       - run: npm run test:api
         if: steps.lanes.outputs.api == 'run'
 ```
 
-A shallow checkout runs every lane when a package manifest changes. Use the [full workflow example](docs/action.md#use-the-outputs-in-a-workflow) for a full checkout and a matrix. This repository has no release tag or Marketplace listing yet.
+A shallow checkout runs every lane when a package manifest changes. Use the [full workflow example](docs/action.md#use-the-outputs-in-a-workflow) for a full checkout and a matrix. There is no Marketplace listing yet.
 
 ## Routing and config
 

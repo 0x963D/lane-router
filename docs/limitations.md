@@ -7,4 +7,4 @@ These are not built:
 - `unmatched` accepts only `all`.
 - A compare listing of 300 or more files fails closed. Paging through a larger diff would let such a change skip lanes safely.
 - A `merge_group` event needs `mode`, `base` and `head` set by hand.
-- There is no release tag and no Marketplace listing yet.
+- There is no Marketplace listing yet.
