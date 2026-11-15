@@ -14,7 +14,20 @@ lane-router explain --base <ref> --head <ref> [--config <path>] [--cwd <dir>] [-
 
 The CLI exits with 0 when it printed a plan, fail-closed plans included. It exits with 1 when the config or the workspace does not load, and with 2 on a usage error. `--json` prints the plan as a JSON document.
 
-To see a full explanation, run `npm run demo`. It commits a change to the `acme` fixture in a temporary git repository and runs the built CLI on it. The commit SHAs differ on every run. The rest of the output looks like this:
+To see full explanations, run `npm run demo`. It commits two changes to the `acme` fixture in a temporary git repository and runs the built CLI on each. The commit SHAs differ on every run. The first change is one UI file:
+
+```
+lane  decision  reason
+api   skip      nothing it reads changed
+web   run       packages/ui/src/button.tsx is in @acme/ui, read through @acme/web
+e2e   run       packages/ui/src/button.tsx is in @acme/ui, read through @acme/web-e2e > @acme/web
+lint  run       floor lane, runs for every change that is not docs-only
+
+packages/ui/src/button.tsx
+  package @acme/ui  web, e2e
+```
+
+The second change adds four more files, and one of them is a docs file the api serves by name:
 
 ```
 lane  decision  reason
