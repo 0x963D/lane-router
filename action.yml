@@ -1,5 +1,5 @@
 name: lane-router
-description: Select the CI test lanes a monorepo change can affect, explain every decision, and run every lane when unsure.
+description: "lane-router works out which CI test lanes a change can affect in a JavaScript monorepo, so a workflow can skip the rest."
 author: Dan Doca
 branding:
   icon: git-branch
