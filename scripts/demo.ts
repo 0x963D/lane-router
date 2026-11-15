@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gitFixture } from "../test/support/git-fixture.ts";
+import { DEMO_SCENARIOS } from "./demo-scenarios.ts";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const dir = mkdtempSync(join(tmpdir(), "lane-router-demo-"));
@@ -24,17 +25,14 @@ try {
     return run.status ?? 1;
   };
 
-  repo.write("packages/ui/src/button.tsx", 'export const Button = "button";\nexport const size = "large";\n');
-  const oneFile = explain(repo.commit("Enlarge the button"));
-  process.stdout.write("\n");
-
-  repo.write("fixtures/browser/login.json", '{\n  "user": "grace"\n}\n');
-  repo.write("docs/api/users.md", "# Users\n\nThe api serves this file by name. It now lists roles.\n");
-  repo.write("README.md", "# acme\n\nA small monorepo that lane-router routes in its tests.\n\nRun pnpm test.\n");
-  repo.write(".vscode/settings.json", '{\n  "editor.formatOnSave": true,\n  "editor.tabSize": 2\n}\n');
-  const fiveFiles = explain(repo.commit("Refresh the fixtures and the docs"));
-
-  process.exitCode = oneFile || fiveFiles;
+  let code = 0;
+  for (const scenario of DEMO_SCENARIOS) {
+    for (const [path, text] of Object.entries(scenario.files)) repo.write(path, text);
+    const result = explain(repo.commit(scenario.message));
+    code ||= result;
+    process.stdout.write("\n");
+  }
+  process.exitCode = code;
 } finally {
   rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
 }
