@@ -72,7 +72,19 @@ unmatched: all
 | `tests` | a file only the package's own tests read              | only the lanes that list the package as a root | no                           |
 | `name`  | a file the package reads as text, by name, at runtime | every lane whose closure holds the package     | yes                          |
 
-A package is a directory that matches a workspace glob and holds a `package.json` with a `name`. pnpm `!` negations are honoured. The repository root is never a package. Dependencies come from `dependencies`, `devDependencies`, `peerDependencies` and `optionalDependencies`, whatever the version specifier.
+A package is a directory that matches a workspace glob and holds a `package.json` with a `name`. pnpm `!` negations are honoured. The repository root is never a package. Dependencies come from `dependencies`, `devDependencies`, `peerDependencies` and `optionalDependencies`. Each value must be a string.
+
+Ordinary versions, ranges and tags select a workspace dependency by its key, regardless of version compatibility. This can run extra lanes. Explicit references select their target instead of the key:
+
+- `workspace:`, `workspace:*`, `workspace:^`, `workspace:~` and workspace version ranges use the key.
+- Workspace aliases such as `"ui": "workspace:@acme/ui@*"` and npm aliases such as `"ui": "npm:@acme/ui@^1"` use the target package name. Scoped and unscoped aliases work. An npm alias can omit its version. JSR and named registry aliases also use their target name, such as `jsr:@acme/ui@1`, `gh:@acme/ui` or `corp:@acme/ui@^1`.
+- `workspace:../ui`, `link:../ui`, `file:../ui` and bare local paths such as `../ui` or `./../ui` use the package directory relative to the declaring manifest. Directory lookup uses the discovered workspace, without reading outside it.
+
+An explicit reference that cannot resolve to a discovered package is a workspace error. The error names the manifest and dependency key. This includes local archives, local Git sources, absolute paths, home-relative paths and paths outside the workspace. A head workspace error fails the step. A base workspace error makes the change incomplete, so every lane runs.
+
+Other versions, remote tarball and remote Git sources retain the conservative lookup by dependency key. lane-router does not inspect their contents.
+
+The syntax follows the pnpm [workspace protocol](https://pnpm.io/workspaces), pnpm [package sources](https://pnpm.io/package-sources), npm [package spec](https://docs.npmjs.com/cli/v11/using-npm/package-spec/) and npm [local paths](https://docs.npmjs.com/cli/v11/configuring-npm/package-json/#local-paths).
 
 Globs are [picomatch](https://github.com/micromatch/picomatch) globs, relative to the repository root, with posix separators and `dot: true`.
 

@@ -1,3 +1,4 @@
+import { posix } from "node:path";
 import { compileGlobs, globProblem, type GlobSet } from "../core/glob.ts";
 import { parsePackageName, parseRepoPath, type PackageName, type RepoPath } from "../core/ids.ts";
 import { MANIFEST, WORKSPACE_FILE, type Workspace, type WorkspacePackage } from "../core/model.ts";
@@ -12,7 +13,6 @@ import {
   parseJson,
   refine,
   string,
-  unknownValue,
   withDefault,
   type Decoder,
   type Issue,
@@ -30,7 +30,13 @@ const IGNORE = { unknownKeys: "ignore" } as const;
 interface Manifest {
   readonly name: PackageName;
   readonly dir: RepoPath;
-  readonly dependencies: readonly string[];
+  readonly dependencies: readonly Dependency[];
+}
+
+interface Dependency {
+  readonly key: string;
+  readonly specifier: string;
+  readonly where: string;
 }
 
 export async function discoverWorkspace(
@@ -65,12 +71,63 @@ export async function discoverWorkspace(
   }
   if (isNonEmpty(problems)) return err(problems);
 
+  const byDir = new Map<string, Manifest>([...byName.values()].map((manifest) => [manifest.dir, manifest]));
   const packages = new Map<string, WorkspacePackage>();
   for (const { name, dir, dependencies } of byName.values()) {
-    const resolved = dependencies.flatMap((dependency) => byName.get(dependency)?.name ?? []);
+    const resolved: PackageName[] = [];
+    for (const { key, specifier, where } of dependencies) {
+      const target = dependencyTarget(key, specifier);
+      const dependency =
+        target.kind === "path"
+          ? /^[~/]|^[A-Za-z]:/.test(target.path)
+            ? undefined
+            : byDir.get(posix.join(dir, target.path).replace(/\/+$/, ""))
+          : byName.get(target.name);
+      if (dependency !== undefined) resolved.push(dependency.name);
+      else if (target.kind !== "key")
+        problems.push({
+          file: dir + IN_PACKAGE,
+          at: null,
+          where,
+          message: "does not resolve to a workspace package",
+        });
+    }
     packages.set(name, { name, dir, dependencies: [...new Set(resolved)] });
   }
-  return ok({ packages });
+  return isNonEmpty(problems) ? err(problems) : ok({ packages });
+}
+
+type DependencyTarget =
+  { readonly kind: "key" | "alias"; readonly name: string } | { readonly kind: "path"; readonly path: string };
+
+function dependencyTarget(key: string, specifier: string): DependencyTarget {
+  const local = /^(workspace:|link:|file:)(.*)$/.exec(specifier);
+  const protocol = local?.[1];
+  const value = (local?.[2] ?? specifier).replaceAll("\\", "/");
+  const isPath = /^(\.{1,2}(?:\/|$)|~\/|\/|[A-Za-z]:)/.test(value);
+  if (
+    protocol === "link:" ||
+    protocol === "file:" ||
+    isPath ||
+    (!protocol && value.split("/").length > 2 && !value.includes(":"))
+  ) {
+    return { kind: "path", path: value };
+  }
+  if (protocol === "workspace:") {
+    const alias = /^(?:v?\d|[xX]$)/.test(value)
+      ? undefined
+      : /^(@[^/]+\/[^@]+|[a-zA-Z_][a-zA-Z0-9._-]*)(?:@.*)?$/.exec(value)?.[1];
+    return { kind: "alias", name: alias ?? key };
+  }
+  const registry = /^([A-Za-z][A-Za-z0-9+.-]*):(.*)$/.exec(specifier);
+  if (
+    registry !== null &&
+    !/^(?:https?|git|git\+https?|git\+ssh|ssh|github|gitlab|bitbucket|gist|tool|runtime)$/.test(registry[1] ?? "")
+  ) {
+    const name = /^(?:@[^/]+\/)?[^@]+/.exec(registry[2] ?? "")?.[0] ?? "";
+    return { kind: "alias", name };
+  }
+  return { kind: "key", name: key };
 }
 
 async function workspaceGlobs(tree: RepoTree, discovery: Discovery): Promise<Result<GlobSet, NonEmpty<Problem>>> {
@@ -142,9 +199,14 @@ function globSet(globs: readonly WorkspaceGlob[]): GlobSet {
 
 const manifestDecoder = object((field) => {
   const name = field("name", withDefault(string, ""));
-  const dependencies = DEPENDENCY_FIELDS.map((key) => field(key, withDefault(entries(string, unknownValue), [])));
+  const dependencies = DEPENDENCY_FIELDS.map((fieldName) => {
+    const values = field(fieldName, withDefault(entries(string, string), []));
+    return isValid(values)
+      ? values.map(([key, specifier]) => ({ key, specifier, where: formatDataPath([fieldName, key]) }))
+      : INVALID;
+  });
   if (!isValid(name) || !dependencies.every(isValid)) return INVALID;
-  return { name, dependencies: dependencies.flat().map(([dependency]) => dependency) };
+  return { name, dependencies: dependencies.flat() };
 }, IGNORE);
 
 /** Undefined when the directory has a package.json without a name, which makes it not a package. */

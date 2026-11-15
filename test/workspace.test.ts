@@ -50,6 +50,7 @@ describe("workspace discovery", () => {
   it("does not treat a directory without a named package.json as a package", async () => {
     const plan = await planFor("acme", ["packages/ui/src/button.tsx"], {
       "packages/ui/package.json": JSON.stringify({ version: "1.0.0" }),
+      "packages/web/package.json": JSON.stringify({ name: "@acme/web" }),
     });
     expect(placementKinds(plan, "packages/ui/src/button.tsx")).toEqual(["unmatched"]);
   });
@@ -57,6 +58,68 @@ describe("workspace discovery", () => {
   it("follows all four dependency fields, whatever the version specifier", async () => {
     const plan = await planFor("dependency-fields", ["packages/target/index.js"]);
     expect(running(plan)).toEqual(["prod", "dev", "peer", "optional"]);
+  });
+
+  it.each([
+    ["ui", "workspace:@acme/ui@*"],
+    ["ui", "workspace:@acme/ui"],
+    ["@acme/api", "workspace:@acme/ui@*"],
+    ["ui", "workspace:@acme/ui@^1.0.0"],
+    ["ui", "workspace:../ui"],
+    ["ui", "link:../ui"],
+    ["ui", "file:../ui"],
+    ["ui", "../ui"],
+    ["ui", "./../ui"],
+    ["ui", "npm:@acme/ui@*"],
+    ["ui", "npm:@acme/ui"],
+    ["ui", "jsr:@acme/ui@1"],
+    ["ui", "gh:@acme/ui"],
+    ["ui", "npmjs:@acme/ui@latest"],
+    ["ui", "corp:@acme/ui@^1"],
+    ["ui", "file:..\\ui"],
+    ["ui", "../web/../ui"],
+    ["ui", "file:../ui/"],
+    ["@acme/ui", "workspace:"],
+    ["@acme/ui", "workspace:^"],
+    ["@acme/ui", "workspace:~"],
+    ["@acme/ui", "workspace:1.0.0"],
+    ["ui", "workspace:ui@*"],
+    ["ui", "npm:ui@latest"],
+  ])("follows %s: %s to its workspace target", async (key, specifier) => {
+    const unscoped = specifier.includes(":ui@");
+    const plan = await planFor("acme", ["packages/ui/src/button.tsx"], {
+      "packages/web/package.json": JSON.stringify({ name: "@acme/web", dependencies: { [key]: specifier } }),
+      ...(unscoped ? { "packages/ui/package.json": JSON.stringify({ name: "ui" }) } : {}),
+    });
+    expect(running(plan)).toEqual(["web", "e2e", "lint"]);
+  });
+
+  it.each([
+    "workspace:@missing/ui@*",
+    "workspace:../missing",
+    "workspace:*",
+    "link:../missing",
+    "file:../missing",
+    "../missing",
+    "npm:@missing/ui@*",
+    "corp:@missing/ui@*",
+    "git+file:../ui",
+    "E:/packages/ui",
+    "file:../ui.tgz",
+    "~/ui",
+    "/packages/ui",
+    "link:../../../outside",
+  ])("rejects an unresolved workspace reference %s with its manifest and key", async (specifier) => {
+    const problems = await problemsOf("acme", {
+      "packages/web/package.json": JSON.stringify({ name: "@acme/web", devDependencies: { ui: specifier } }),
+    });
+    expect(problems).toMatchObject([
+      {
+        file: "packages/web/package.json",
+        where: "devDependencies.ui",
+        message: "does not resolve to a workspace package",
+      },
+    ]);
   });
 
   it("ignores dependencies that are not workspace packages", async () => {

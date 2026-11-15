@@ -20275,9 +20275,9 @@ var require_parse2 = __commonJS({
                 const idx = prev.value.lastIndexOf("[");
                 const pre = prev.value.slice(0, idx);
                 const rest2 = prev.value.slice(idx + 2);
-                const posix = POSIX_REGEX_SOURCE[rest2];
-                if (posix) {
-                  prev.value = pre + posix;
+                const posix2 = POSIX_REGEX_SOURCE[rest2];
+                if (posix2) {
+                  prev.value = pre + posix2;
                   state.backtrack = true;
                   advance();
                   if (!bos.output && tokens.indexOf(prev) === 1) {
@@ -20794,7 +20794,7 @@ var require_picomatch = __commonJS({
         throw new TypeError("Expected pattern to be a non-empty string");
       }
       const opts = options || {};
-      const posix = opts.windows;
+      const posix2 = opts.windows;
       const regex = isState ? picomatch2.compileRe(glob2, options) : picomatch2.makeRe(glob2, options, false, true);
       const state = regex.state;
       delete regex.state;
@@ -20804,8 +20804,8 @@ var require_picomatch = __commonJS({
         isIgnored = picomatch2(opts.ignore, ignoreOpts, returnState);
       }
       const matcher = (input, returnObject = false) => {
-        const { isMatch, match, output } = picomatch2.test(input, regex, options, { glob: glob2, posix });
-        const result = { glob: glob2, state, regex, posix, input, output, match, isMatch };
+        const { isMatch, match, output } = picomatch2.test(input, regex, options, { glob: glob2, posix: posix2 });
+        const result = { glob: glob2, state, regex, posix: posix2, input, output, match, isMatch };
         if (typeof opts.onResult === "function") {
           opts.onResult(result);
         }
@@ -20830,7 +20830,7 @@ var require_picomatch = __commonJS({
       }
       return matcher;
     };
-    picomatch2.test = (input, regex, options, { glob: glob2, posix } = {}) => {
+    picomatch2.test = (input, regex, options, { glob: glob2, posix: posix2 } = {}) => {
       if (typeof input !== "string") {
         throw new TypeError("Expected input to be a string");
       }
@@ -20838,7 +20838,7 @@ var require_picomatch = __commonJS({
         return { isMatch: false, output: "" };
       }
       const opts = options || {};
-      const format = opts.format || (posix ? utils.toPosixSlashes : null);
+      const format = opts.format || (posix2 ? utils.toPosixSlashes : null);
       let match = input === glob2;
       let output = match && format ? format(input) : input;
       if (match === false) {
@@ -20847,16 +20847,16 @@ var require_picomatch = __commonJS({
       }
       if (match === false || opts.capture === true) {
         if (opts.matchBase === true || opts.basename === true) {
-          match = picomatch2.matchBase(input, regex, options, posix);
+          match = picomatch2.matchBase(input, regex, options, posix2);
         } else {
           match = regex.exec(output);
         }
       }
       return { isMatch: Boolean(match), match, output };
     };
-    picomatch2.matchBase = (input, glob2, options, posix = options && options.windows) => {
+    picomatch2.matchBase = (input, glob2, options, posix2 = options && options.windows) => {
       const regex = glob2 instanceof RegExp ? glob2 : picomatch2.makeRe(glob2, options);
-      return regex.test(utils.basename(input, { windows: posix }));
+      return regex.test(utils.basename(input, { windows: posix2 }));
     };
     picomatch2.isMatch = (str, patterns, options) => picomatch2(patterns, options)(str);
     picomatch2.parse = (pattern, options) => {
@@ -28966,7 +28966,6 @@ var boolean = (input, context) => typeof input === "boolean" ? input : context.f
 function integer(min) {
   return (input, context) => typeof input === "number" && Number.isInteger(input) && input >= min ? input : context.fail(expected(input, `a whole number of at least ${String(min)}`));
 }
-var unknownValue = (input) => input;
 function literal(...values) {
   return (input, context) => values.find((value) => value === input) ?? context.fail(expected(input, values.join(" or ")));
 }
@@ -29306,6 +29305,7 @@ async function listFiles(tree) {
 }
 
 // src/load/workspace.ts
+import { posix } from "node:path";
 var IN_PACKAGE = `/${MANIFEST}`;
 var DEPENDENCY_FIELDS = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"];
 var IGNORE = { unknownKeys: "ignore" };
@@ -29335,12 +29335,44 @@ async function discoverWorkspace(tree, discovery) {
     }
   }
   if (isNonEmpty(problems)) return err(problems);
+  const byDir = new Map([...byName.values()].map((manifest) => [manifest.dir, manifest]));
   const packages = /* @__PURE__ */ new Map();
   for (const { name, dir, dependencies } of byName.values()) {
-    const resolved = dependencies.flatMap((dependency) => byName.get(dependency)?.name ?? []);
+    const resolved = [];
+    for (const { key, specifier, where } of dependencies) {
+      const target = dependencyTarget(key, specifier);
+      const dependency = target.kind === "path" ? /^[~/]|^[A-Za-z]:/.test(target.path) ? void 0 : byDir.get(posix.join(dir, target.path).replace(/\/+$/, "")) : byName.get(target.name);
+      if (dependency !== void 0) resolved.push(dependency.name);
+      else if (target.kind !== "key")
+        problems.push({
+          file: dir + IN_PACKAGE,
+          at: null,
+          where,
+          message: "does not resolve to a workspace package"
+        });
+    }
     packages.set(name, { name, dir, dependencies: [...new Set(resolved)] });
   }
-  return ok({ packages });
+  return isNonEmpty(problems) ? err(problems) : ok({ packages });
+}
+function dependencyTarget(key, specifier) {
+  const local = /^(workspace:|link:|file:)(.*)$/.exec(specifier);
+  const protocol = local?.[1];
+  const value = (local?.[2] ?? specifier).replaceAll("\\", "/");
+  const isPath = /^(\.{1,2}(?:\/|$)|~\/|\/|[A-Za-z]:)/.test(value);
+  if (protocol === "link:" || protocol === "file:" || isPath || !protocol && value.split("/").length > 2 && !value.includes(":")) {
+    return { kind: "path", path: value };
+  }
+  if (protocol === "workspace:") {
+    const alias = /^(?:v?\d|[xX]$)/.test(value) ? void 0 : /^(@[^/]+\/[^@]+|[a-zA-Z_][a-zA-Z0-9._-]*)(?:@.*)?$/.exec(value)?.[1];
+    return { kind: "alias", name: alias ?? key };
+  }
+  const registry = /^([A-Za-z][A-Za-z0-9+.-]*):(.*)$/.exec(specifier);
+  if (registry !== null && !/^(?:https?|git|git\+https?|git\+ssh|ssh|github|gitlab|bitbucket|gist|tool|runtime)$/.test(registry[1] ?? "")) {
+    const name = /^(?:@[^/]+\/)?[^@]+/.exec(registry[2] ?? "")?.[0] ?? "";
+    return { kind: "alias", name };
+  }
+  return { kind: "key", name: key };
 }
 async function workspaceGlobs(tree, discovery) {
   if (discovery !== "npm") {
@@ -29394,9 +29426,12 @@ function globSet(globs) {
 }
 var manifestDecoder = object((field) => {
   const name = field("name", withDefault(string, ""));
-  const dependencies = DEPENDENCY_FIELDS.map((key) => field(key, withDefault(entries(string, unknownValue), [])));
+  const dependencies = DEPENDENCY_FIELDS.map((fieldName) => {
+    const values = field(fieldName, withDefault(entries(string, string), []));
+    return isValid(values) ? values.map(([key, specifier]) => ({ key, specifier, where: formatDataPath([fieldName, key]) })) : INVALID;
+  });
   if (!isValid(name) || !dependencies.every(isValid)) return INVALID;
-  return { name, dependencies: dependencies.flat().map(([dependency]) => dependency) };
+  return { name, dependencies: dependencies.flat() };
 }, IGNORE);
 async function readManifest(tree, dir) {
   const file = dir + IN_PACKAGE;

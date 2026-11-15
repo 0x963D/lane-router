@@ -27,7 +27,10 @@ function manifest(name: string, dependencies: Readonly<Record<string, string>> =
 }
 
 function acmeRepo(): GitFixture {
-  return gitFixture(ACME, tempDir());
+  const repo = gitFixture(ACME, tempDir());
+  repo.write(WEB_MANIFEST, manifest("@acme/web", { "@acme/ui": "^1.0.0" }));
+  const base = repo.commit("Use a registry range for ui");
+  return { ...repo, base };
 }
 
 function pullRequest(changedFiles: number): ActionEvent {
