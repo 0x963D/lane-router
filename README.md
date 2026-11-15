@@ -48,6 +48,12 @@ A shallow checkout runs every lane when a package manifest changes. Use the [ful
 
 The [prior-pass threat model](docs/prior-passes.md) explains why a past passing check is not proof that a lane can skip. [What's next](docs/limitations.md) lists unsupported cases.
 
+## When Turborepo or Nx is the better tool
+
+Choose Turborepo or Nx when you want affected detection to run tasks and reuse cached results. Turborepo's [`--affected` option](https://turborepo.dev/docs/reference/run#--affected) selects changed packages. Its filters can include dependents. [`nx affected`](https://nx.dev/docs/features/ci-features/affected) selects tasks from changed inputs and dependent task outputs. It runs the selected tasks and their dependencies, with unchanged dependencies restored from cache.
+
+lane-router selects named CI lanes and emits decisions with reasons. It does not run tasks or cache results. It fits existing workflow jobs that need explicit routing rules for workspace dependencies and files read by name.
+
 ## Origin
 
 Dan, write this section in your own words.
