@@ -256,6 +256,48 @@ describe("workspace discovery", () => {
     expect(loaded.ok).toBe(true);
   });
 
+  it.each(
+    [
+      "link:../ui/dist",
+      "file:../ui/dist",
+      "../ui/dist",
+      "workspace:../ui/dist",
+      "file:../ui/artifact.tgz",
+      "../ui/artifact.tgz",
+    ].flatMap((specifier) => [false, true].map((manifest) => ({ specifier, manifest }))),
+  )("follows $specifier to its owner with manifest=$manifest", async ({ specifier, manifest }) => {
+    const path = specifier.endsWith(".tgz") ? "packages/ui/artifact.tgz" : "packages/ui/dist/index.js";
+    const plan = await planFor("acme", [path], {
+      "packages/web/package.json": JSON.stringify({ name: "@acme/web", dependencies: { kit: specifier } }),
+      [path]: "content",
+      ...(manifest ? { "packages/ui/dist/package.json": JSON.stringify({ name: "dist-ui" }) } : {}),
+    });
+    expect(running(plan)).toEqual(["web", "e2e", "lint"]);
+  });
+
+  it("uses the deepest workspace owner of a path", async () => {
+    const files = {
+      "pnpm-workspace.yaml": 'packages: ["packages/*", "packages/web/e2e", "tools/*", "packages/ui/inner"]\n',
+      "packages/ui/inner/package.json": JSON.stringify({ name: "@acme/inner" }),
+      "packages/web/package.json": JSON.stringify({
+        name: "@acme/web",
+        dependencies: { kit: "link:../ui/inner/dist" },
+      }),
+    };
+    expect(running(await planFor("acme", ["packages/ui/inner/dist/index.js"], files))).toEqual(["web", "e2e", "lint"]);
+    expect(running(await planFor("acme", ["packages/ui/src/button.tsx"], files))).toEqual(["lint"]);
+  });
+
+  it("does not match a sibling directory with the same prefix", async () => {
+    const plan = await planFor("acme", ["packages/ui/src/button.tsx"], {
+      "packages/web/package.json": JSON.stringify({
+        name: "@acme/web",
+        dependencies: { kit: "link:../ui-other/dist" },
+      }),
+    });
+    expect(running(plan)).toEqual(["lint"]);
+  });
+
   it("keeps both the dependency key and the alias target", async () => {
     const overrides = {
       "packages/web/package.json": JSON.stringify({

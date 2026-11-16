@@ -29344,6 +29344,7 @@ async function discoverWorkspace(tree, discovery) {
   }
   if (isNonEmpty(problems)) return err(problems);
   const byDir = new Map([...byName.values()].map((manifest) => [manifest.dir, manifest]));
+  const pathPackages = [...byDir.values()].sort((a, b) => b.dir.length - a.dir.length);
   const collect = (key, specifier, dirs2, targets) => {
     const keyed = byName.get(key);
     if (keyed !== void 0) targets.add(keyed.name);
@@ -29357,7 +29358,9 @@ async function discoverWorkspace(tree, discovery) {
     const value = (local?.[2] ?? specifier).replaceAll("\\", "/");
     if (protocol === "link:" || protocol === "file:" || /^(\.{1,2}(?:\/|$)|~\/|\/|[A-Za-z]:\/)/.test(value) || !protocol && !value.includes(":") && !value.includes("#") && (value.split("/").length > 2 || /\.(?:tar|tar\.gz|tgz)$/.test(value))) {
       for (const dir of dirs2) {
-        const dependency2 = /^[~/]|^[A-Za-z]:/.test(value) ? void 0 : byDir.get(posix.join(dir, value).replace(/\/+$/, ""));
+        if (/^[~/]|^[A-Za-z]:/.test(value)) continue;
+        const path = posix.join(dir, value).replace(/\/+$/, "");
+        const dependency2 = pathPackages.find(({ dir: dir2 }) => path === dir2 || path.startsWith(dir2 + "/"));
         if (dependency2 !== void 0) targets.add(dependency2.name);
       }
       return true;

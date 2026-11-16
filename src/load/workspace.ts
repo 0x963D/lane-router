@@ -78,6 +78,7 @@ export async function discoverWorkspace(
   if (isNonEmpty(problems)) return err(problems);
 
   const byDir = new Map<string, Manifest>([...byName.values()].map((manifest) => [manifest.dir, manifest]));
+  const pathPackages = [...byDir.values()].sort((a, b) => b.dir.length - a.dir.length);
   const collect = (key: string, specifier: string, dirs: readonly string[], targets: Set<PackageName>): boolean => {
     const keyed = byName.get(key);
     if (keyed !== undefined) targets.add(keyed.name);
@@ -100,9 +101,9 @@ export async function discoverWorkspace(
         (value.split("/").length > 2 || /\.(?:tar|tar\.gz|tgz)$/.test(value)))
     ) {
       for (const dir of dirs) {
-        const dependency = /^[~/]|^[A-Za-z]:/.test(value)
-          ? undefined
-          : byDir.get(posix.join(dir, value).replace(/\/+$/, ""));
+        if (/^[~/]|^[A-Za-z]:/.test(value)) continue;
+        const path = posix.join(dir, value).replace(/\/+$/, "");
+        const dependency = pathPackages.find(({ dir }) => path === dir || path.startsWith(dir + "/"));
         if (dependency !== undefined) targets.add(dependency.name);
       }
       return true;
