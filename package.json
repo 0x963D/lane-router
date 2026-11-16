@@ -19,7 +19,8 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "build": "node scripts/build.ts",
-    "demo": "npm run build && node scripts/demo.ts"
+    "demo": "npm run build && node scripts/demo.ts",
+    "check:linking": "node scripts/check-linking.ts"
   },
   "dependencies": {
     "@actions/core": "^3.0.1",
