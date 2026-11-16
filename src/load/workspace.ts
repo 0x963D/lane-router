@@ -273,6 +273,7 @@ const overrideValues: Decoder<readonly Dependency[]> = (input, context) => {
     const key = /^((?:@[^/]+\/)?[^@]+)(?:@.*)?$/.exec(String(selector).split(">").at(-1) ?? "")?.[1] ?? "";
     return [{ key, specifier: input, where: formatDataPath(context.path) }];
   }
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return [];
   const nested = entries(string, overrideValues)(input, context);
   return isValid(nested) ? nested.flatMap(([, values]) => values) : INVALID;
 };

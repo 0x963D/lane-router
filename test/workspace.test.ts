@@ -439,6 +439,25 @@ describe("workspace discovery", () => {
     ]);
   });
 
+  it.each([1, true, null, [], { "left-pad": 1 }, { parent: { child: [] } }])(
+    "loads override values that cannot name a package %j",
+    async (overrides) => {
+      const plan = await planFor("acme", ["packages/ui/src/button.tsx"], {
+        "package.json": JSON.stringify({ overrides }),
+      });
+      expect(running(plan)).toEqual(["web", "e2e", "lint"]);
+    },
+  );
+
+  it("keeps valid override targets beside ignored values", async () => {
+    const plan = await planFor("acme", ["packages/ui/src/button.tsx"], {
+      "package.json": JSON.stringify({
+        overrides: { parent: { ignored: 1, legacy: "link:./packages/ui" }, other: [] },
+      }),
+    });
+    expect(running(plan)).toEqual(["api", "web", "e2e", "lint"]);
+  });
+
   it("ignores dependencies that are not workspace packages", async () => {
     const plan = await planFor("acme", ["packages/web/src/app.tsx"]);
     expect(placementsOf(plan, "packages/web/src/app.tsx")).toMatchObject([{ kind: "package", package: "@acme/web" }]);
