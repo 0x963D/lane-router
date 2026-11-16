@@ -59,25 +59,19 @@ jobs:
         if: steps.lanes.outputs.api != 'skip'
 ```
 
-A missing lane output therefore runs the job. A shallow checkout runs every known head lane when the routing config or a package manifest changes, but cannot discover removed lanes. The [matrix example](docs/action.md#use-the-outputs-in-a-workflow) also uses a full checkout. There is no Marketplace listing yet.
+A missing lane output runs the job. `fetch-depth: 0` lets lane-router read the base commit. With a shallow checkout, a change to the routing config or a package manifest runs every lane in the head config. The [matrix example](docs/action.md#use-the-outputs-in-a-workflow) routes several lanes from one step.
 
 The examples use tags so they are easy to read. In your own workflow, pin `actions/checkout` and this action to full commit SHAs, following [GitHub's security hardening guidance](https://docs.github.com/en/actions/reference/security/secure-use#using-third-party-actions).
 
-## Routing and config
+## Docs
 
-[How routing works](docs/routing.md) explains why path filters miss dependencies and how the base and head graphs prevent a change from rewriting its own test coverage. The [config reference](docs/config.md) includes the full demo config and validation rules.
-
-## Action and CLI
-
-[Outputs and inputs](docs/action.md) covers the Action contract and matrix workflow. [Run locally](docs/running-locally.md) covers the CLI, the demo, and development commands.
-
-## Guarantees and limits
-
-[Fail-closed guarantees](docs/fail-closed.md) lists the cases that run every lane or fail the step. [Reading the repository](docs/reading-the-repository.md) explains path boundaries and error messages that do not quote file contents.
-
-The [workflow protection limit](docs/fail-closed.md#workflow-changes) explains why workflow and config paths need review rules and required status checks.
-
-The [prior-pass threat model](docs/prior-passes.md) explains why a past passing check is not proof that a lane can skip. [What's next](docs/limitations.md) lists unsupported cases. The [decision records](docs/decisions/README.md) link the design choices to their implementation.
+- [How routing works](docs/routing.md): why path filters miss dependencies, and how the base and head graphs stop a change from rewriting its own test coverage.
+- [Config reference](docs/config.md): every key and validation rule, with the demo's full config.
+- [Action inputs and outputs](docs/action.md), including the matrix workflow.
+- [Running locally](docs/running-locally.md): the CLI, the demo and the development commands.
+- [Fail-closed guarantees](docs/fail-closed.md): every case that runs every lane or fails the step, which files the Action will read, and why workflow files need review rules.
+- [Limitations](docs/limitations.md): what v0.1 does not do.
+- [Decision records](docs/decisions/README.md): each design choice and the code that implements it.
 
 ## When Turborepo or Nx is the better tool
 
