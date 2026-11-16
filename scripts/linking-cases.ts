@@ -588,15 +588,15 @@ export const LINKING_CASES: readonly LinkingCase[] = [
     installs: [],
   },
   {
-    label: "source key gist:106cfef49f8476b753a9cbbf9c65aff1",
+    label: "source key gist:00000000000000000000000000000000",
     key: "@acme/ui",
-    specifier: "gist:106cfef49f8476b753a9cbbf9c65aff1",
+    specifier: "gist:00000000000000000000000000000000",
     installs: [],
   },
   {
-    label: "source external gist:106cfef49f8476b753a9cbbf9c65aff1",
+    label: "source external gist:00000000000000000000000000000000",
     key: "external",
-    specifier: "gist:106cfef49f8476b753a9cbbf9c65aff1",
+    specifier: "gist:00000000000000000000000000000000",
     installs: [],
   },
   {

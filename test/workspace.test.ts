@@ -188,7 +188,7 @@ describe("workspace discovery", () => {
     "github:acme/ui",
     "gitlab:acme/ui",
     "bitbucket:acme/ui",
-    "gist:106cfef49f8476b753a9cbbf9c65aff1",
+    "gist:00000000000000000000000000000000",
     "acme/ui",
     "acme/ui#97edff6f525f192a3f83cea1944765f769ae2678",
     "acme/ui#master",
