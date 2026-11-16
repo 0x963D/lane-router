@@ -104,32 +104,23 @@ describe("workspace discovery", () => {
     expect(running(plan)).toEqual(["web", "e2e", "lint"]);
   });
 
-  it.each([
-    "workspace:@missing/ui@*",
-    "workspace:../missing",
-    "workspace:*",
-    "link:../missing",
-    "file:../missing",
-    "../missing",
-    "E:/packages/ui",
-    "file:../ui.tgz",
-    "~/ui",
-    "/packages/ui",
-    "link:../../../outside",
-  ])("rejects an unresolved workspace reference %s with its manifest and key", async (specifier) => {
-    const problems = await problemsOf("acme", {
-      "packages/web/package.json": JSON.stringify({ name: "@acme/web", devDependencies: { ui: specifier } }),
-    });
-    expect(problems).toMatchObject([
-      {
-        file: "packages/web/package.json",
-        where: "devDependencies.ui",
-        message: "does not resolve to a workspace package",
-      },
-    ]);
-  });
+  it.each(["workspace:@missing/ui@*", "workspace:*"])(
+    "rejects an unresolved workspace reference %s with its manifest and key",
+    async (specifier) => {
+      const problems = await problemsOf("acme", {
+        "packages/web/package.json": JSON.stringify({ name: "@acme/web", devDependencies: { ui: specifier } }),
+      });
+      expect(problems).toMatchObject([
+        {
+          file: "packages/web/package.json",
+          where: "devDependencies.ui",
+          message: "does not resolve to a workspace package",
+        },
+      ]);
+    },
+  );
 
-  it.each(["3d", "v1-compat", "@acme/ui"])("follows workspace alias %s instead of its dependency key", async (name) => {
+  it.each(["3d", "v1-compat", "@acme/ui"])("includes workspace alias %s alongside its dependency key", async (name) => {
     const plan = await planFor("acme", ["packages/ui/src/button.tsx"], {
       "packages/ui/package.json": JSON.stringify({ name }),
       "packages/web/package.json": JSON.stringify({
@@ -245,12 +236,65 @@ describe("workspace discovery", () => {
     },
   );
 
-  it.each([".tar", ".tar.gz", ".tgz"])("rejects an unreadable local archive %s", async (extension) => {
-    expect(
-      await problemsOf("acme", {
-        "packages/web/package.json": JSON.stringify({ name: "@acme/web", dependencies: { ui: `./ui${extension}` } }),
+  it.each([
+    "workspace:../missing",
+    "link:../missing",
+    "file:../missing",
+    "../missing",
+    "E:/packages/ui",
+    "file:../ui.tgz",
+    "~/ui",
+    "/packages/ui",
+    "link:../../../outside",
+    "./ui.tar",
+    "./ui.tar.gz",
+    "./ui.tgz",
+  ])("loads a local path outside the discovered packages %s", async (specifier) => {
+    const loaded = await loadFixture("acme", {
+      "packages/web/package.json": JSON.stringify({ name: "@acme/web", dependencies: { ui: specifier } }),
+    });
+    expect(loaded.ok).toBe(true);
+  });
+
+  it("keeps both the dependency key and the alias target", async () => {
+    const overrides = {
+      "packages/web/package.json": JSON.stringify({
+        name: "@acme/web",
+        dependencies: { "@acme/api": "npm:@acme/ui@*" },
       }),
-    ).toMatchObject([{ file: "packages/web/package.json", where: "dependencies.ui" }]);
+    };
+    expect(running(await planFor("acme", ["packages/api/src/user.ts"], overrides))).toEqual([
+      "api",
+      "web",
+      "e2e",
+      "lint",
+    ]);
+    expect(running(await planFor("acme", ["packages/ui/src/button.tsx"], overrides))).toEqual(["web", "e2e", "lint"]);
+  });
+
+  it("routes a vendored file dependency by path rules and runs every lane when none claims it", async () => {
+    const config = 'lanes:\n  api:\n    packages: ["@acme/api"]\n  web:\n    packages: ["@acme/web"]\nunmatched: all\n';
+    const files = {
+      "packages/web/package.json": JSON.stringify({
+        name: "@acme/web",
+        dependencies: { vendor: "file:../../vendor/lib" },
+      }),
+      "vendor/lib/package.json": JSON.stringify({ name: "vendor", version: "1.0.0" }),
+      "vendor/lib/index.js": "export const value = 1;",
+      [CONFIG]: config,
+    };
+    const path = "vendor/lib/index.js";
+    const unclaimed = await planFor("acme", [path], files);
+    expect(placementKinds(unclaimed, path)).toEqual(["unmatched"]);
+    expect(running(unclaimed)).toEqual(["api", "web"]);
+    const claimed = await planFor("acme", [path], {
+      ...files,
+      [CONFIG]:
+        config +
+        'paths:\n  - match: ["vendor/lib/**"]\n    packages: ["@acme/web"]\n    via: code\n    why: The web package reads the vendored library.\n',
+    });
+    expect(placementKinds(claimed, path)).toEqual(["row"]);
+    expect(running(claimed)).toEqual(["web"]);
   });
 
   it("ignores dependencies that are not workspace packages", async () => {

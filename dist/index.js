@@ -29344,14 +29344,34 @@ async function discoverWorkspace(tree, discovery) {
   }
   if (isNonEmpty(problems)) return err(problems);
   const byDir = new Map([...byName.values()].map((manifest) => [manifest.dir, manifest]));
+  const collect = (key, specifier, dirs2, targets) => {
+    const keyed = byName.get(key);
+    if (keyed !== void 0) targets.add(keyed.name);
+    if (specifier.startsWith("catalog:")) {
+      specifier = definition.value.catalogs.get(specifier.slice("catalog:".length).trim() || "default")?.get(key) ?? "";
+      if (specifier.startsWith("catalog:")) return true;
+      dirs2 = [...dirs2, ""];
+    }
+    const local = /^(workspace:|link:|file:)(.*)$/.exec(specifier);
+    const protocol = local?.[1];
+    const value = (local?.[2] ?? specifier).replaceAll("\\", "/");
+    if (protocol === "link:" || protocol === "file:" || /^(\.{1,2}(?:\/|$)|~\/|\/|[A-Za-z]:\/)/.test(value) || !protocol && !value.includes(":") && !value.includes("#") && (value.split("/").length > 2 || /\.(?:tar|tar\.gz|tgz)$/.test(value))) {
+      for (const dir of dirs2) {
+        const dependency2 = /^[~/]|^[A-Za-z]:/.test(value) ? void 0 : byDir.get(posix.join(dir, value).replace(/\/+$/, ""));
+        if (dependency2 !== void 0) targets.add(dependency2.name);
+      }
+      return true;
+    }
+    const name = protocol === "workspace:" ? /^workspace:(?:(?<alias>[^._/][^@]*)@)?(?<version>.*)$/.exec(specifier)?.groups?.alias ?? key : /^(?:[A-Za-z][A-Za-z0-9+.-]*:)?((?:@[^/]+\/)?[^@/:]+)(?:@.*)?$/.exec(specifier)?.[1];
+    const dependency = name === void 0 ? void 0 : byName.get(name);
+    if (dependency !== void 0) targets.add(dependency.name);
+    return protocol !== "workspace:" || dependency !== void 0;
+  };
   const packages = /* @__PURE__ */ new Map();
   for (const { name, dir, dependencies } of byName.values()) {
-    const resolved = [];
+    const resolved = /* @__PURE__ */ new Set();
     for (const { key, specifier, where } of dependencies) {
-      const { kind, target } = dependencyTarget(key, specifier, dir, definition.value.catalogs);
-      const dependency = "path" in target ? /^[~/]|^[A-Za-z]:/.test(target.path) ? void 0 : byDir.get(target.path) : byName.get(target.name);
-      if (dependency !== void 0) resolved.push(dependency.name);
-      else if (kind === "must-be-local")
+      if (!collect(key, specifier, [dir], resolved))
         problems.push({
           file: dir + IN_PACKAGE,
           at: null,
@@ -29359,35 +29379,9 @@ async function discoverWorkspace(tree, discovery) {
           message: "does not resolve to a workspace package"
         });
     }
-    packages.set(name, { name, dir, dependencies: [...new Set(resolved)] });
+    packages.set(name, { name, dir, dependencies: [...resolved] });
   }
   return isNonEmpty(problems) ? err(problems) : ok({ packages });
-}
-function dependencyTarget(key, specifier, dir, catalogs) {
-  if (specifier.startsWith("catalog:")) {
-    const entry = catalogs.get(specifier.slice("catalog:".length) || "default")?.get(key);
-    return entry === void 0 || entry.startsWith("catalog:") ? { kind: "never-local", target: { name: key } } : dependencyTarget(key, entry, "", catalogs);
-  }
-  const local = /^(workspace:|link:|file:)(.*)$/.exec(specifier);
-  const protocol = local?.[1];
-  const value = (local?.[2] ?? specifier).replaceAll("\\", "/");
-  const isPath = /^(\.{1,2}(?:\/|$)|~\/|\/|[A-Za-z]:\/)/.test(value);
-  if (protocol === "link:" || protocol === "file:" || isPath || !protocol && !value.includes(":") && !value.includes("#") && (value.split("/").length > 2 || /\.(?:tar|tar\.gz|tgz)$/.test(value))) {
-    const path = /^[~/]|^[A-Za-z]:/.test(value) ? value : posix.join(dir, value).replace(/\/+$/, "");
-    return { kind: "must-be-local", target: { path } };
-  }
-  if (protocol === "workspace:") {
-    const alias = /^workspace:(?:(?<alias>[^._/][^@]*)@)?(?<version>.*)$/.exec(specifier)?.groups?.alias;
-    return { kind: "must-be-local", target: { name: alias ?? key } };
-  }
-  const registry = /^([A-Za-z][A-Za-z0-9+.-]*):(.*)$/.exec(specifier);
-  if (registry !== null && !/^(?:https?|git(?:\+.*)?|ssh|github|gitlab|bitbucket|gist|tool|runtime|crate|pypi)$/i.test(registry[1] ?? "")) {
-    const body = registry[2] ?? "";
-    const usesKey = !body.startsWith("@") && (/^jsr$/i.test(registry[1] ?? "") || registry[1] !== "npm" && key.startsWith("@"));
-    const name = usesKey ? key : /^((?:@[^/]+\/)?[A-Za-z0-9_][A-Za-z0-9._-]*)(?:@.*)?$/.exec(body)?.[1];
-    return { kind: "may-be-local", target: { name: name ?? key } };
-  }
-  return { kind: registry !== null || value.includes("/") ? "never-local" : "may-be-local", target: { name: key } };
 }
 async function workspaceDefinition(tree, discovery) {
   if (discovery !== "npm") {
@@ -29408,14 +29402,17 @@ async function workspaceDefinition(tree, discovery) {
   }
   return npmWorkspace(manifest.value);
 }
+function emptyCatalog(decoder) {
+  return (input, context) => input === null || input === void 0 ? [] : decoder(input, context);
+}
 function pnpmWorkspace(source) {
   const file = parseYaml(WORKSPACE_FILE, source);
   if (!file.ok) return file;
   const decoded = decode(
     object((field) => {
       const packages = field("packages", withDefault(array(workspaceGlob), []));
-      const catalog = field("catalog", withDefault(entries(string, string), []));
-      const catalogs = field("catalogs", withDefault(entries(string, entries(string, string)), []));
+      const catalog = field("catalog", emptyCatalog(entries(string, string)));
+      const catalogs = field("catalogs", emptyCatalog(entries(string, entries(string, string))));
       if (!isValid(packages) || !isValid(catalog) || !isValid(catalogs)) return INVALID;
       return {
         globs: globSet(packages),
