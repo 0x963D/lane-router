@@ -59,6 +59,13 @@ jobs:
         if: steps.lanes.outputs.api != 'skip'
 ```
 
+Each run writes its decisions to the job summary. This one is from lane-router's own CI, routing the one-file change from the demo.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/job-summary-dark.png">
+  <img alt="A job summary table: api skip, nothing it reads changed; web, e2e and lint run, each with its reason." src="docs/images/job-summary-light.png" width="768">
+</picture>
+
 A missing lane output runs the job. `fetch-depth: 0` lets lane-router read the base commit. With a shallow checkout, a change to the routing config or a package manifest runs every lane in the head config. The [matrix example](docs/action.md#use-the-outputs-in-a-workflow) routes several lanes from one step.
 
 The examples use tags so they are easy to read. In your own workflow, pin `actions/checkout` and this action to full commit SHAs, following [GitHub's security hardening guidance](https://docs.github.com/en/actions/reference/security/secure-use#using-third-party-actions).
