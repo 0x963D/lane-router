@@ -39,16 +39,21 @@ interface Dependency {
   readonly where: string;
 }
 
+interface WorkspaceDefinition {
+  readonly globs: GlobSet;
+  readonly catalogs: ReadonlyMap<string, ReadonlyMap<string, string>>;
+}
+
 export async function discoverWorkspace(
   tree: RepoTree,
   discovery: Discovery,
 ): Promise<Result<Workspace, NonEmpty<Problem>>> {
-  const globs = await workspaceGlobs(tree, discovery);
-  if (!globs.ok) return globs;
+  const definition = await workspaceDefinition(tree, discovery);
+  if (!definition.ok) return definition;
   const files = await listFiles(tree);
   if (!files.ok) return files;
 
-  const isPackageDir = compileGlobs(globs.value);
+  const isPackageDir = compileGlobs(definition.value.globs);
   const dirs = files.value.flatMap((path) => {
     const dir = path.endsWith(IN_PACKAGE) ? parseRepoPath(path.slice(0, -IN_PACKAGE.length)) : undefined;
     return dir !== undefined && isPackageDir(dir) ? [dir] : [];
@@ -76,15 +81,15 @@ export async function discoverWorkspace(
   for (const { name, dir, dependencies } of byName.values()) {
     const resolved: PackageName[] = [];
     for (const { key, specifier, where } of dependencies) {
-      const target = dependencyTarget(key, specifier);
+      const { kind, target } = dependencyTarget(key, specifier, dir, definition.value.catalogs);
       const dependency =
-        target.kind === "path"
+        "path" in target
           ? /^[~/]|^[A-Za-z]:/.test(target.path)
             ? undefined
-            : byDir.get(posix.join(dir, target.path).replace(/\/+$/, ""))
+            : byDir.get(target.path)
           : byName.get(target.name);
       if (dependency !== undefined) resolved.push(dependency.name);
-      else if (target.kind !== "key")
+      else if (kind === "must-be-local")
         problems.push({
           file: dir + IN_PACKAGE,
           at: null,
@@ -98,43 +103,65 @@ export async function discoverWorkspace(
 }
 
 type DependencyTarget =
-  { readonly kind: "key" | "alias"; readonly name: string } | { readonly kind: "path"; readonly path: string };
+  | { readonly kind: "must-be-local"; readonly target: { readonly name: string } | { readonly path: string } }
+  | { readonly kind: "may-be-local" | "never-local"; readonly target: { readonly name: string } };
 
-function dependencyTarget(key: string, specifier: string): DependencyTarget {
+function dependencyTarget(
+  key: string,
+  specifier: string,
+  dir: string,
+  catalogs: WorkspaceDefinition["catalogs"],
+): DependencyTarget {
+  if (specifier.startsWith("catalog:")) {
+    const entry = catalogs.get(specifier.slice("catalog:".length) || "default")?.get(key);
+    return entry === undefined || entry.startsWith("catalog:")
+      ? { kind: "never-local", target: { name: key } }
+      : dependencyTarget(key, entry, "", catalogs);
+  }
   const local = /^(workspace:|link:|file:)(.*)$/.exec(specifier);
   const protocol = local?.[1];
   const value = (local?.[2] ?? specifier).replaceAll("\\", "/");
-  const isPath = /^(\.{1,2}(?:\/|$)|~\/|\/|[A-Za-z]:)/.test(value);
+  const isPath = /^(\.{1,2}(?:\/|$)|~\/|\/|[A-Za-z]:\/)/.test(value);
   if (
     protocol === "link:" ||
     protocol === "file:" ||
     isPath ||
-    (!protocol && value.split("/").length > 2 && !value.includes(":"))
+    (!protocol &&
+      !value.includes(":") &&
+      !value.includes("#") &&
+      (value.split("/").length > 2 || /\.(?:tar|tar\.gz|tgz)$/.test(value)))
   ) {
-    return { kind: "path", path: value };
+    const path = /^[~/]|^[A-Za-z]:/.test(value) ? value : posix.join(dir, value).replace(/\/+$/, "");
+    return { kind: "must-be-local", target: { path } };
   }
   if (protocol === "workspace:") {
     const alias = /^(?:v?\d|[xX]$)/.test(value)
       ? undefined
       : /^(@[^/]+\/[^@]+|[a-zA-Z_][a-zA-Z0-9._-]*)(?:@.*)?$/.exec(value)?.[1];
-    return { kind: "alias", name: alias ?? key };
+    return { kind: "must-be-local", target: { name: alias ?? key } };
   }
   const registry = /^([A-Za-z][A-Za-z0-9+.-]*):(.*)$/.exec(specifier);
   if (
     registry !== null &&
-    !/^(?:https?|git|git\+https?|git\+ssh|ssh|github|gitlab|bitbucket|gist|tool|runtime)$/.test(registry[1] ?? "")
+    !/^(?:https?|git(?:\+.*)?|ssh|github|gitlab|bitbucket|gist|tool|runtime|crate|pypi)$/i.test(registry[1] ?? "")
   ) {
-    const name = /^(?:@[^/]+\/)?[^@]+/.exec(registry[2] ?? "")?.[0] ?? "";
-    return { kind: "alias", name };
+    const body = registry[2] ?? "";
+    const usesKey =
+      !body.startsWith("@") && (/^jsr$/i.test(registry[1] ?? "") || (registry[1] !== "npm" && key.startsWith("@")));
+    const name = usesKey ? key : /^((?:@[^/]+\/)?[A-Za-z0-9_][A-Za-z0-9._-]*)(?:@.*)?$/.exec(body)?.[1];
+    return { kind: "may-be-local", target: { name: name ?? key } };
   }
-  return { kind: "key", name: key };
+  return { kind: registry !== null || value.includes("/") ? "never-local" : "may-be-local", target: { name: key } };
 }
 
-async function workspaceGlobs(tree: RepoTree, discovery: Discovery): Promise<Result<GlobSet, NonEmpty<Problem>>> {
+async function workspaceDefinition(
+  tree: RepoTree,
+  discovery: Discovery,
+): Promise<Result<WorkspaceDefinition, NonEmpty<Problem>>> {
   if (discovery !== "npm") {
     const pnpm = await readFile(tree, WORKSPACE_FILE);
     if (!pnpm.ok) return pnpm;
-    if (pnpm.value !== undefined) return pnpmGlobs(pnpm.value);
+    if (pnpm.value !== undefined) return pnpmWorkspace(pnpm.value);
     if (discovery === "pnpm") return err([fileProblem(WORKSPACE_FILE, "not found, and workspace.discovery is pnpm")]);
   }
   const manifest = await readFile(tree, MANIFEST);
@@ -149,17 +176,29 @@ async function workspaceGlobs(tree: RepoTree, discovery: Discovery): Promise<Res
       ),
     ]);
   }
-  return npmGlobs(manifest.value);
+  return npmWorkspace(manifest.value);
 }
 
-function pnpmGlobs(source: string): Result<GlobSet, NonEmpty<Problem>> {
+function pnpmWorkspace(source: string): Result<WorkspaceDefinition, NonEmpty<Problem>> {
   const file = parseYaml(WORKSPACE_FILE, source);
   if (!file.ok) return file;
   const decoded = decode(
-    object<readonly WorkspaceGlob[]>((field) => field("packages", withDefault(array(workspaceGlob), [])), IGNORE),
+    object((field) => {
+      const packages = field("packages", withDefault(array(workspaceGlob), []));
+      const catalog = field("catalog", withDefault(entries(string, string), []));
+      const catalogs = field("catalogs", withDefault(entries(string, entries(string, string)), []));
+      if (!isValid(packages) || !isValid(catalog) || !isValid(catalogs)) return INVALID;
+      return {
+        globs: globSet(packages),
+        catalogs: new Map([
+          ["default", new Map(catalog)],
+          ...catalogs.map(([name, values]) => [name, new Map(values)] as const),
+        ]),
+      };
+    }, IGNORE),
     file.value.value,
   );
-  return decoded.ok ? ok(globSet(decoded.value)) : err(mapNonEmpty(decoded.error, file.value.locate));
+  return decoded.ok ? ok(decoded.value) : err(mapNonEmpty(decoded.error, file.value.locate));
 }
 
 const npmWorkspaces: Decoder<readonly WorkspaceGlob[]> = (input, context) =>
@@ -167,14 +206,16 @@ const npmWorkspaces: Decoder<readonly WorkspaceGlob[]> = (input, context) =>
     ? array(workspaceGlob)(input, context)
     : object<readonly WorkspaceGlob[]>((field) => field("packages", array(workspaceGlob)), IGNORE)(input, context);
 
-function npmGlobs(source: string): Result<GlobSet, NonEmpty<Problem>> {
+function npmWorkspace(source: string): Result<WorkspaceDefinition, NonEmpty<Problem>> {
   const json = jsonFile(MANIFEST, source);
   if (!json.ok) return json;
   const decoded = decode(
     object<readonly WorkspaceGlob[]>((field) => field("workspaces", npmWorkspaces), IGNORE),
     json.value,
   );
-  return decoded.ok ? ok(globSet(decoded.value)) : err(jsonProblems(MANIFEST, decoded.error));
+  return decoded.ok
+    ? ok({ globs: globSet(decoded.value), catalogs: new Map() })
+    : err(jsonProblems(MANIFEST, decoded.error));
 }
 
 interface WorkspaceGlob {

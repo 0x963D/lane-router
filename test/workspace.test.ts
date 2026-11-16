@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CONFIG, problemsOf } from "./support/model.ts";
+import { CONFIG, loadFixture, problemsOf } from "./support/model.ts";
 import { placementKinds, placementsOf, planFor, running } from "./support/plan.ts";
 
 /* A package exists when a path inside it gets a package placement, and a dependency exists when a change to it selects the dependent's lane. */
@@ -62,7 +62,6 @@ describe("workspace discovery", () => {
 
   it.each([
     ["ui", "workspace:@acme/ui@*"],
-    ["ui", "workspace:@acme/ui"],
     ["@acme/api", "workspace:@acme/ui@*"],
     ["ui", "workspace:@acme/ui@^1.0.0"],
     ["ui", "workspace:../ui"],
@@ -76,6 +75,7 @@ describe("workspace discovery", () => {
     ["ui", "gh:@acme/ui"],
     ["ui", "npmjs:@acme/ui@latest"],
     ["ui", "corp:@acme/ui@^1"],
+    ["ui", "r:@acme/ui@^1"],
     ["ui", "file:..\\ui"],
     ["ui", "../web/../ui"],
     ["ui", "file:../ui/"],
@@ -85,6 +85,16 @@ describe("workspace discovery", () => {
     ["@acme/ui", "workspace:1.0.0"],
     ["ui", "workspace:ui@*"],
     ["ui", "npm:ui@latest"],
+    ["@acme/ui", "jsr:^1.0.0"],
+    ["@acme/ui", "jsr:1.0.0"],
+    ["@acme/ui", "jsr:latest"],
+    ["@acme/ui", "gh:latest"],
+    ["@acme/ui", "catalog:"],
+    ["@acme/ui", "catalog:default"],
+    ["@acme/ui", "catalog:ui2"],
+    ["@acme/ui", "1.2.3"],
+    ["@acme/ui", "^1.0.0"],
+    ["@acme/ui", "latest"],
   ])("follows %s: %s to its workspace target", async (key, specifier) => {
     const unscoped = specifier.includes(":ui@");
     const plan = await planFor("acme", ["packages/ui/src/button.tsx"], {
@@ -101,9 +111,6 @@ describe("workspace discovery", () => {
     "link:../missing",
     "file:../missing",
     "../missing",
-    "npm:@missing/ui@*",
-    "corp:@missing/ui@*",
-    "git+file:../ui",
     "E:/packages/ui",
     "file:../ui.tgz",
     "~/ui",
@@ -120,6 +127,109 @@ describe("workspace discovery", () => {
         message: "does not resolve to a workspace package",
       },
     ]);
+  });
+
+  it.each([
+    ["react", "catalog:"],
+    ["react", "catalog:default"],
+    ["react", "catalog:react19"],
+    ["string-width-cjs", "npm:string-width@^4.2.0"],
+    ["string-width-cjs", "npm:string-width"],
+    ["@std/path", "jsr:^1.0.0"],
+    ["@luca/cases", "jsr:@luca/cases@^1"],
+    ["@luca/cases", "jsr:@luca/cases"],
+    ["ui", "npm:@missing/ui@*"],
+    ["ui", "corp:@missing/ui@*"],
+    ["lib", "work:@corp/lib@^2.0.0"],
+    ["lib", "r:@corp/lib@^2.0.0"],
+    ["lib", "gh:@my-org/private-pkg"],
+    ["left-pad", "npmjs:left-pad"],
+    ["express", "nightly"],
+    ["express", "1.0.0"],
+    ["express", ">=0.1.0 <0.2.0"],
+    ["node", "tool:24"],
+    ["node", "runtime:24"],
+    ["serde", "crate:serde"],
+    ["httpx", "pypi:httpx"],
+  ])("ignores external registry dependency %s: %s", async (key, specifier) => {
+    const loaded = await loadFixture("acme", {
+      "packages/web/package.json": JSON.stringify({ name: "@acme/web", dependencies: { [key]: specifier } }),
+    });
+    expect(loaded.ok).toBe(true);
+    const plan = await planFor("acme", ["packages/ui/src/button.tsx"], {
+      "packages/web/package.json": JSON.stringify({ name: "@acme/web", dependencies: { [key]: specifier } }),
+    });
+    expect(running(plan)).toEqual(["lint"]);
+  });
+
+  it.each([
+    "https://example.com/ui.tgz",
+    "http://example.com/ui.tar.gz",
+    "https://github.com/acme/ui.git",
+    "git://example.com/ui.git",
+    "git+https://example.com/ui.git",
+    "git+http://example.com/ui.git",
+    "git+ssh://git@example.com/ui.git#v1.0.0",
+    "git@github.com:acme/ui.git",
+    "ssh://git@example.com/ui.git",
+    "github:acme/ui",
+    "gitlab:acme/ui",
+    "bitbucket:acme/ui",
+    "gist:106cfef49f8476b753a9cbbf9c65aff1",
+    "acme/ui",
+    "acme/ui#97edff6f525f192a3f83cea1944765f769ae2678",
+    "acme/ui#master",
+    "acme/ui#heads/canary",
+    "acme/ui#2.0.1",
+    "acme/ui#v0.0.7",
+    "acme/ui#semver:1.0.0",
+    "acme/ui#semver:v0.0.7",
+    "acme/ui#semver:^2.0.0",
+    "acme/ui#semver:<=v0.0.7",
+    "acme/ui#path:/packages/ui",
+    "acme/ui.git#beta&path:/packages/ui",
+    "acme/ui.git#beta::path:packages/ui",
+    "git+file:../ui",
+    "tool:24",
+    "runtime:24",
+  ])("keeps the conservative key lookup for %s", async (specifier) => {
+    const manifest = (key: string) => ({
+      "packages/web/package.json": JSON.stringify({ name: "@acme/web", dependencies: { [key]: specifier } }),
+    });
+    expect(running(await planFor("acme", ["packages/ui/src/button.tsx"], manifest("@acme/ui")))).toEqual([
+      "web",
+      "e2e",
+      "lint",
+    ]);
+    expect(running(await planFor("acme", ["packages/ui/src/button.tsx"], manifest("external")))).toEqual(["lint"]);
+  });
+
+  it.each(["catalog:", "catalog:default", "catalog:ui2"])(
+    "dereferences %s before finding its target",
+    async (catalog) => {
+      for (const specifier of [
+        "npm:@acme/ui@^1",
+        "workspace:@acme/ui@*",
+        "link:./packages/ui",
+        "file:./packages/ui",
+        "./packages/ui",
+        "workspace:./packages/ui",
+      ]) {
+        const plan = await planFor("acme", ["packages/ui/src/button.tsx"], {
+          "pnpm-workspace.yaml": `packages: ["packages/*", "packages/web/e2e", "tools/*"]\ncatalog:\n  ui: ${JSON.stringify(specifier)}\ncatalogs:\n  ui2:\n    ui: ${JSON.stringify(specifier)}\n`,
+          "packages/web/package.json": JSON.stringify({ name: "@acme/web", dependencies: { ui: catalog } }),
+        });
+        expect(running(plan)).toEqual(["web", "e2e", "lint"]);
+      }
+    },
+  );
+
+  it.each([".tar", ".tar.gz", ".tgz"])("rejects an unreadable local archive %s", async (extension) => {
+    expect(
+      await problemsOf("acme", {
+        "packages/web/package.json": JSON.stringify({ name: "@acme/web", dependencies: { ui: `./ui${extension}` } }),
+      }),
+    ).toMatchObject([{ file: "packages/web/package.json", where: "dependencies.ui" }]);
   });
 
   it("ignores dependencies that are not workspace packages", async () => {

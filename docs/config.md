@@ -76,17 +76,17 @@ In a docs-only change, every matching explicit `paths` row counts, whatever its 
 
 A package is a directory that matches a workspace glob and holds a `package.json` with a `name`. pnpm `!` negations are honoured. The repository root is never a package. Dependencies come from `dependencies`, `devDependencies`, `peerDependencies` and `optionalDependencies`. Each value must be a string.
 
-Ordinary versions, ranges and tags select a workspace dependency by its key, regardless of version compatibility. This can run extra lanes. Explicit references select their target instead of the key:
+Dependency specifiers have three kinds. Lookup ignores version compatibility, which can run extra lanes.
 
-- `workspace:`, `workspace:*`, `workspace:^`, `workspace:~` and workspace version ranges use the key.
-- Workspace aliases such as `"ui": "workspace:@acme/ui@*"` and npm aliases such as `"ui": "npm:@acme/ui@^1"` use the target package name. Scoped and unscoped aliases work. An npm alias can omit its version. JSR and named registry aliases also use their target name, such as `jsr:@acme/ui@1`, `gh:@acme/ui` or `corp:@acme/ui@^1`.
-- `workspace:../ui`, `link:../ui`, `file:../ui` and bare local paths such as `../ui` or `./../ui` use the package directory relative to the declaring manifest. Directory lookup uses the discovered workspace, without reading outside it.
+- **Must be local.** Every `workspace:` form, `link:`, `file:` and bare local paths must resolve to a discovered package. `workspace:`, `workspace:*`, `workspace:^`, `workspace:~` and workspace version ranges use the key. Workspace aliases such as `"ui": "workspace:@acme/ui@*"` use the target name. Local paths use the directory relative to the declaring manifest.
+- **May be local.** Ordinary versions, ranges and tags use the key. Registry aliases such as `npm:@acme/ui@^1`, `jsr:@acme/ui@1`, `gh:@acme/ui` and `corp:@acme/ui@^1` use the target name. Scoped and unscoped npm aliases work, with or without a version. A JSR selector without a target name, such as `jsr:^1`, `jsr:1.0.0` or `jsr:latest`, uses the key. A named-registry tag paired with a scoped key also uses that key. A workspace match keeps the dependency edge. A missing match is an external dependency and is ignored.
+- **Never local.** Git sources, remote tarballs and provisioned tools name no workspace target. They retain the conservative lookup by key and are ignored when that key is not a workspace package. lane-router does not inspect their contents.
 
-An explicit reference that cannot resolve to a discovered package is a workspace error. The error names the manifest and dependency key. This includes local archives, local Git sources, absolute paths, home-relative paths and paths outside the workspace. A head workspace error fails the step. A base workspace error makes the change incomplete, so every lane runs.
+A missing must-be-local target is a workspace error that names the manifest and dependency key. This includes local archives, absolute paths, home-relative paths and paths outside the workspace. Directory lookup uses the discovered workspace, without reading outside it. A head workspace error fails the step. A base workspace error makes the change incomplete, so every lane runs.
 
-Other versions, remote tarball and remote Git sources retain the conservative lookup by dependency key. lane-router does not inspect their contents.
+`catalog:`, `catalog:default` and named catalogs such as `catalog:react19` select an entry by dependency key in `pnpm-workspace.yaml`. The entry is classified by the same rules. Version ranges need only key lookup. Aliases and local references need their expanded target. Catalog paths are relative to the workspace root. A missing entry or a recursive catalog reference retains key lookup and is ignored when the key is not a workspace package.
 
-The syntax follows the pnpm [workspace protocol](https://pnpm.io/workspaces), pnpm [package sources](https://pnpm.io/package-sources), npm [package spec](https://docs.npmjs.com/cli/v11/using-npm/package-spec/) and npm [local paths](https://docs.npmjs.com/cli/v11/configuring-npm/package-json/#local-paths).
+The syntax follows the pnpm [workspace protocol](https://pnpm.io/workspaces), pnpm [package sources](https://pnpm.io/package-sources), pnpm [catalogs](https://pnpm.io/catalogs), npm [package spec](https://docs.npmjs.com/cli/v11/using-npm/package-spec/) and npm [local paths](https://docs.npmjs.com/cli/v11/configuring-npm/package-json/#local-paths).
 
 Globs are [picomatch](https://github.com/micromatch/picomatch) globs, relative to the repository root, with posix separators and `dot: true`.
 
