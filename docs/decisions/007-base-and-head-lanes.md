@@ -18,4 +18,6 @@ A rename emits both lane names for that change. Workflows must still handle the 
 
 Config changes now need base history. A shallow checkout cannot discover removed lane names, so it emits an incomplete plan with all known head lanes selected. Use a full checkout to preserve the base lane set.
 
+Fixed-lane workflow gates use `steps.lanes.outputs.api != 'skip'`. A missing output therefore runs the job, including when an unreadable base hides a removed lane. Matrix workflows need the base config to discover removed lane names. The README and matrix examples use `fetch-depth: 0`, though full history cannot repair an invalid base config.
+
 [`loadModel`](../../src/load/index.ts) reads both configs. [`compile`](../../src/core/model.ts) combines the lane set and dependency coverage. [`planLanes`](../../src/core/plan.ts) emits decisions from that combined model. [Base config tests](../../test/base-config.test.ts) cover the CLI and Action outputs.

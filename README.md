@@ -33,15 +33,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - id: lanes
         uses: 0x963D/lane-router@v0
       - run: npm ci
-        if: steps.lanes.outputs.api == 'run'
+        if: steps.lanes.outputs.api != 'skip'
       - run: npm run test:api
-        if: steps.lanes.outputs.api == 'run'
+        if: steps.lanes.outputs.api != 'skip'
 ```
 
-A shallow checkout runs every known head lane when the routing config or a package manifest changes. Use the [full workflow example](docs/action.md#use-the-outputs-in-a-workflow) for a full checkout and a matrix. There is no Marketplace listing yet.
+A missing lane output therefore runs the job. A shallow checkout runs every known head lane when the routing config or a package manifest changes, but cannot discover removed lanes. The [matrix example](docs/action.md#use-the-outputs-in-a-workflow) also uses a full checkout. There is no Marketplace listing yet.
 
 Pin `actions/checkout` and this action to full commit SHAs, following [GitHub's security hardening guidance](https://docs.github.com/en/actions/reference/security/secure-use#using-third-party-actions).
 

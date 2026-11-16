@@ -12,7 +12,7 @@ Every output is a string, as Actions requires.
 | `docs-only`     | `true` when the event's change was docs-only.                                                             |
 | `none-required` | `true` when no lane runs.                                                                                 |
 
-Lane order is head config order, then base-only lanes in base config order. Removed lanes run and appear in every output and the summary.
+Lane order is head config order, then base-only lanes in base config order. When the base config can be read, removed lanes run and appear in every output and the summary. An unreadable base leaves only the known head lanes in the plan.
 
 Every lane in `matrix` gets the same `base`. It is the `base` input when one is set, else the pull request's base SHA or the push's `before`. It is empty when there is none.
 
@@ -21,6 +21,8 @@ The step also writes a job summary. It opens with a line that gives the mode, ba
 ## Use the outputs in a workflow
 
 The `test` job uses `none-required` to skip the matrix when no lane runs.
+
+For a fixed lane, use `if: steps.lanes.outputs.api != 'skip'`. A missing lane output therefore runs the job. A full checkout lets the matrix include removed lanes. If the base config cannot be read, a matrix cannot discover those lanes.
 
 ```yaml
 name: ci
