@@ -30,11 +30,12 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   plan:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     outputs:
       matrix: ${{ steps.lanes.outputs.matrix }}
       none-required: ${{ steps.lanes.outputs.none-required }}
@@ -57,6 +58,8 @@ jobs:
       - run: npm ci
       - run: npm run "test:${{ matrix.lane }}"
 ```
+
+Pin `actions/checkout` and this action to full commit SHAs, following [GitHub's security hardening guidance](https://docs.github.com/en/actions/reference/security/secure-use#using-third-party-actions).
 
 ## Inputs
 

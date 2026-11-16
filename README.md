@@ -43,6 +43,8 @@ jobs:
 
 A shallow checkout runs every known head lane when the routing config or a package manifest changes. Use the [full workflow example](docs/action.md#use-the-outputs-in-a-workflow) for a full checkout and a matrix. There is no Marketplace listing yet.
 
+Pin `actions/checkout` and this action to full commit SHAs, following [GitHub's security hardening guidance](https://docs.github.com/en/actions/reference/security/secure-use#using-third-party-actions).
+
 ## Routing and config
 
 [How routing works](docs/routing.md) explains why path filters miss dependencies and how the base and head graphs prevent a change from rewriting its own test coverage. The [config reference](docs/config.md) includes the full demo config and validation rules.
