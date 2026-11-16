@@ -151,16 +151,21 @@ async function workspaceDefinition(
   if (!manifest.ok) return manifest;
   const json = manifest.value === undefined ? ok(undefined) : jsonFile(MANIFEST, manifest.value);
   if (!json.ok) return json;
-  const overrides = json.value === undefined ? ok([]) : decode(rootOverrides, json.value);
+  const overrides = decode(rootOverrides, json.value ?? {});
   if (!overrides.ok) return err(jsonProblems(MANIFEST, overrides.error));
+  const withOverrides = (definition: WorkspaceDefinition): WorkspaceDefinition => ({
+    ...definition,
+    overrides: expandOverrideReferences(
+      [...definition.overrides, ...overrides.value.overrides],
+      overrides.value.references,
+    ),
+  });
   if (discovery !== "npm") {
     const pnpm = await readFile(tree, WORKSPACE_FILE);
     if (!pnpm.ok) return pnpm;
     if (pnpm.value !== undefined) {
       const definition = pnpmWorkspace(pnpm.value);
-      return definition.ok
-        ? ok({ ...definition.value, overrides: [...definition.value.overrides, ...overrides.value] })
-        : definition;
+      return definition.ok ? ok(withOverrides(definition.value)) : definition;
     }
     if (discovery === "pnpm") return err([fileProblem(WORKSPACE_FILE, "not found, and workspace.discovery is pnpm")]);
   }
@@ -175,7 +180,7 @@ async function workspaceDefinition(
     ]);
   }
   const definition = npmWorkspace(json.value);
-  return definition.ok ? ok({ ...definition.value, overrides: overrides.value }) : definition;
+  return definition.ok ? ok(withOverrides(definition.value)) : definition;
 }
 
 function emptyMapping<T>(decoder: Decoder<readonly T[]>): Decoder<readonly T[]> {
@@ -268,15 +273,23 @@ const rootOverrides = object((field) => {
   const pnpm = field("pnpm", emptyMapping(object((field) => field("overrides", emptyMapping(overrideValues)), IGNORE)));
   const dependencies = DEPENDENCY_FIELDS.map((name) => field(name, withDefault(entries(string, string), [])));
   if (!isValid(npm) || !isValid(pnpm) || !dependencies.every(isValid)) return INVALID;
-  const references = new Map(dependencies.flat());
-  return [...npm, ...pnpm].flatMap((dependency) => {
+  return {
+    overrides: [...npm, ...pnpm].map((dependency) => ({ file: MANIFEST, dependency })),
+    references: new Map(dependencies.flat()),
+  };
+}, IGNORE);
+
+function expandOverrideReferences(
+  overrides: WorkspaceDefinition["overrides"],
+  references: ReadonlyMap<string, string>,
+): WorkspaceDefinition["overrides"] {
+  return overrides.flatMap((entry) => {
+    const { dependency } = entry;
     const key = dependency.specifier.slice(1);
     const specifier = dependency.specifier.startsWith("$") ? references.get(key) : undefined;
-    return (specifier === undefined ? [dependency] : [dependency, { ...dependency, key, specifier }]).map(
-      (dependency) => ({ file: MANIFEST, dependency }),
-    );
+    return specifier === undefined ? [entry] : [entry, { ...entry, dependency: { ...dependency, key, specifier } }];
   });
-}, IGNORE);
+}
 
 /** Undefined when the directory has a package.json without a name, which makes it not a package. */
 async function readManifest(tree: RepoTree, dir: RepoPath): Promise<Result<Manifest | undefined, NonEmpty<Problem>>> {

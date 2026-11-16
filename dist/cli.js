@@ -9810,14 +9810,21 @@ async function workspaceDefinition(tree, discovery) {
   if (!manifest.ok) return manifest;
   const json = manifest.value === void 0 ? ok(void 0) : jsonFile(MANIFEST, manifest.value);
   if (!json.ok) return json;
-  const overrides = json.value === void 0 ? ok([]) : decode(rootOverrides, json.value);
+  const overrides = decode(rootOverrides, json.value ?? {});
   if (!overrides.ok) return err(jsonProblems(MANIFEST, overrides.error));
+  const withOverrides = (definition2) => ({
+    ...definition2,
+    overrides: expandOverrideReferences(
+      [...definition2.overrides, ...overrides.value.overrides],
+      overrides.value.references
+    )
+  });
   if (discovery !== "npm") {
     const pnpm = await readFile(tree, WORKSPACE_FILE);
     if (!pnpm.ok) return pnpm;
     if (pnpm.value !== void 0) {
       const definition2 = pnpmWorkspace(pnpm.value);
-      return definition2.ok ? ok({ ...definition2.value, overrides: [...definition2.value.overrides, ...overrides.value] }) : definition2;
+      return definition2.ok ? ok(withOverrides(definition2.value)) : definition2;
     }
     if (discovery === "pnpm") return err([fileProblem(WORKSPACE_FILE, "not found, and workspace.discovery is pnpm")]);
   }
@@ -9830,7 +9837,7 @@ async function workspaceDefinition(tree, discovery) {
     ]);
   }
   const definition = npmWorkspace(json.value);
-  return definition.ok ? ok({ ...definition.value, overrides: overrides.value }) : definition;
+  return definition.ok ? ok(withOverrides(definition.value)) : definition;
 }
 function emptyMapping(decoder) {
   return (input, context) => input === null || input === void 0 ? [] : decoder(input, context);
@@ -9901,15 +9908,19 @@ var rootOverrides = object((field) => {
   const pnpm = field("pnpm", emptyMapping(object((field2) => field2("overrides", emptyMapping(overrideValues)), IGNORE)));
   const dependencies = DEPENDENCY_FIELDS.map((name) => field(name, withDefault(entries(string, string), [])));
   if (!isValid(npm) || !isValid(pnpm) || !dependencies.every(isValid)) return INVALID;
-  const references = new Map(dependencies.flat());
-  return [...npm, ...pnpm].flatMap((dependency) => {
+  return {
+    overrides: [...npm, ...pnpm].map((dependency) => ({ file: MANIFEST, dependency })),
+    references: new Map(dependencies.flat())
+  };
+}, IGNORE);
+function expandOverrideReferences(overrides, references) {
+  return overrides.flatMap((entry) => {
+    const { dependency } = entry;
     const key = dependency.specifier.slice(1);
     const specifier = dependency.specifier.startsWith("$") ? references.get(key) : void 0;
-    return (specifier === void 0 ? [dependency] : [dependency, { ...dependency, key, specifier }]).map(
-      (dependency2) => ({ file: MANIFEST, dependency: dependency2 })
-    );
+    return specifier === void 0 ? [entry] : [entry, { ...entry, dependency: { ...dependency, key, specifier } }];
   });
-}, IGNORE);
+}
 async function readManifest(tree, dir) {
   const file = dir + IN_PACKAGE;
   const source = await readFile(tree, file);

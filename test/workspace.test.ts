@@ -362,6 +362,36 @@ describe("workspace discovery", () => {
     ]);
   });
 
+  it.each(
+    ["yaml", "pnpm", "npm"].flatMap((source) =>
+      ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"].map((field) => ({
+        source,
+        field,
+      })),
+    ),
+  )("expands $ references from $source using root $field", async ({ source, field }) => {
+    const overrides = { legacy: "$kit" };
+    const root = {
+      [field]: { kit: "link:./packages/ui" },
+      ...(source === "npm" ? { overrides } : source === "pnpm" ? { pnpm: { overrides } } : {}),
+    };
+    const files = {
+      "package.json": JSON.stringify(root),
+      ...(source === "yaml"
+        ? {
+            "pnpm-workspace.yaml":
+              'packages: ["packages/*", "packages/web/e2e", "tools/*"]\noverrides:\n  legacy: $kit\n',
+          }
+        : {}),
+    };
+    expect(running(await planFor("acme", ["packages/ui/src/button.tsx"], files))).toEqual([
+      "api",
+      "web",
+      "e2e",
+      "lint",
+    ]);
+  });
+
   it("ignores dependencies that are not workspace packages", async () => {
     const plan = await planFor("acme", ["packages/web/src/app.tsx"]);
     expect(placementsOf(plan, "packages/web/src/app.tsx")).toMatchObject([{ kind: "package", package: "@acme/web" }]);
