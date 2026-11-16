@@ -27,3 +27,11 @@ A config or workspace error is different. The lane names are unknown, so lane-ro
 The typed API requires private symbol keys on `Skip`, `Routing` and `CompleteFiles`. A plain object in another module cannot construct any of those types. `changedFiles` constructs complete file lists, `route` constructs routings, and `decide` constructs skips from a routing. Other modules can call these functions, but cannot pass a plain fabricated routing to `decide`. They can construct run decisions directly.
 
 `npm run typecheck` checks those restrictions in `test/type-claims.ts`. These are compile-time construction constraints, not runtime validation. They do not establish that a caller supplied an accurate model or file list, and they do not prevent copying an existing branded value or bypassing types with assertions.
+
+## Workflow changes
+
+lane-router guards against wrong skips caused by a change's files, dependency graph and routing config. It does not protect the workflow that invokes it.
+
+GitHub runs [the workflow version at the event's ref](https://docs.github.com/en/actions/concepts/workflows-and-actions/workflows#workflow-triggers). For `pull_request`, that ref is [the pull request's merge branch](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request), so the pull request can change the workflow itself.
+
+To protect that boundary, use [required status checks and required code-owner reviews](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches). Require review for the workflow and routing config paths.

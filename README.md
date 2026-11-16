@@ -57,6 +57,8 @@ Pin `actions/checkout` and this action to full commit SHAs, following [GitHub's 
 
 [Fail-closed guarantees](docs/fail-closed.md) lists the cases that run every lane or fail the step. [Reading the repository](docs/reading-the-repository.md) explains path boundaries and error messages that do not quote file contents.
 
+The [workflow protection limit](docs/fail-closed.md#workflow-changes) explains why workflow and config paths need review rules and required status checks.
+
 The [prior-pass threat model](docs/prior-passes.md) explains why a past passing check is not proof that a lane can skip. [What's next](docs/limitations.md) lists unsupported cases. The [decision records](docs/decisions/README.md) link the design choices to their implementation.
 
 ## When Turborepo or Nx is the better tool
