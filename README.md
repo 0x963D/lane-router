@@ -14,7 +14,7 @@ e2e   run       packages/ui/src/button.tsx is in @acme/ui, read through @acme/we
 lint  run       floor lane, runs for every change that is not docs-only
 ```
 
-A path filter would treat `docs/api/users.md` as documentation. The config says the api serves that file by name, so adding it to the change runs `api`.
+A path filter would treat `docs/api/users.md` as documentation. The config says the api serves that file by name, so adding it to the change turns `api` from skip to run. The other three lanes still run.
 
 ```text
 api   run       docs/api/users.md matches paths[3] for @acme/api via name: The api serves these files by name.
@@ -22,7 +22,23 @@ api   run       docs/api/users.md matches paths[3] for @acme/api via name: The a
 
 ## Add it to a workflow
 
-Add [a routing config](docs/config.md). This workflow runs an existing `test:api` script when the `api` lane is selected.
+Add a routing config at `.github/lanes.yml`. It names the lanes and the files they read. This is part of the demo's config, and the [config reference](docs/config.md) has all of it.
+
+```yaml
+lanes:
+  api:
+    packages: ["@acme/api"]
+  lint:
+    floor: true
+
+paths:
+  - match: ["docs/api/*.md"]
+    packages: ["@acme/api"]
+    via: name
+    why: The api serves these files by name.
+```
+
+This workflow runs an existing `test:api` script when the `api` lane is selected.
 
 ```yaml
 on: pull_request
@@ -45,7 +61,7 @@ jobs:
 
 A missing lane output therefore runs the job. A shallow checkout runs every known head lane when the routing config or a package manifest changes, but cannot discover removed lanes. The [matrix example](docs/action.md#use-the-outputs-in-a-workflow) also uses a full checkout. There is no Marketplace listing yet.
 
-Pin `actions/checkout` and this action to full commit SHAs, following [GitHub's security hardening guidance](https://docs.github.com/en/actions/reference/security/secure-use#using-third-party-actions).
+The examples use tags so they are easy to read. In your own workflow, pin `actions/checkout` and this action to full commit SHAs, following [GitHub's security hardening guidance](https://docs.github.com/en/actions/reference/security/secure-use#using-third-party-actions).
 
 ## Routing and config
 
