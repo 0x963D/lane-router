@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { loadModel } from "../src/load/index.ts";
 import { CONFIG, loadFixture, problemsOf } from "./support/model.ts";
 import { placementKinds, placementsOf, planFor, running } from "./support/plan.ts";
 
@@ -296,6 +297,42 @@ describe("workspace discovery", () => {
       }),
     });
     expect(running(plan)).toEqual(["lint"]);
+  });
+
+  it.each(["link:../UI", "file:../UI", "../UI", "link:../UI/DIST", "workspace:../UI"])(
+    "includes the case-insensitive path target of %s",
+    async (specifier) => {
+      const plan = await planFor("acme", ["packages/ui/src/button.tsx"], {
+        "packages/web/package.json": JSON.stringify({ name: "@acme/web", dependencies: { kit: specifier } }),
+      });
+      expect(running(plan)).toEqual(["web", "e2e", "lint"]);
+    },
+  );
+
+  it("keeps every case-insensitive match and the original case-sensitive ancestor", async () => {
+    const files: Record<string, string> = {
+      [CONFIG]: 'workspace:\n  discovery: npm\nlanes:\n  app:\n    packages: ["app"]\nunmatched: all\n',
+      "package.json": JSON.stringify({ workspaces: ["packages/**"] }),
+      "packages/app/package.json": JSON.stringify({ name: "app", dependencies: { kit: "link:../UI/inner/dist" } }),
+      "packages/UI/package.json": JSON.stringify({ name: "upper" }),
+      "packages/ui/inner/package.json": JSON.stringify({ name: "lower-inner" }),
+      "packages/Ui/INNER/package.json": JSON.stringify({ name: "mixed-inner" }),
+    };
+    const model = await loadModel(
+      {
+        files: () => Promise.resolve(Object.keys(files)),
+        read: (path) =>
+          Promise.resolve(files[path] === undefined ? { kind: "missing" } : { kind: "file", text: files[path] }),
+      },
+      CONFIG,
+    );
+    expect(model.ok).toBe(true);
+    if (!model.ok) return;
+    for (const name of ["upper", "lower-inner", "mixed-inner"]) {
+      const target = [...model.value.packageDirs[0].values()].find((pkg) => pkg.name === name);
+      const through = [...(target?.reach ?? [])].find(([lane]) => lane === "app")?.[1];
+      expect(through).toMatchObject({ kind: "reads", chain: ["app", name] });
+    }
   });
 
   it("keeps both the dependency key and the alias target", async () => {

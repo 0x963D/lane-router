@@ -29360,8 +29360,17 @@ async function discoverWorkspace(tree, discovery) {
       for (const dir of dirs2) {
         if (/^[~/]|^[A-Za-z]:/.test(value)) continue;
         const path = posix.join(dir, value).replace(/\/+$/, "");
-        const dependency2 = pathPackages.find(({ dir: dir2 }) => path === dir2 || path.startsWith(dir2 + "/"));
-        if (dependency2 !== void 0) targets.add(dependency2.name);
+        for (const caseSensitive of [true, false]) {
+          const candidatePath = caseSensitive ? path : path.toLowerCase();
+          const candidates = pathPackages.filter(({ dir: dir2 }) => {
+            const candidateDir = caseSensitive ? dir2 : dir2.toLowerCase();
+            return candidatePath === candidateDir || candidatePath.startsWith(candidateDir + "/");
+          });
+          const depth = candidates[0]?.dir.length;
+          for (const candidate of candidates) {
+            if (candidate.dir.length === depth) targets.add(candidate.name);
+          }
+        }
       }
       return true;
     }

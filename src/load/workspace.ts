@@ -103,8 +103,17 @@ export async function discoverWorkspace(
       for (const dir of dirs) {
         if (/^[~/]|^[A-Za-z]:/.test(value)) continue;
         const path = posix.join(dir, value).replace(/\/+$/, "");
-        const dependency = pathPackages.find(({ dir }) => path === dir || path.startsWith(dir + "/"));
-        if (dependency !== undefined) targets.add(dependency.name);
+        for (const caseSensitive of [true, false]) {
+          const candidatePath = caseSensitive ? path : path.toLowerCase();
+          const candidates = pathPackages.filter(({ dir }) => {
+            const candidateDir = caseSensitive ? dir : dir.toLowerCase();
+            return candidatePath === candidateDir || candidatePath.startsWith(candidateDir + "/");
+          });
+          const depth = candidates[0]?.dir.length;
+          for (const candidate of candidates) {
+            if (candidate.dir.length === depth) targets.add(candidate.name);
+          }
+        }
       }
       return true;
     }
