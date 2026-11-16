@@ -5,6 +5,8 @@ export interface LinkingCase {
   readonly yaml?: string;
   readonly root?: Readonly<Record<string, unknown>>;
   readonly field?: string;
+  readonly files?: Readonly<Record<string, string>>;
+  readonly packages?: readonly { readonly name: string; readonly dir: string }[];
   readonly installs: readonly ("pnpm" | "npm")[];
 }
 
@@ -1341,5 +1343,75 @@ export const LINKING_CASES: readonly LinkingCase[] = [
     specifier: "^2.0.0",
     yaml: "overrides:\n  legacy-ui: npm:@acme/ui@^1\n",
     installs: ["pnpm"],
+  },
+  ...[false, true].flatMap((manifest) => [
+    {
+      label: `subdirectory link ${manifest ? "with" : "without"} manifest`,
+      key: "ui",
+      specifier: "link:../ui/dist",
+      files: {
+        "packages/ui/dist/index.js": "module.exports = 1;",
+        ...(manifest ? { "packages/ui/dist/package.json": '{"name":"dist-ui","version":"1.0.0"}' } : {}),
+      },
+      installs: ["pnpm"] as const,
+    },
+    {
+      label: `subdirectory file ${manifest ? "with" : "without"} manifest`,
+      key: "kit",
+      specifier: "file:../ui/dist",
+      files: {
+        "packages/ui/dist/index.js": "module.exports = 1;",
+        ...(manifest ? { "packages/ui/dist/package.json": '{"name":"dist-ui","version":"1.0.0"}' } : {}),
+      },
+      installs: ["pnpm", "npm"] as const,
+    },
+  ]),
+  {
+    label: "deepest subdirectory owner",
+    key: "ui",
+    specifier: "link:./packages/ui/dist",
+    files: { "packages/api/packages/ui/dist/index.js": "module.exports = 1;" },
+    installs: ["pnpm"],
+  },
+  {
+    label: "workspace override reference",
+    key: "legacy-ui",
+    specifier: "^2.0.0",
+    root: { devDependencies: { "legacy-ui": "link:./packages/ui" } },
+    yaml: "overrides:\n  legacy-ui: $legacy-ui\n",
+    installs: ["pnpm"],
+  },
+  {
+    label: "case-insensitive link path",
+    key: "kit",
+    specifier: "link:../UI",
+    installs: ["pnpm"],
+  },
+  {
+    label: "case-insensitive file path",
+    key: "kit",
+    specifier: "file:../UI",
+    installs: ["pnpm", "npm"],
+  },
+  {
+    label: "dot-prefixed relative path",
+    key: "x",
+    specifier: ".local/x",
+    packages: [{ name: "@acme/local-x", dir: "api/.local/x" }],
+    installs: ["pnpm", "npm"],
+  },
+  {
+    label: "numeric npm override",
+    key: "@acme/ui",
+    specifier: "*",
+    root: { overrides: { "left-pad": 1 } },
+    installs: ["pnpm", "npm"],
+  },
+  {
+    label: "array npm overrides",
+    key: "@acme/ui",
+    specifier: "*",
+    root: { overrides: [] },
+    installs: ["pnpm", "npm"],
   },
 ];

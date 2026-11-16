@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, parse } from "node:path";
+import { dirname, isAbsolute, join, parse, relative, sep } from "node:path";
 import { directoryTree } from "../src/adapters/directory.ts";
 import { loadModel } from "../src/load/index.ts";
 import { LINKING_CASES, type LinkingCase } from "./linking-cases.ts";
@@ -56,8 +56,8 @@ function write(dir: string, path: string, text: string): void {
 
 function dependencyAt(dir: string, key: string, root: string): string | undefined {
   for (let parent = dir; ; parent = dirname(parent)) {
-    const manifest = join(parent, "node_modules", key, "package.json");
-    if (existsSync(manifest)) return manifest;
+    const target = join(parent, "node_modules", key);
+    if (existsSync(target)) return realpathSync(target);
     if (parent === root || parent === parse(parent).root) return undefined;
   }
 }
@@ -89,15 +89,16 @@ async function check(row: LinkingCase, index: number, manager: Manager): Promise
     "3d",
     "v1-compat",
     "@acme/inner-ui",
+    ...(row.packages ?? []).map(({ name }) => name),
   ];
-  const dirs = ["api", "ui", "plain", "three", "v1", "api/packages/ui"];
+  const dirs = ["api", "ui", "plain", "three", "v1", "api/packages/ui", ...(row.packages ?? []).map(({ dir }) => dir)];
   const field = row.field ?? "dependencies";
   const manifests = names.map((name, i) => ({
     name,
     version: "1.0.0",
     ...(i === 0 ? { [field]: { [row.key]: row.specifier } } : {}),
   }));
-  const globs = ["packages/*", "packages/api/packages/*"];
+  const globs = ["packages/*", "packages/api/packages/*", ...(row.packages ?? []).map(({ dir }) => `packages/${dir}`)];
   write(dir, "package.json", JSON.stringify({ name: "root", private: true, workspaces: globs, ...row.root }));
   write(
     dir,
@@ -107,6 +108,8 @@ async function check(row: LinkingCase, index: number, manager: Manager): Promise
   manifests.forEach((manifest, i) => {
     write(dir, `packages/${dirs[i] ?? ""}/package.json`, JSON.stringify(manifest));
   });
+  for (const [path, text] of Object.entries(row.files ?? {})) write(dir, path, text);
+  const workspaceDirs = dirs.map((path) => realpathSync(join(dir, "packages", path)));
   write(
     dir,
     ".github/lanes.yml",
@@ -140,9 +143,14 @@ async function check(row: LinkingCase, index: number, manager: Manager): Promise
     for (const key of keys) {
       const path = dependencyAt(packageDir, key, dir);
       if (path === undefined) continue;
-      const manifest: unknown = JSON.parse(readFileSync(path, "utf8"));
-      assert(manifest !== null && typeof manifest === "object" && "name" in manifest);
-      const to = names.findIndex((name) => name === manifest.name);
+      const to =
+        workspaceDirs
+          .map((dir, index) => ({ dir, index }))
+          .filter(({ dir }) => {
+            const within = relative(dir, path);
+            return within !== ".." && !within.startsWith(".." + sep) && !isAbsolute(within);
+          })
+          .sort((a, b) => b.dir.length - a.dir.length)[0]?.index ?? -1;
       if (to !== -1) linked.push({ from, to, key });
     }
   }
