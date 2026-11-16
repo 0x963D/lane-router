@@ -29367,9 +29367,18 @@ async function discoverWorkspace(tree, discovery) {
     if (dependency !== void 0) targets.add(dependency.name);
     return protocol !== "workspace:" || dependency !== void 0;
   };
+  const overridden = /* @__PURE__ */ new Set();
+  for (const {
+    file,
+    dependency: { key, specifier, where }
+  } of definition.value.overrides) {
+    if (!collect(key, specifier, ["", ...byDir.keys()], overridden)) {
+      problems.push({ file, at: null, where, message: "does not resolve to a workspace package" });
+    }
+  }
   const packages = /* @__PURE__ */ new Map();
   for (const { name, dir, dependencies } of byName.values()) {
-    const resolved = /* @__PURE__ */ new Set();
+    const resolved = new Set(overridden);
     for (const { key, specifier, where } of dependencies) {
       if (!collect(key, specifier, [dir], resolved))
         problems.push({
@@ -29384,15 +29393,22 @@ async function discoverWorkspace(tree, discovery) {
   return isNonEmpty(problems) ? err(problems) : ok({ packages });
 }
 async function workspaceDefinition(tree, discovery) {
+  const manifest = await readFile(tree, MANIFEST);
+  if (!manifest.ok) return manifest;
+  const json = manifest.value === void 0 ? ok(void 0) : jsonFile(MANIFEST, manifest.value);
+  if (!json.ok) return json;
+  const overrides = json.value === void 0 ? ok([]) : decode(rootOverrides, json.value);
+  if (!overrides.ok) return err(jsonProblems(MANIFEST, overrides.error));
   if (discovery !== "npm") {
     const pnpm = await readFile(tree, WORKSPACE_FILE);
     if (!pnpm.ok) return pnpm;
-    if (pnpm.value !== void 0) return pnpmWorkspace(pnpm.value);
+    if (pnpm.value !== void 0) {
+      const definition2 = pnpmWorkspace(pnpm.value);
+      return definition2.ok ? ok({ ...definition2.value, overrides: [...definition2.value.overrides, ...overrides.value] }) : definition2;
+    }
     if (discovery === "pnpm") return err([fileProblem(WORKSPACE_FILE, "not found, and workspace.discovery is pnpm")]);
   }
-  const manifest = await readFile(tree, MANIFEST);
-  if (!manifest.ok) return manifest;
-  if (manifest.value === void 0) {
+  if (json.value === void 0) {
     return err([
       fileProblem(
         MANIFEST,
@@ -29400,9 +29416,10 @@ async function workspaceDefinition(tree, discovery) {
       )
     ]);
   }
-  return npmWorkspace(manifest.value);
+  const definition = npmWorkspace(json.value);
+  return definition.ok ? ok({ ...definition.value, overrides: overrides.value }) : definition;
 }
-function emptyCatalog(decoder) {
+function emptyMapping(decoder) {
   return (input, context) => input === null || input === void 0 ? [] : decoder(input, context);
 }
 function pnpmWorkspace(source) {
@@ -29411,11 +29428,13 @@ function pnpmWorkspace(source) {
   const decoded = decode(
     object((field) => {
       const packages = field("packages", withDefault(array(workspaceGlob), []));
-      const catalog = field("catalog", emptyCatalog(entries(string, string)));
-      const catalogs = field("catalogs", emptyCatalog(entries(string, entries(string, string))));
-      if (!isValid(packages) || !isValid(catalog) || !isValid(catalogs)) return INVALID;
+      const catalog = field("catalog", emptyMapping(entries(string, string)));
+      const catalogs = field("catalogs", emptyMapping(entries(string, entries(string, string))));
+      const overrides = field("overrides", emptyMapping(overrideValues));
+      if (!isValid(packages) || !isValid(catalog) || !isValid(catalogs) || !isValid(overrides)) return INVALID;
       return {
         globs: globSet(packages),
+        overrides: overrides.map((dependency) => ({ file: WORKSPACE_FILE, dependency })),
         catalogs: new Map([
           ["default", new Map(catalog)],
           ...catalogs.map(([name, values]) => [name, new Map(values)])
@@ -29427,14 +29446,12 @@ function pnpmWorkspace(source) {
   return decoded.ok ? ok(decoded.value) : err(mapNonEmpty(decoded.error, file.value.locate));
 }
 var npmWorkspaces = (input, context) => Array.isArray(input) ? array(workspaceGlob)(input, context) : object((field) => field("packages", array(workspaceGlob)), IGNORE)(input, context);
-function npmWorkspace(source) {
-  const json = jsonFile(MANIFEST, source);
-  if (!json.ok) return json;
+function npmWorkspace(input) {
   const decoded = decode(
     object((field) => field("workspaces", npmWorkspaces), IGNORE),
-    json.value
+    input
   );
-  return decoded.ok ? ok({ globs: globSet(decoded.value), catalogs: /* @__PURE__ */ new Map() }) : err(jsonProblems(MANIFEST, decoded.error));
+  return decoded.ok ? ok({ globs: globSet(decoded.value), catalogs: /* @__PURE__ */ new Map(), overrides: [] }) : err(jsonProblems(MANIFEST, decoded.error));
 }
 var workspaceGlob = refine(string, (raw, context) => {
   const excluded = raw.startsWith("!");
@@ -29456,6 +29473,29 @@ var manifestDecoder = object((field) => {
   });
   if (!isValid(name) || !dependencies.every(isValid)) return INVALID;
   return { name, dependencies: dependencies.flat() };
+}, IGNORE);
+var overrideValues = (input, context) => {
+  if (typeof input === "string") {
+    const selector = context.path.toReversed().find((part) => typeof part === "string" && part !== ".") ?? "";
+    const key = /^((?:@[^/]+\/)?[^@]+)(?:@.*)?$/.exec(String(selector).split(">").at(-1) ?? "")?.[1] ?? "";
+    return [{ key, specifier: input, where: formatDataPath(context.path) }];
+  }
+  const nested = entries(string, overrideValues)(input, context);
+  return isValid(nested) ? nested.flatMap(([, values]) => values) : INVALID;
+};
+var rootOverrides = object((field) => {
+  const npm = field("overrides", emptyMapping(overrideValues));
+  const pnpm = field("pnpm", emptyMapping(object((field2) => field2("overrides", emptyMapping(overrideValues)), IGNORE)));
+  const dependencies = DEPENDENCY_FIELDS.map((name) => field(name, withDefault(entries(string, string), [])));
+  if (!isValid(npm) || !isValid(pnpm) || !dependencies.every(isValid)) return INVALID;
+  const references = new Map(dependencies.flat());
+  return [...npm, ...pnpm].flatMap((dependency) => {
+    const key = dependency.specifier.slice(1);
+    const specifier = dependency.specifier.startsWith("$") ? references.get(key) : void 0;
+    return (specifier === void 0 ? [dependency] : [dependency, { ...dependency, key, specifier }]).map(
+      (dependency2) => ({ file: MANIFEST, dependency: dependency2 })
+    );
+  });
 }, IGNORE);
 async function readManifest(tree, dir) {
   const file = dir + IN_PACKAGE;

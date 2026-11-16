@@ -297,6 +297,29 @@ describe("workspace discovery", () => {
     expect(running(claimed)).toEqual(["web"]);
   });
 
+  it.each([
+    {
+      "pnpm-workspace.yaml":
+        'packages: ["packages/*", "packages/web/e2e", "tools/*"]\noverrides:\n  legacy: link:./packages/ui\n',
+    },
+    { "package.json": JSON.stringify({ pnpm: { overrides: { "parent@1>legacy": "workspace:@acme/ui@*" } } }) },
+    { "package.json": JSON.stringify({ overrides: { parent: { child: { ".": "npm:@acme/ui@^1" } } } }) },
+    { "package.json": JSON.stringify({ overrides: { parent: { legacy: "file:../ui" } } }) },
+    { "package.json": JSON.stringify({ overrides: { legacy: "$@acme/ui" }, dependencies: { "@acme/ui": "^1" } }) },
+    { "package.json": JSON.stringify({ overrides: { legacy: "$kit" }, dependencies: { kit: "npm:@acme/ui@^1" } }) },
+    {
+      "pnpm-workspace.yaml":
+        'packages: ["packages/*", "packages/web/e2e", "tools/*"]\ncatalog:\n  legacy: npm:@acme/ui@^1\noverrides:\n  legacy: "catalog:"\n',
+    },
+  ])("adds override targets to packages that do not declare the overridden dependency", async (files) => {
+    expect(running(await planFor("acme", ["packages/ui/src/button.tsx"], files))).toEqual([
+      "api",
+      "web",
+      "e2e",
+      "lint",
+    ]);
+  });
+
   it("ignores dependencies that are not workspace packages", async () => {
     const plan = await planFor("acme", ["packages/web/src/app.tsx"]);
     expect(placementsOf(plan, "packages/web/src/app.tsx")).toMatchObject([{ kind: "package", package: "@acme/web" }]);
