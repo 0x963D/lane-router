@@ -18,6 +18,10 @@ The loader reads workspace manifests, pnpm catalogs, overrides in the workspace 
 - pnpm [settings](https://pnpm.io/settings) supplied through the command line, environment or global configuration can change resolution. Only the repository files listed above contribute override edges.
 - npm [lifecycle scripts](https://docs.npmjs.com/cli/v11/using-npm/scripts/) and other install scripts can modify manifests or installed files. The loader does not execute scripts or model their effects.
 - Registry packages, remote archives and Git sources can contain dependencies that lead back into the workspace. The loader does not inspect their contents, transitive dependencies or lockfile resolutions. npm packages can also publish an [`npm-shrinkwrap.json`](https://docs.npmjs.com/cli/v11/configuring-npm/npm-shrinkwrap-json/) that fixes their dependency tree.
-- Code read through a `link:` or `file:` path to a directory that is not a discovered workspace package has only path-rule coverage. Add a `paths` row for its readers. An unclaimed path runs every lane, but a path claimed as docs-only or assigned to fewer lanes needs rules that name all of its readers.
+- A `link:` or `file:` path inside a workspace package adds an edge to its deepest workspace owner, even when the target has no manifest. A path outside every discovered workspace package has only path-rule coverage. Add a `paths` row for its readers. An unclaimed path runs every lane, but a path claimed as docs-only or assigned to fewer lanes needs rules that name all of its readers.
+
+Every row of `npm run check:linking` runs pnpm with `linkWorkspacePackages: true`. The check does not cover installations with that setting disabled.
+
+A string override keyed by a workspace package's own name adds that package to every package's closure, even when the replacement names something else. A change to that package therefore runs every lane, subject to the configured docs-only and path rules.
 
 Use `workspace.edges` for dependencies these mechanisms introduce and `paths` rows for files read outside workspace packages. Changes to the root manifest, workspace YAML and recognised lockfiles already run every lane. Hook files and external configuration need their own coverage rules.

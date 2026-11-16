@@ -83,7 +83,7 @@ A package is a directory that matches a workspace glob and holds a `package.json
 lane-router collects a safe larger set of dependency edges. It ignores version compatibility and keeps every workspace package an entry could name. For each entry:
 
 1. Add the workspace package whose name matches the dependency key, whatever the specifier says.
-2. Add a workspace package found through a local path. This includes `link:`, `file:`, bare paths and `workspace:` paths. A path that names no workspace package adds no path edge and is not an error. The loader never reads the target outside the discovered workspace.
+2. Add the deepest workspace package whose directory equals or contains a local path. This includes `link:`, `file:`, bare paths and `workspace:` paths, subdirectories without manifests, and archives stored inside a package. Keep both case-sensitive and case-insensitive candidates. A path outside every workspace package adds no path edge and is not an error. The loader never reads the target outside the discovered workspace.
 3. Add any workspace name carried inside the specifier. For example, `"@acme/api": "npm:@acme/ui@^1"` adds both `@acme/api` and `@acme/ui`. The same name lookup covers `jsr:` and named-registry aliases. A version-only selector such as `npm:1.0.0` does not remove the key edge.
 4. Expand a `catalog:` reference by dependency key, then apply the same rules to its value. Trim the catalog name and use `default` for an empty name. Missing entries and recursive catalog values retain the key edge. Empty top-level `catalog:` and `catalogs:` mappings act as missing ones. A null named catalog is invalid.
 
@@ -91,7 +91,11 @@ lane-router collects a safe larger set of dependency edges. It ignores version c
 
 Local paths in a manifest are relative to that manifest. Catalog path bases vary by pnpm version. The offline check with pnpm 11.18.0 resolves bare catalog paths relative to the declaring manifest and rejects `link:`, `file:` and `workspace:` catalog values. The [current pnpm catalog documentation](https://pnpm.io/catalogs#local-dependencies-in-a-catalog) describes root-relative local paths in later releases. lane-router includes candidates relative to both the declaring manifest and the workspace root.
 
-The loader also reads `overrides` in `pnpm-workspace.yaml`, `pnpm.overrides` in the root `package.json`, and npm's root `overrides`, including nested objects and dependency references such as `$kit`. Every workspace package gets an edge to every workspace target an override could name. Override path candidates include the root and each workspace directory. This covers both root-relative replacements and replacements resolved at a nested consumer. An override can change a registry package's dependencies, which the loader cannot inspect.
+The loader reads npm's root `package.json#overrides` and root `package.json#pnpm.overrides` under every discovery mode. With `auto` or `pnpm` discovery, it also reads `overrides` from `pnpm-workspace.yaml` when that file exists. It traverses nested override mappings in all three sources. Values that are neither strings nor mappings, including arrays, contribute no targets.
+
+All three sources expand `$name` references from the root manifest's `dependencies`, `devDependencies`, `peerDependencies` and `optionalDependencies`. The loader keeps the original override candidate alongside the referenced key and specifier. pnpm 10 honours root `pnpm.overrides`, while [pnpm 11 and later ignore the `pnpm` manifest field](https://pnpm.io/migration), including pnpm 11.18.0 used by the linking check.
+
+Every workspace package gets an edge to every workspace target an override could name. Override path candidates include the root and each workspace directory. This covers both root-relative replacements and replacements resolved at a nested consumer. An override can change a registry package's dependencies, which the loader cannot inspect.
 
 A local directory outside the workspace packages needs [path rules](#config-reference) for any lanes that read it. If no rule claims a changed file there, `unmatched: all` runs every lane. See the [dependency limits](limitations.md#dependency-boundaries) for install-time changes the loader cannot see and the [decision record](decisions/008-dependency-superset.md) for the safety tradeoff.
 
