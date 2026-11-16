@@ -105,7 +105,7 @@ describe("a package manifest change", () => {
     expect(JSON.parse(run.outputs.lanes ?? "null")).toEqual(ALL);
     expect(run.outputs.complete).toBe("false");
     expect(jsonObject(run.outputs.reasons).api).toBe(
-      "fail closed, a package manifest changed, and the base graph at ccccccc cannot be built: " +
+      "fail closed, the base routing model at ccccccc cannot be built: " +
         "the commit is not in the local repository, so fetch more history, for example with fetch-depth: 0",
     );
     expect(run.annotations.map(({ level }) => level)).toEqual(["warning"]);
@@ -123,7 +123,7 @@ describe("a package manifest change", () => {
     const unjudged = await runAction({ workspace: repo.dir, inputs: { files }, event: pullRequest(2) });
     expect(JSON.parse(unjudged.outputs.lanes ?? "null")).toEqual(ALL);
     expect(jsonObject(unjudged.outputs.reasons).api).toBe(
-      "fail closed, a package manifest changed, and the base graph cannot be built: the change names no base commit",
+      "fail closed, the base routing model cannot be built: the change names no base commit",
     );
   });
 });

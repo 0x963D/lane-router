@@ -12,6 +12,8 @@ Every output is a string, as Actions requires.
 | `docs-only`     | `true` when the event's change was docs-only.                                                             |
 | `none-required` | `true` when no lane runs.                                                                                 |
 
+Lane order is head config order, then base-only lanes in base config order. Removed lanes run and appear in every output and the summary.
+
 Every lane in `matrix` gets the same `base`. It is the `base` input when one is set, else the pull request's base SHA or the push's `before`. It is empty when there is none.
 
 The step also writes a job summary. It opens with a line that gives the mode, base, head, file count, completeness and docs-only state. A table with one row per lane follows.

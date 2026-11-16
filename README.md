@@ -41,7 +41,7 @@ jobs:
         if: steps.lanes.outputs.api == 'run'
 ```
 
-A shallow checkout runs every lane when a package manifest changes. Use the [full workflow example](docs/action.md#use-the-outputs-in-a-workflow) for a full checkout and a matrix. There is no Marketplace listing yet.
+A shallow checkout runs every known head lane when the routing config or a package manifest changes. Use the [full workflow example](docs/action.md#use-the-outputs-in-a-workflow) for a full checkout and a matrix. There is no Marketplace listing yet.
 
 ## Routing and config
 

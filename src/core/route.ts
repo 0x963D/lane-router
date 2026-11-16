@@ -55,6 +55,7 @@ export type Routing = { readonly [routed]: true } & (
 );
 
 export type RunReason =
+  | { readonly kind: "removed" }
   | {
       readonly kind: "placement";
       readonly path: RepoPath;
@@ -128,6 +129,7 @@ function owningPackage(dirs: PackageDirs, path: RepoPath): PackageScope | undefi
 
 /** A skip is the residue: it comes only from a complete change in which nothing reached the lane. */
 export function decide(routing: Routing, lane: Lane): LaneDecision {
+  if (lane.removed) return { kind: "run", because: [{ kind: "removed" }] };
   switch (routing.kind) {
     case "incomplete":
       return { kind: "run", because: [{ kind: "incomplete", cause: routing.cause }] };

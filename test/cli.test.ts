@@ -71,7 +71,9 @@ describe("lane-router explain", () => {
 
     const { code, stdout } = await cli(["explain", "--base", repo.base, "--head", head, "--json"], repo.dir);
     expect(code).toBe(0);
-    expect(JSON.parse(stdout)).toMatchObject(decisions({ site: "run" }));
+    expect(JSON.parse(stdout)).toMatchObject(
+      decisions({ site: "run", api: "run", web: "run", e2e: "run", lint: "run" }),
+    );
   });
 
   it("runs against --cwd from any directory", async () => {

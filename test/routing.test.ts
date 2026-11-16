@@ -52,7 +52,11 @@ describe("built-in inputs", () => {
     expect(running(plan)).toEqual(ALL);
     expect(placementKinds(plan, path)).toEqual(["built-in", "row"]);
     expect(plan.lanes.map(reasonLine)).toEqual(
-      ALL.map((lane) => `${path} ${says}${lane === "lint" ? " (+1 more)" : ""}`),
+      ALL.map((lane) =>
+        path === CONFIG
+          ? "fail closed, the base routing model cannot be built: the change names no base commit"
+          : `${path} ${says}${lane === "lint" ? " (+1 more)" : ""}`,
+      ),
     );
   });
 
@@ -62,7 +66,9 @@ describe("built-in inputs", () => {
   });
 
   it("still count when docs-only globs cover them", async () => {
-    const plan = await planFor("acme", [CONFIG], { [CONFIG]: acmeConfig({ docsOnly: '["**/*.md", ".github/**"]' }) });
+    const plan = await planFor("acme", ["pnpm-workspace.yaml"], {
+      [CONFIG]: acmeConfig({ docsOnly: '["**/*.md", "*.yaml"]' }),
+    });
     expect(plan.event.kind).toBe("docs-only");
     expect(running(plan)).toEqual(ALL);
   });

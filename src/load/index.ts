@@ -13,13 +13,13 @@ export { IGNORED_DIRECTORIES, pathRefusal, type Refusal, type RepoTree, type Tre
 /**
  * The boundary. A repository tree goes in, and out comes a routing model the core can trust, or
  * every problem with the config and the workspace in one list. An unreadable file is a problem.
- * With `base`, the workspace there becomes the base graph, and every name in the config must
- * resolve in it too.
+ * With `base`, each config resolves against its own workspace.
  */
 export async function loadModel(
   tree: RepoTree,
   configPath: string,
   base?: RepoTree,
+  { allowNewConfig = false }: { readonly allowNewConfig?: boolean } = {},
 ): Promise<Result<RoutingModel, NonEmpty<Problem>>> {
   const path = parseRepoPath(configPath);
   if (path === undefined) return err([fileProblem(configPath, "is not a path inside the repository")]);
@@ -39,11 +39,18 @@ export async function loadModel(
   const head = { configPath: path, config: resolved.value, workspace: workspace.value };
   if (base === undefined) return ok(compile(head));
 
-  const baseWorkspace = await discoverWorkspace(base, config.value.discovery);
+  const baseSource = await readFile(base, path);
+  if (!baseSource.ok) return baseSource;
+  if (baseSource.value === undefined) {
+    return allowNewConfig ? ok(compile(head)) : err([fileProblem(path, "not found in base")]);
+  }
+  const baseConfig = openConfig(path, baseSource.value);
+  if (!baseConfig.ok) return baseConfig;
+  const baseWorkspace = await discoverWorkspace(base, baseConfig.value.discovery);
   if (!baseWorkspace.ok) return baseWorkspace;
-  const resolvedInBase = config.value.resolve(baseWorkspace.value);
+  const resolvedInBase = baseConfig.value.resolve(baseWorkspace.value);
   if (!resolvedInBase.ok) return resolvedInBase;
-  return ok(compile({ ...head, base: baseWorkspace.value }));
+  return ok(compile({ ...head, base: { workspace: baseWorkspace.value, config: resolvedInBase.value } }));
 }
 
 /** The commits a base graph can be read from. */
@@ -55,12 +62,12 @@ export interface Commits {
 
 /** The port planLanes reads a base graph through. `head` and `configPath` are what the model loaded from. */
 export function baseGraphOf(head: RepoTree, configPath: string, commits: Commits): BaseGraph {
-  return async (commit) => {
+  return async (commit, options) => {
     const sha = await commits.resolve(commit);
     if (sha === undefined) {
       return err("the commit is not in the local repository, so fetch more history, for example with fetch-depth: 0");
     }
-    const loaded = await loadModel(head, configPath, commits.treeAt(sha));
+    const loaded = await loadModel(head, configPath, commits.treeAt(sha), options);
     return loaded.ok ? loaded : err(formatProblems(loaded.error).replaceAll("\n", "; "));
   };
 }

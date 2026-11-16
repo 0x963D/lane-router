@@ -7,7 +7,7 @@ A wrong skip merges an untested break. lane-router runs every lane, and says why
 
 It also runs every lane when it cannot trust the list of changed files. Then `complete` is `false`, an annotation gives the cause, and the step succeeds so the lanes run. These are the cases:
 
-- a package manifest change whose base graph cannot be built, because there is no base commit, the commit was not fetched, a manifest there does not parse, a name in the config does not resolve there, or reading it failed,
+- a routing config or package manifest change whose base model cannot be built, because there is no base commit, the commit was not fetched, its config or a manifest does not parse, a name in the base config does not resolve there, or reading it failed,
 - a compare listing of 300 or more files, which is the most the endpoint returns,
 - a pull request whose compare listing differs from its `changed_files` count,
 - a push with no `before` commit to compare against, such as the first push of a branch, whose `before` is all zeros,
@@ -18,7 +18,9 @@ It also runs every lane when it cannot trust the list of changed files. Then `co
 
 A push is routed from `before` to `after`, and the compare API lists the change from the merge base of the two. After a force push the merge base is not `before`, so the listing leaves out what the dropped commits changed. In push mode lane-router trusts the listing only when the compare API reports `ahead` or `identical` and the merge base is the base commit. That holds for a `base` input in push mode too. A `mode` input that contradicts its event fails the step, so a push cannot opt out of this rule. A pull request is exempt, because its base branch often moves on after it opens and its change is meant to start at the merge base.
 
-A shallow checkout, the `actions/checkout` default, has no base commit. A change to a package manifest then runs every lane. Check out with `fetch-depth: 0` to keep those changes precise. Other changes never need the base commit.
+A shallow checkout, the `actions/checkout` default, has no base commit. A change to the routing config or a package manifest then runs every known head lane with `complete: false`. Check out with `fetch-depth: 0` to read the base config and graph. Other changes never need the base commit.
+
+With a readable base, a config change selects the union of base and head lanes. A lane found only in base runs and says it was removed. A renamed lane emits both names. A lane keeps the packages it read and any floor flag from base for this change. A newly added config has no base lanes. A missing base config fails closed unless the changed paths include the config. See [base and head lanes](decisions/007-base-and-head-lanes.md).
 
 A config or workspace error is different. The lane names are unknown, so lane-router fails the step and lists every problem. Downstream jobs never start, so the build stays red and no lane is skipped by mistake.
 

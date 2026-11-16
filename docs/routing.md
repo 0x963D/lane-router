@@ -43,9 +43,17 @@ A change could reshape the graph that judges it. Say a pull request renames `@ac
 
 So a change is judged against two graphs. The head graph is the workspace the change ends in. The base graph is the workspace at the commit the change was diffed from. A lane's closure is the union of its closure in each graph, worked out in each graph on its own. A path inside a package reaches the lanes that read its head package or its base package, so a package that exists only in base still owns its directory. When a lane reads a path only in the base graph, its reason says so: `packages/ui/src/button.tsx is in @acme/ui, read through @acme/web in the base graph`.
 
-The graph comes from the config, `pnpm-workspace.yaml`, the root `package.json` and the package manifests. The first three are built in and select every lane. So lane-router reads the base graph only when a package manifest other than the root one changed. Every other change needs no base commit, so a shallow checkout routes it precisely.
+lane-router reads the base config and workspace when the routing config or a package manifest other than the root one changes. Each config resolves against its own workspace and supplies that graph's lane packages and extra edges. Changes to `pnpm-workspace.yaml` and the root `package.json` already select every lane. Other changes need no base commit, so a shallow checkout routes them precisely.
 
 The base commit is the merge base the compare API reports for the event's range. The CLI uses the merge base of `--base` and `--head`. With the `files` input it is the `base` input, when one is given. lane-router reads the base graph from git in `working-directory`'s repository.
+
+### The lane set
+
+A config change selects the lanes in both configs. The plan lists head lanes in head config order, then lanes found only in base, in base config order. A removed lane runs with the reason `removed from the routing config in this change`. It appears in the per-lane outputs, `lanes`, matrix and summary. Renaming a lane keeps the old name for this change and adds the new one.
+
+Changing a lane's packages or removing its `floor` flag cannot remove its base coverage. The base graph uses its original packages, and a lane is a floor if either config says so. The config change itself selects every lane in the combined set. See [the decision record](decisions/007-base-and-head-lanes.md).
+
+If the config is new and absent at an available base commit, the head lanes are the whole set. An unreadable or invalid base config makes the plan incomplete and runs every known head lane. A missing base config is an error unless the changed paths include the config.
 
 Rules about the whole change come after that.
 

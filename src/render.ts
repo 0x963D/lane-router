@@ -13,6 +13,7 @@ type ReasonKind = Exclude<RunReason["kind"], "placement"> | Placement["kind"];
 
 /** The headline is the most decisive reason. A fail-closed cause beats any path. */
 const HEADLINE_RANK: Readonly<Record<ReasonKind, number>> = {
+  removed: 0,
   incomplete: 0,
   "built-in": 1,
   unmatched: 2,
@@ -44,6 +45,8 @@ const SKIP_TEXT: Readonly<Record<SkipReason, string>> = {
 
 function describeReason(reason: RunReason): string {
   switch (reason.kind) {
+    case "removed":
+      return "removed from the routing config in this change";
     case "incomplete":
       return `fail closed, ${describeCause(reason.cause)}`;
     case "floor":
@@ -119,7 +122,7 @@ export function describeCause(cause: IncompleteCause): string {
       return `${cause.raw} is not a path inside the routed root`;
     case "no-base-graph": {
       const at = cause.commit === null ? "" : ` at ${shortRevision(cause.commit)}`;
-      return `a package manifest changed, and the base graph${at} cannot be built: ${cause.reason}`;
+      return `the base routing model${at} cannot be built: ${cause.reason}`;
     }
     case "error":
       return cause.message;
@@ -304,6 +307,7 @@ export type RunReasonJson =
       readonly counted: boolean;
     }
   | { readonly kind: "floor" }
+  | { readonly kind: "removed" }
   | { readonly kind: "incomplete"; readonly cause: IncompleteCause };
 
 function placementJson(placement: Placement): PlacementJson {
@@ -337,6 +341,7 @@ function reasonJson(routing: Routing, reason: RunReason): RunReasonJson {
         counted: isCounted(routing, reason.placement),
       };
     case "floor":
+    case "removed":
     case "incomplete":
       return reason;
     default: {

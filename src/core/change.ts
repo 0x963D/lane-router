@@ -16,7 +16,7 @@ export type IncompleteCause =
    */
   | { readonly kind: "not-fast-forward"; readonly status: string; readonly mergeBase: string }
   | { readonly kind: "invalid-path"; readonly raw: string }
-  /** A package manifest changed, and the graph at `commit`, the commit the change was diffed from, cannot be built. */
+  /** A config or package manifest changed, and the base routing model cannot be built. */
   | { readonly kind: "no-base-graph"; readonly commit: string | null; readonly reason: string }
   | { readonly kind: "error"; readonly message: string };
 

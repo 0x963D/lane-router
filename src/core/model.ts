@@ -71,6 +71,7 @@ export interface Workspace {
 export interface Lane {
   readonly name: LaneName;
   readonly floor: boolean;
+  readonly removed?: true;
 }
 
 /** `base` is the workspace at the commit the change was diffed from, `head` the one it ends in. */
@@ -132,12 +133,22 @@ export function compile(input: {
   readonly configPath: RepoPath;
   readonly config: Config;
   readonly workspace: Workspace;
-  readonly base?: Workspace;
+  readonly base?: { readonly workspace: Workspace; readonly config: Config };
 }): RoutingModel {
   const { config } = input;
-  const lanes: readonly Lane[] = config.lanes.map(({ name, floor }) => ({ name, floor }));
+  const laneNames = new Set(config.lanes.map(({ name }) => name));
+  const baseLanes = input.base?.config.lanes ?? [];
+  const lanes: readonly Lane[] = [
+    ...config.lanes.map(({ name, floor }) => ({
+      name,
+      floor: floor || baseLanes.some((lane) => lane.name === name && lane.floor),
+    })),
+    ...baseLanes
+      .filter(({ name }) => !laneNames.has(name))
+      .map(({ name, floor }) => ({ name, floor, removed: true as const })),
+  ];
   const head = compileGraph(input.workspace, config, "head");
-  const base = input.base === undefined ? undefined : compileGraph(input.base, config, "base");
+  const base = input.base === undefined ? undefined : compileGraph(input.base.workspace, input.base.config, "base");
   const graphs = base === undefined ? [head] : [head, base];
   const everyLane: Reach = new Map(lanes.map((lane) => [lane.name, NAMED] as const));
 

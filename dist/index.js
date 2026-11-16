@@ -28823,9 +28823,17 @@ var NAMED = { kind: "named" };
 var NO_LANES = /* @__PURE__ */ new Map();
 function compile(input) {
   const { config } = input;
-  const lanes = config.lanes.map(({ name, floor }) => ({ name, floor }));
+  const laneNames = new Set(config.lanes.map(({ name }) => name));
+  const baseLanes = input.base?.config.lanes ?? [];
+  const lanes = [
+    ...config.lanes.map(({ name, floor }) => ({
+      name,
+      floor: floor || baseLanes.some((lane) => lane.name === name && lane.floor)
+    })),
+    ...baseLanes.filter(({ name }) => !laneNames.has(name)).map(({ name, floor }) => ({ name, floor, removed: true }))
+  ];
   const head = compileGraph(input.workspace, config, "head");
-  const base = input.base === void 0 ? void 0 : compileGraph(input.base, config, "base");
+  const base = input.base === void 0 ? void 0 : compileGraph(input.base.workspace, input.base.config, "base");
   const graphs = base === void 0 ? [head] : [head, base];
   const everyLane = new Map(lanes.map((lane) => [lane.name, NAMED]));
   const rowReach = (target) => {
@@ -29458,7 +29466,7 @@ function jsonProblems(file, issues) {
 }
 
 // src/load/index.ts
-async function loadModel(tree, configPath, base) {
+async function loadModel(tree, configPath, base, { allowNewConfig = false } = {}) {
   const path = parseRepoPath(configPath);
   if (path === void 0) return err([fileProblem(configPath, "is not a path inside the repository")]);
   const source = await readFile(tree, path);
@@ -29475,19 +29483,26 @@ async function loadModel(tree, configPath, base) {
   if (!resolved.ok) return resolved;
   const head = { configPath: path, config: resolved.value, workspace: workspace.value };
   if (base === void 0) return ok(compile(head));
-  const baseWorkspace = await discoverWorkspace(base, config.value.discovery);
+  const baseSource = await readFile(base, path);
+  if (!baseSource.ok) return baseSource;
+  if (baseSource.value === void 0) {
+    return allowNewConfig ? ok(compile(head)) : err([fileProblem(path, "not found in base")]);
+  }
+  const baseConfig = openConfig(path, baseSource.value);
+  if (!baseConfig.ok) return baseConfig;
+  const baseWorkspace = await discoverWorkspace(base, baseConfig.value.discovery);
   if (!baseWorkspace.ok) return baseWorkspace;
-  const resolvedInBase = config.value.resolve(baseWorkspace.value);
+  const resolvedInBase = baseConfig.value.resolve(baseWorkspace.value);
   if (!resolvedInBase.ok) return resolvedInBase;
-  return ok(compile({ ...head, base: baseWorkspace.value }));
+  return ok(compile({ ...head, base: { workspace: baseWorkspace.value, config: resolvedInBase.value } }));
 }
 function baseGraphOf(head, configPath, commits) {
-  return async (commit) => {
+  return async (commit, options) => {
     const sha2 = await commits.resolve(commit);
     if (sha2 === void 0) {
       return err("the commit is not in the local repository, so fetch more history, for example with fetch-depth: 0");
     }
-    const loaded = await loadModel(head, configPath, commits.treeAt(sha2));
+    const loaded = await loadModel(head, configPath, commits.treeAt(sha2), options);
     return loaded.ok ? loaded : err(formatProblems(loaded.error).replaceAll("\n", "; "));
   };
 }
@@ -29756,6 +29771,7 @@ function owningPackage(dirs, path) {
   return void 0;
 }
 function decide(routing, lane) {
+  if (lane.removed) return { kind: "run", because: [{ kind: "removed" }] };
   switch (routing.kind) {
     case "incomplete":
       return { kind: "run", because: [{ kind: "incomplete", cause: routing.cause }] };
@@ -29789,28 +29805,24 @@ function isCounted(routing, placement) {
 // src/core/plan.ts
 var planned = /* @__PURE__ */ Symbol("planned");
 async function planLanes(model, request) {
+  let judged = model;
   try {
-    return decideAll(model, request.mode, await routeChange(model, request));
+    const { range } = request;
+    let files = await request.changes(range);
+    if (files.kind === "complete") {
+      const configChanged = files.paths.some((path) => model.builtIns.get(path) === "config");
+      if (configChanged || files.paths.some((path) => path.endsWith(`/${MANIFEST}`))) {
+        const { mergeBase } = files;
+        const withBase = mergeBase === null ? err("the change names no base commit") : await request.baseGraph(mergeBase, { allowNewConfig: configChanged }).catch((error2) => err(messageOf(error2)));
+        if (withBase.ok) judged = withBase.value;
+        else files = incomplete({ kind: "no-base-graph", commit: mergeBase, reason: withBase.error }, files.paths);
+      }
+    }
+    return decideAll(judged, request.mode, route(judged, range, files));
   } catch (error2) {
     const files = incomplete({ kind: "error", message: messageOf(error2) });
-    return decideAll(model, request.mode, route(model, request.range, files));
+    return decideAll(judged, request.mode, route(judged, request.range, files));
   }
-}
-async function routeChange(model, request) {
-  const { range } = request;
-  const files = await request.changes(range);
-  if (files.kind === "incomplete" || !files.paths.some(isPackageManifest)) return route(model, range, files);
-  const { mergeBase } = files;
-  const withBase = mergeBase === null ? err("the change names no base commit") : await request.baseGraph(mergeBase).catch((error2) => err(messageOf(error2)));
-  if (withBase.ok) return route(withBase.value, range, files);
-  return route(
-    model,
-    range,
-    incomplete({ kind: "no-base-graph", commit: mergeBase, reason: withBase.error }, files.paths)
-  );
-}
-function isPackageManifest(path) {
-  return path.endsWith(`/${MANIFEST}`);
 }
 function decideAll(model, mode, event) {
   return { mode, event, lanes: model.lanes.map((lane) => ({ lane, decision: decide(event, lane) })), [planned]: true };
@@ -29824,6 +29836,7 @@ function baseOf(plan) {
 
 // src/render.ts
 var HEADLINE_RANK = {
+  removed: 0,
   incomplete: 0,
   "built-in": 1,
   unmatched: 2,
@@ -29851,6 +29864,8 @@ var SKIP_TEXT = {
 };
 function describeReason(reason) {
   switch (reason.kind) {
+    case "removed":
+      return "removed from the routing config in this change";
     case "incomplete":
       return `fail closed, ${describeCause(reason.cause)}`;
     case "floor":
@@ -29916,7 +29931,7 @@ function describeCause(cause) {
       return `${cause.raw} is not a path inside the routed root`;
     case "no-base-graph": {
       const at = cause.commit === null ? "" : ` at ${shortRevision(cause.commit)}`;
-      return `a package manifest changed, and the base graph${at} cannot be built: ${cause.reason}`;
+      return `the base routing model${at} cannot be built: ${cause.reason}`;
     }
     case "error":
       return cause.message;
