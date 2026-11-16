@@ -130,14 +130,14 @@ describe("rendered wording", () => {
     expect(summaryMarkdown(await planFor("acme", ["packages/ui/src/button.tsx"]))).toMatchInlineSnapshot(`
       "### lane-router
 
-      mode pr, base base, head head, 1 file, complete, not docs-only
+      mode pr&#44; base base&#44; head head&#44; 1 file&#44; complete&#44; not docs&#45;only
 
       | Lane | Decision | Reason |
       | --- | --- | --- |
       | api | skip | nothing it reads changed |
-      | web | run | packages/ui/src/button.tsx is in @acme/ui, read through @acme/web |
-      | e2e | run | packages/ui/src/button.tsx is in @acme/ui, read through @acme/web-e2e > @acme/web |
-      | lint | run | floor lane, runs for every change that is not docs-only |
+      | web | run | packages&#47;ui&#47;src&#47;button&#46;tsx is in &#64;acme&#47;ui&#44; read through &#64;acme&#47;web |
+      | e2e | run | packages&#47;ui&#47;src&#47;button&#46;tsx is in &#64;acme&#47;ui&#44; read through &#64;acme&#47;web&#45;e2e &#62; &#64;acme&#47;web |
+      | lint | run | floor lane&#44; runs for every change that is not docs&#45;only |
       "
     `);
   });
@@ -145,6 +145,45 @@ describe("rendered wording", () => {
   it("escapes a pipe in a table cell so that a why cannot break the table", async () => {
     const config = `lanes:\n  web:\n    packages: ["@acme/web"]\npaths:\n  - match: ["docs/guide.md"]\n    lanes: [web]\n    why: Inlines a | b.\nunmatched: all\n`;
     const plan = await planFor("acme", ["docs/guide.md"], { [CONFIG]: config });
-    expect(summaryMarkdown(plan)).toContain("| web | run | docs/guide.md matches paths[0]: Inlines a \\| b. |");
+    expect(summaryMarkdown(plan)).toContain("Inlines a &#124; b&#46;");
+  });
+
+  it("renders paths and why strings as literal text while preserving CLI text", async () => {
+    const payload = "![x](https://example.invalid/x.png) [link](https://example.invalid/) <img src=x> `code` | &amp;";
+    const path = `packages/ui/src/${payload}.tsx`;
+    const config = `lanes:\n  web_test:\n    packages: ["@acme/web"]\npaths:\n  - match: ["packages/ui/src/**"]\n    lanes: [web_test]\n    why: ${JSON.stringify(payload)}\nunmatched: all\n`;
+    const plan = await planFor("acme", [path], { [CONFIG]: config });
+    const summary = summaryMarkdown(plan);
+    expect(summary).toContain("| web&#95;test | run |");
+    expect(summary).toContain("&#33;&#91;x&#93;&#40;https&#58;&#47;example&#46;invalid&#47;x&#46;png&#41;");
+    expect(summary).toContain("&#91;link&#93;&#40;https&#58;&#47;&#47;example&#46;invalid&#47;&#41;");
+    expect(summary).toContain("&#60;img src&#61;x&#62; &#96;code&#96; &#124; &#38;amp&#59;");
+    expect(summary).not.toMatch(/!\[|\[link\]|<img|`code`|&amp;/);
+    expect(
+      summary
+        .split("\n")
+        .find((line) => line.startsWith("| web"))
+        ?.match(/\|/g),
+    ).toHaveLength(4);
+    expect(explainText(plan)).toContain(payload);
+    expect(explainText(plan)).toContain("packages/ui/src/![x](https:/example.invalid/x.png)");
+  });
+
+  it("renders package names and failure reasons as literal text", async () => {
+    const name = "@acme/![pkg](url)<b>`x`|";
+    const plan = await planFor("acme", ["packages/ui/src/button.tsx"], {
+      [CONFIG]: `lanes:\n  web:\n    packages: [${JSON.stringify(name)}]\nunmatched: all\n`,
+      "packages/ui/package.json": JSON.stringify({ name, version: "0.0.0" }),
+      "packages/web/package.json": JSON.stringify({ name: "@acme/web", version: "0.0.0" }),
+    });
+    expect(summaryMarkdown(plan)).toContain(
+      "&#64;acme&#47;&#33;&#91;pkg&#93;&#40;url&#41;&#60;b&#62;&#96;x&#96;&#124;",
+    );
+    expect(explainText(plan)).toContain(name);
+    const failed = await planWith("acme", () =>
+      Promise.resolve(incomplete({ kind: "error", message: "<b>![x](url)`x`|" })),
+    );
+    expect(summaryMarkdown(failed)).toContain("&#60;b&#62;&#33;&#91;x&#93;&#40;url&#41;&#96;x&#96;&#124;");
+    expect(explainText(failed)).toContain("<b>![x](url)`x`|");
   });
 });

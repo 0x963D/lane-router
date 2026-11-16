@@ -71,8 +71,21 @@ describe("the files input", () => {
       inputs: { files: "packages/ui/src/button.tsx" },
       event: pullRequest(1),
     });
-    expect(run.summary).toContain(`mode pr, base ${BASE.slice(0, 7)}, head ${HEAD.slice(0, 7)}, 1 file, complete`);
+    expect(run.summary).toContain(
+      `mode pr&#44; base ${BASE.slice(0, 7)}&#44; head ${HEAD.slice(0, 7)}&#44; 1 file&#44; complete`,
+    );
     expect(run.summary.split("\n").filter((line) => /^\| (api|web|e2e|lint) \|/.test(line))).toHaveLength(4);
+  });
+
+  it("writes hostile paths as summary text and keeps their output reasons intact", async () => {
+    const path = "packages/ui/src/![x](https://example.invalid/x.png)[link](url)<b>`x`|.tsx";
+    const run = await runAction({ workspace: ACME, inputs: { files: path }, event: pullRequest(1) });
+    expect(run.exitCode).toBe(0);
+    expect(run.summary).not.toMatch(/!\[|\[link\]|<b>|`x`/);
+    expect(run.summary).toContain("&#33;&#91;x&#93;");
+    expect(jsonObject(run.outputs.reasons).web).toBe(
+      "packages/ui/src/![x](https:/example.invalid/x.png)[link](url)<b>`x`|.tsx is in @acme/ui, read through @acme/web",
+    );
   });
 });
 

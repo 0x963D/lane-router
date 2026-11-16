@@ -184,14 +184,15 @@ export function headerLine(plan: Plan): string {
 }
 
 export function summaryMarkdown(plan: Plan): string {
-  const cell = (text: string): string => text.replaceAll("|", "\\|").replaceAll("\n", " ");
+  const cell = (text: string): string =>
+    text.replace(/[\r\n]/g, " ").replace(/[^\p{L}\p{N} ]/gu, (character) => `&#${String(character.codePointAt(0))};`);
   const rows = plan.lanes.map(
     (planned) => `| ${cell(planned.lane.name)} | ${planned.decision.kind} | ${cell(reasonLine(planned))} |`,
   );
   return [
     "### lane-router",
     "",
-    headerLine(plan),
+    cell(headerLine(plan)),
     "",
     "| Lane | Decision | Reason |",
     "| --- | --- | --- |",

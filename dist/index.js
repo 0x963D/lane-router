@@ -29981,14 +29981,14 @@ function headerLine(plan) {
   ].join(", ");
 }
 function summaryMarkdown(plan) {
-  const cell = (text) => text.replaceAll("|", "\\|").replaceAll("\n", " ");
+  const cell = (text) => text.replace(/[\r\n]/g, " ").replace(/[^\p{L}\p{N} ]/gu, (character) => `&#${String(character.codePointAt(0))};`);
   const rows = plan.lanes.map(
     (planned2) => `| ${cell(planned2.lane.name)} | ${planned2.decision.kind} | ${cell(reasonLine(planned2))} |`
   );
   return [
     "### lane-router",
     "",
-    headerLine(plan),
+    cell(headerLine(plan)),
     "",
     "| Lane | Decision | Reason |",
     "| --- | --- | --- |",
