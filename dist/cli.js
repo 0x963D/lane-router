@@ -9787,7 +9787,7 @@ function dependencyTarget(key, specifier, dir, catalogs) {
     return { kind: "must-be-local", target: { path } };
   }
   if (protocol === "workspace:") {
-    const alias = /^(?:v?\d|[xX]$)/.test(value) ? void 0 : /^(@[^/]+\/[^@]+|[a-zA-Z_][a-zA-Z0-9._-]*)(?:@.*)?$/.exec(value)?.[1];
+    const alias = /^workspace:(?:(?<alias>[^._/][^@]*)@)?(?<version>.*)$/.exec(specifier)?.groups?.alias;
     return { kind: "must-be-local", target: { name: alias ?? key } };
   }
   const registry = /^([A-Za-z][A-Za-z0-9+.-]*):(.*)$/.exec(specifier);

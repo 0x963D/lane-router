@@ -129,6 +129,27 @@ describe("workspace discovery", () => {
     ]);
   });
 
+  it.each(["3d", "v1-compat", "@acme/ui"])("follows workspace alias %s instead of its dependency key", async (name) => {
+    const plan = await planFor("acme", ["packages/ui/src/button.tsx"], {
+      "packages/ui/package.json": JSON.stringify({ name }),
+      "packages/web/package.json": JSON.stringify({
+        name: "@acme/web",
+        dependencies: { "@acme/api": `workspace:${name}@*` },
+      }),
+    });
+    expect(running(plan)).toEqual(["web", "e2e", "lint"]);
+  });
+
+  it.each(["workspace:*", "workspace:^", "workspace:~1.2.0", "workspace:@other/name"])(
+    "uses the key for workspace range %s",
+    async (specifier) => {
+      const plan = await planFor("acme", ["packages/ui/src/button.tsx"], {
+        "packages/web/package.json": JSON.stringify({ name: "@acme/web", dependencies: { "@acme/ui": specifier } }),
+      });
+      expect(running(plan)).toEqual(["web", "e2e", "lint"]);
+    },
+  );
+
   it.each([
     ["react", "catalog:"],
     ["react", "catalog:default"],
