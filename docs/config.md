@@ -72,21 +72,28 @@ unmatched: all
 | `tests` | a file only the package's own tests read              | only the lanes that list the package as a root |
 | `name`  | a file the package reads as text, by name, at runtime | every lane whose closure holds the package     |
 
-`code` and `name` reach the same lanes. They differ only in the word the reason line prints. `tests` reaches only lanes that list the package as a root.
+`code` and `name` reach the same lanes. Their word appears in the reason line and the job summary. `tests` reaches only lanes that list the package as a root.
 
 In a docs-only change, every matching explicit `paths` row counts, whatever its `via`. Package placements do not count. A path claimed only by `docs-only.match` selects no lane. Markdown that a package reads at build or test time needs a `paths` row or a `docs-only.except` glob. Without either, a file such as `packages/api/src/welcome.md` selects nothing under this config.
 
+## Workspace dependencies
+
 A package is a directory that matches a workspace glob and holds a `package.json` with a `name`. pnpm `!` negations are honoured. The repository root is never a package. Dependencies come from `dependencies`, `devDependencies`, `peerDependencies` and `optionalDependencies`. Each value must be a string.
 
-Dependency specifiers have three kinds. Lookup ignores version compatibility, which can run extra lanes.
+lane-router collects a safe larger set of dependency edges. It ignores version compatibility and keeps every workspace package an entry could name. For each entry:
 
-- **Must be local.** Every `workspace:` form, `link:`, `file:` and bare local paths must resolve to a discovered package. `workspace:`, `workspace:*`, `workspace:^`, `workspace:~` and workspace version ranges use the key. Workspace aliases such as `"ui": "workspace:@acme/ui@*"` use the target name. Local paths use the directory relative to the declaring manifest.
-- **May be local.** Ordinary versions, ranges and tags use the key. Registry aliases such as `npm:@acme/ui@^1`, `jsr:@acme/ui@1`, `gh:@acme/ui` and `corp:@acme/ui@^1` use the target name. Scoped and unscoped npm aliases work, with or without a version. A JSR selector without a target name, such as `jsr:^1`, `jsr:1.0.0` or `jsr:latest`, uses the key. A named-registry tag paired with a scoped key also uses that key. A workspace match keeps the dependency edge. A missing match is an external dependency and is ignored.
-- **Never local.** Git sources, remote tarballs and provisioned tools name no workspace target. They retain the conservative lookup by key and are ignored when that key is not a workspace package. lane-router does not inspect their contents.
+1. Add the workspace package whose name matches the dependency key, whatever the specifier says.
+2. Add a workspace package found through a local path. This includes `link:`, `file:`, bare paths and `workspace:` paths. A path that names no workspace package adds no path edge and is not an error. The loader never reads the target outside the discovered workspace.
+3. Add any workspace name carried inside the specifier. For example, `"@acme/api": "npm:@acme/ui@^1"` adds both `@acme/api` and `@acme/ui`. The same name lookup covers `jsr:` and named-registry aliases. A version-only selector such as `npm:1.0.0` does not remove the key edge.
+4. Expand a `catalog:` reference by dependency key, then apply the same rules to its value. Trim the catalog name and use `default` for an empty name. Missing entries and recursive catalog values retain the key edge. Empty top-level `catalog:` and `catalogs:` mappings act as missing ones. A null named catalog is invalid.
 
-A missing must-be-local target is a workspace error that names the manifest and dependency key. This includes local archives, absolute paths, home-relative paths and paths outside the workspace. Directory lookup uses the discovered workspace, without reading outside it. A head workspace error fails the step. A base workspace error makes the change incomplete, so every lane runs.
+`workspace:`, `workspace:*`, `workspace:^`, `workspace:~` and workspace version ranges require the key's workspace package. Workspace aliases such as `workspace:@acme/ui@*` require the aliased package too. Aliases follow pnpm's workspace pattern, including names such as `3d` and `v1-compat`. An unresolved workspace name is an error naming the manifest and dependency key. A head workspace error fails the step. A base workspace error makes the change incomplete, so every lane runs.
 
-`catalog:`, `catalog:default` and named catalogs such as `catalog:react19` select an entry by dependency key in `pnpm-workspace.yaml`. The entry is classified by the same rules. Version ranges need only key lookup. Aliases and local references need their expanded target. Catalog paths are relative to the workspace root. A missing entry or a recursive catalog reference retains key lookup and is ignored when the key is not a workspace package.
+Local paths in a manifest are relative to that manifest. Catalog path bases vary by pnpm version. The offline check with pnpm 11.18.0 resolves bare catalog paths relative to the declaring manifest and rejects `link:`, `file:` and `workspace:` catalog values. The [current pnpm catalog documentation](https://pnpm.io/catalogs#local-dependencies-in-a-catalog) describes root-relative local paths in later releases. lane-router includes candidates relative to both the declaring manifest and the workspace root.
+
+The loader also reads `overrides` in `pnpm-workspace.yaml`, `pnpm.overrides` in the root `package.json`, and npm's root `overrides`, including nested objects and dependency references such as `$kit`. Every workspace package gets an edge to every workspace target an override could name. Override path candidates include the root and each workspace directory. This covers both root-relative replacements and replacements resolved at a nested consumer. An override can change a registry package's dependencies, which the loader cannot inspect.
+
+A local directory outside the workspace packages needs [path rules](#config-reference) for any lanes that read it. If no rule claims a changed file there, `unmatched: all` runs every lane. See the [dependency limits](limitations.md#dependency-boundaries) for install-time changes the loader cannot see and the [decision record](decisions/008-dependency-superset.md) for the safety tradeoff.
 
 The syntax follows the pnpm [workspace protocol](https://pnpm.io/workspaces), pnpm [package sources](https://pnpm.io/package-sources), pnpm [catalogs](https://pnpm.io/catalogs), npm [package spec](https://docs.npmjs.com/cli/v11/using-npm/package-spec/) and npm [local paths](https://docs.npmjs.com/cli/v11/configuring-npm/package-json/#local-paths).
 

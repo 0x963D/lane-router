@@ -58,3 +58,9 @@ npm run lint
 npm run format:check
 npm run build
 ```
+
+`npm run check:linking` compares the dependency graph with real offline installations. It requires pnpm 11.18.0 and npm 11.11.0 on `PATH`. The `Check workspace links` CI job pins those versions and Node 24.14.0 on Windows. Tool provisioning and `npm ci` need the registry. The fixture installations use `--offline`, disable scripts and audits, and prohibit Git transports.
+
+The case table is `scripts/linking-cases.ts`. Each row records which pinned managers install that workspace. A changed install outcome fails the check. Every successful install must load, and each linked workspace dependency must have a direct graph edge. Rejected installs do not assert loader behavior. Unit tests separately cover unresolved workspace names.
+
+The script writes workspaces, install logs and `results.json` under the system temporary directory. Set `LANE_ROUTER_TMP` to choose the parent directory. Each install has its own cache and store. Logs remain after failure so a case can be inspected.
