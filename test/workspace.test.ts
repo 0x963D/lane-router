@@ -335,6 +335,16 @@ describe("workspace discovery", () => {
     }
   });
 
+  it.each([".local/x", ".local", "..local/x"])("follows dot-prefixed local path %s", async (specifier) => {
+    const dir = `packages/web/${specifier}`;
+    const plan = await planFor("acme", [`${dir}/index.js`], {
+      "pnpm-workspace.yaml": `packages: ["packages/*", "packages/web/e2e", "tools/*", "${dir}"]\n`,
+      [`${dir}/package.json`]: JSON.stringify({ name: "@acme/local" }),
+      "packages/web/package.json": JSON.stringify({ name: "@acme/web", dependencies: { x: specifier } }),
+    });
+    expect(running(plan)).toEqual(["web", "e2e", "lint"]);
+  });
+
   it("keeps both the dependency key and the alias target", async () => {
     const overrides = {
       "packages/web/package.json": JSON.stringify({

@@ -94,7 +94,7 @@ export async function discoverWorkspace(
     if (
       protocol === "link:" ||
       protocol === "file:" ||
-      /^(\.{1,2}(?:\/|$)|~\/|\/|[A-Za-z]:\/)/.test(value) ||
+      /^(\.|~\/|\/|[A-Za-z]:\/)/.test(value) ||
       (!protocol &&
         !value.includes(":") &&
         !value.includes("#") &&

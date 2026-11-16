@@ -29356,7 +29356,7 @@ async function discoverWorkspace(tree, discovery) {
     const local = /^(workspace:|link:|file:)(.*)$/.exec(specifier);
     const protocol = local?.[1];
     const value = (local?.[2] ?? specifier).replaceAll("\\", "/");
-    if (protocol === "link:" || protocol === "file:" || /^(\.{1,2}(?:\/|$)|~\/|\/|[A-Za-z]:\/)/.test(value) || !protocol && !value.includes(":") && !value.includes("#") && (value.split("/").length > 2 || /\.(?:tar|tar\.gz|tgz)$/.test(value))) {
+    if (protocol === "link:" || protocol === "file:" || /^(\.|~\/|\/|[A-Za-z]:\/)/.test(value) || !protocol && !value.includes(":") && !value.includes("#") && (value.split("/").length > 2 || /\.(?:tar|tar\.gz|tgz)$/.test(value))) {
       for (const dir of dirs2) {
         if (/^[~/]|^[A-Za-z]:/.test(value)) continue;
         const path = posix.join(dir, value).replace(/\/+$/, "");
