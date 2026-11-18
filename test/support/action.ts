@@ -59,7 +59,7 @@ export async function runAction(options: {
   readonly inputs?: Readonly<Record<string, string>>;
   readonly event: ActionEvent;
   readonly github?: FakeGitHub;
-  readonly process?: "child";
+  readonly process?: "child" | "in-process";
 }): Promise<ActionRun> {
   const scratch = tempDir();
   const files = {
@@ -93,7 +93,7 @@ export async function runAction(options: {
     GITHUB_API_URL: options.github?.url ?? "http://127.0.0.1:9",
   });
 
-  const driver = options.process === "child" ? node : inProcess;
+  const driver = (options.process ?? process.env.LANE_ROUTER_ACTION_TEST_PROCESS) === "in-process" ? inProcess : node;
   const { exitCode, stdout } = await driver(ENTRY, { cwd: options.workspace, env });
   return {
     exitCode,

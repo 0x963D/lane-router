@@ -105,6 +105,7 @@ describe("paths rows", () => {
 
   it("distinguishes malformed lane names from reserved output names", () => {
     expect(parseLaneName("-web")).toEqual(err("malformed"));
+    expect(parseLaneName("web!")).toEqual(err("malformed"));
     expect(parseLaneName("matrix")).toEqual(err("reserved"));
     expect(parseLaneName("web-2")).toEqual({ ok: true, value: "web-2" });
   });

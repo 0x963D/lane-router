@@ -27,14 +27,14 @@ function parsed(text: string | undefined): unknown {
 }
 
 describe("the files input", () => {
-  it.each([undefined, "child"] as const)("is trusted as complete and never calls the API (%s)", async (driver) => {
+  it.each(["in-process", "child"] as const)("is trusted as complete and never calls the API (%s)", async (driver) => {
     const github = await fakeGitHub();
     const run = await runAction({
       workspace: ACME,
       inputs: { files: "packages/ui/src/button.tsx\n\n" },
       event: pullRequest(1),
       github,
-      ...(driver === undefined ? {} : { process: driver }),
+      process: driver,
     });
     expect(run.exitCode).toBe(0);
     expect(parsed(run.outputs.lanes)).toEqual(["web", "e2e", "lint"]);

@@ -15,6 +15,7 @@ const { values } = parseArgs({
   },
 });
 const core = values.scope === "core";
+const routingTests = "scripts/routing-test.config.ts";
 assert.ok(core || values.scope === "src", "pass --scope src or --scope core");
 const concurrency = Number(values.workers);
 assert.ok(Number.isInteger(concurrency) && concurrency >= 1 && concurrency <= 4, "pass one to four workers");
@@ -34,6 +35,7 @@ for (const path of [
 ]) {
   hash.update(readFileSync(path));
 }
+if (core) hash.update(readFileSync(routingTests));
 for (const dir of ["src", "test"]) {
   for (const entry of readdirSync(dir, { recursive: true, withFileTypes: true })
     .filter((entry) => entry.isFile())
@@ -52,20 +54,11 @@ if (!existsSync(jsonReport)) {
   if (Object.keys(checkpoint.files).length > 0) writeFileSync(incrementalFile, JSON.stringify(checkpoint));
   const attempt = mkdtempSync(join(output, `attempt-${Date.now()}-`));
   const attemptReport = join(attempt, "report.json");
+  process.env.LANE_ROUTER_ACTION_TEST_PROCESS = "in-process";
   await new Stryker({
     concurrency,
     mutate: [values.file ?? (core ? "src/core/**/*.ts" : "src/**/*.ts")],
-    ...(core
-      ? {
-          testFiles: [
-            "test/routing.test.ts",
-            "test/invariants.test.ts",
-            "test/render.test.ts",
-            "test/workspace.test.ts",
-          ],
-          vitest: { related: false, configFile: "vitest.config.ts" },
-        }
-      : {}),
+    ...(core ? { vitest: { related: false, configFile: routingTests } } : {}),
     incremental: true,
     incrementalFile,
     symlinkNodeModules: false,
