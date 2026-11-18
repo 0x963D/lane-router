@@ -31,4 +31,7 @@ const table = [
   ),
   `| **Total (${rows.length} repositories)** | | | ${sum("discoveryMismatches")} | ${sum("decisions")} / ${sum("attempted")} | ${sum("skipped")} / ${sum("laneVerdicts")} | ${sum("fallbacks")} (${counts(totalReasons)}) | ${sum("rejections")} / ${sum("crashes")} |`,
 ];
+const floorOnly = rows.filter((row) => row.floorOnly && row.laneVerdicts === row.decisions);
+const floorPlans = floorOnly.reduce((total, row) => total + row.decisions, 0);
 process.stdout.write(table.join("\n") + "\n");
+process.stdout.write(`\nFloor-only repositories: ${floorOnly.length}. Plans: ${floorPlans}.\n`);
