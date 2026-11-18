@@ -4,40 +4,12 @@ import fc from "fast-check";
 import { changedFiles } from "../src/core/change.ts";
 import { planLanes } from "../src/core/plan.ts";
 import { formatProblems, loadModel, type RepoTree } from "../src/load/index.ts";
+import { expectedRuns, scenario, type File, type Scenario } from "./soundness-scenarios.ts";
 
 const CONFIG = ".github/lanes.yml";
 const RANGE = { base: "base", head: "head" };
 const SEED = 619473;
 const RUNS = 5_000;
-
-const via = fc.constantFrom("code", "tests", "name");
-const scenario = fc.integer({ min: 1, max: 8 }).chain((size) => {
-  const index = fc.integer({ min: 0, max: size - 1 });
-  const roots = fc.uniqueArray(index, { maxLength: 3 });
-  const claim = fc.integer({ min: 0, max: 3 });
-  const edge = fc.tuple(index, index);
-  return fc.record({
-    nested: fc.array(fc.boolean(), { minLength: size, maxLength: size }),
-    dependencies: fc.array(edge, { maxLength: size * 2 }),
-    devDependencies: fc.array(edge, { maxLength: size * 2 }),
-    extra: fc.array(edge, { maxLength: size }),
-    lanes: fc.array(fc.record({ roots, floor: fc.boolean() }), { minLength: 1, maxLength: 6 }),
-    packageRules: fc.array(fc.record({ claim, packages: roots, via }), { maxLength: 6 }),
-    laneRules: fc.array(fc.record({ claim, all: fc.boolean() }), { maxLength: 4 }),
-    change: fc.array(
-      fc.oneof(
-        fc.record({ kind: fc.constant("package"), owner: index, note: fc.boolean() }),
-        fc.record({ kind: fc.constant("claim"), claim }),
-        fc.record({ kind: fc.constant("docs") }),
-        fc.record({ kind: fc.constant("unmatched") }),
-        fc.record({ kind: fc.constant("lockfile") }),
-      ),
-      { maxLength: 6 },
-    ),
-  });
-});
-
-type Scenario = ReturnType<typeof scenario.generate>["value"];
 
 function name(index: number): string {
   return `package-${index}`;
@@ -65,78 +37,60 @@ function materialize(input: Scenario) {
   const dirs = input.nested.map((nested, index) =>
     index > 0 && nested ? `packages/${name(0)}/children/${name(index)}` : `packages/${name(index)}`,
   );
-  const dependencies = (edges: readonly (readonly [number, number])[], from: number) =>
-    Object.fromEntries(edges.filter(([source]) => source === from).map(([, target]) => [name(target), "*"]));
-  const files = new Map<string, string>();
-  files.set("package.json", JSON.stringify({ workspaces: dirs }));
-  dirs.forEach((dir, index) =>
-    files.set(
-      `${dir}/package.json`,
-      JSON.stringify({
-        name: name(index),
-        dependencies: dependencies(input.dependencies, index),
-        devDependencies: dependencies(input.devDependencies, index),
-      }),
-    ),
-  );
-  const lanes = input.lanes.map(({ roots, floor }, index) => ({
-    name: laneName(index),
-    roots,
-    floor: floor || roots.length === 0,
-  }));
+  const pattern = (claim: number) => (claim < 4 ? claimPath(claim) : `${dirs[claim - 4] ?? ""}/src/**`);
   const config = {
     lanes: Object.fromEntries(
-      lanes.map(({ name, roots, floor }) => [name, { packages: roots.map((root) => `package-${root}`), floor }]),
+      input.lanes.map(({ roots, floor }, index) => [laneName(index), { packages: roots.map(name), floor }]),
     ),
     workspace: { edges: input.extra.map(([from, to]) => ({ from: name(from), to: name(to) })) },
     paths: [
       ...input.packageRules
         .filter(({ packages }) => packages.length > 0)
         .map(({ claim, packages, via }) => ({
-          match: [`shared/${claim}/**`],
+          match: [pattern(claim)],
           packages: packages.map(name),
           via,
           why: "A package reads the shared file.",
         })),
       ...input.laneRules.map(({ claim, all }) => ({
-        match: [claimPath(claim)],
-        lanes: all ? "all" : [laneName(claim % lanes.length)],
+        match: [pattern(claim)],
+        lanes: all ? "all" : [laneName(claim % input.lanes.length)],
         why: "The lane reads the shared file.",
       })),
     ],
-    "docs-only": { match: ["docs/**", "shared/0/**"] },
+    "docs-only": { match: ["docs/**", "shared/0/**", "packages/**/input.md", "package-lock.json"] },
     unmatched: "all",
   };
-  files.set(CONFIG, JSON.stringify(config));
-  return { tree: tree(files), dirs, lanes };
-}
 
-function oracle(input: Scenario, roots: readonly number[], lane: number): boolean {
-  const reachable = new Set(roots);
-  const edges = [...input.dependencies, ...input.devDependencies, ...input.extra];
-  for (let pass = 0; pass < input.nested.length; pass++) {
-    for (const [from, to] of edges) if (reachable.has(from)) reachable.add(to);
+  const files = new Map<string, string>([
+    [CONFIG, JSON.stringify(config)],
+    ["package.json", JSON.stringify({ workspaces: dirs })],
+  ]);
+  const manifest = (index: number, packageName: string) =>
+    JSON.stringify({
+      name: packageName,
+      ...Object.fromEntries(
+        Object.entries(input.dependencies).map(([field, edges]) => [
+          field,
+          Object.fromEntries(edges.filter(([source]) => source === index).map(([, target]) => [name(target), "*"])),
+        ]),
+      ),
+    });
+  dirs.forEach((dir, index) => files.set(`${dir}/package.json`, manifest(index, name(index))));
+  const base = new Map(files);
+  if (input.renamedPackage !== undefined) {
+    const index = input.renamedPackage;
+    files.set((dirs[index] ?? "") + "/package.json", manifest(index, "renamed-package"));
   }
-  return input.change.some((file) => {
-    if (file.kind === "package") return reachable.has(file.owner);
-    if (file.kind !== "claim") return false;
-    return (
-      input.packageRules.some(
-        (rule) =>
-          rule.claim === file.claim &&
-          rule.packages.some((pkg) => (rule.via === "tests" ? roots.includes(pkg) : reachable.has(pkg))),
-      ) ||
-      input.laneRules.some(
-        (rule) => rule.claim === file.claim && (rule.all || lane === rule.claim % input.lanes.length),
-      )
-    );
-  });
+  return { head: tree(files), base: tree(base), dirs };
 }
 
-function changePath(file: Scenario["change"][number], dirs: readonly string[]): string {
+function changePath(file: File, dirs: readonly string[]): string {
   switch (file.kind) {
     case "package":
       return `${dirs[file.owner] ?? ""}/src/${file.note ? "input.md" : "index.ts"}`;
+    case "manifest":
+      return `${dirs[file.owner] ?? ""}/package.json`;
     case "claim":
       return claimPath(file.claim);
     case "docs":
@@ -149,59 +103,61 @@ function changePath(file: Scenario["change"][number], dirs: readonly string[]): 
 }
 
 export async function checkSoundness(numRuns = RUNS) {
-  const counts = {
-    cases: 0,
-    affected: 0,
-    unaffected: 0,
-    falseSkips: 0,
-    excessRuns: 0,
-    reasons: new Map<string, number>(),
-  };
+  const counts = { cases: 0, required: 0, other: 0, excessRuns: 0, graphSensitiveCases: 0, graphSensitiveVerdicts: 0 };
   await fc.assert(
     fc.asyncProperty(scenario, async (input) => {
-      const { tree, dirs, lanes } = materialize(input);
-      const model = await loadModel(tree, CONFIG);
+      const expected = expectedRuns(input);
+      const { head, base, dirs } = materialize(input);
+      const model = await loadModel(head, CONFIG);
       assert.ok(model.ok, model.ok ? undefined : formatProblems(model.error));
       const files = changedFiles(
-        input.change.map((file) => ({ path: changePath(file, dirs), previousPath: null })),
+        input.files.map((file) => ({
+          path: changePath(file, dirs),
+          previousPath: input.previous === undefined ? null : changePath(input.previous, dirs),
+        })),
         { mergeBase: RANGE.base },
       );
       const plan = await planLanes(model.value, {
         mode: "pr",
         range: RANGE,
         changes: () => Promise.resolve(files),
-        baseGraph: () => Promise.resolve(model),
+        baseGraph: async () => {
+          const result = await loadModel(head, CONFIG, base);
+          return result.ok ? result : { ok: false, error: formatProblems(result.error) };
+        },
       });
       assert.deepEqual(
         plan.lanes.map(({ lane }) => lane.name),
-        lanes.map(({ name }) => name),
+        input.lanes.map((_, index) => laneName(index)),
       );
       counts.cases++;
+      if (expected.some(({ graphSensitive }) => graphSensitive)) counts.graphSensitiveCases++;
       for (const [index, { lane, decision }] of plan.lanes.entries()) {
-        if (oracle(input, lanes[index]?.roots ?? [], index)) {
-          counts.affected++;
-          if (decision.kind === "skip") counts.falseSkips++;
-          assert.equal(decision.kind, "run", `${lane.name} skipped an affected lane`);
+        const verdict = expected[index];
+        assert.ok(verdict !== undefined);
+        if (verdict.required) {
+          assert.equal(decision.kind, "run", `${lane.name} skipped a required lane`);
+          counts.required++;
+          if (verdict.graphSensitive) counts.graphSensitiveVerdicts++;
         } else {
-          counts.unaffected++;
-          if (decision.kind === "skip") continue;
-          counts.excessRuns++;
-          const reasons = new Set(
-            decision.because.map((reason) => (reason.kind === "placement" ? reason.placement.kind : reason.kind)),
-          );
-          for (const reason of reasons) counts.reasons.set(reason, (counts.reasons.get(reason) ?? 0) + 1);
+          counts.other++;
+          if (decision.kind === "run") counts.excessRuns++;
         }
       }
     }),
-    { seed: SEED, numRuns },
+    { seed: SEED, numRuns, endOnFailure: true },
   );
-  return { seed: SEED, ...counts, reasons: Object.fromEntries([...counts.reasons].sort()) };
+  const share = (part: number, total: number) => Number(((100 * part) / total).toFixed(2));
+  return {
+    seed: SEED,
+    ...counts,
+    graphSensitiveCasePercent: share(counts.graphSensitiveCases, counts.cases),
+    graphSensitiveVerdictPercent: share(counts.graphSensitiveVerdicts, counts.required),
+  };
 }
 
 if (process.argv[1] !== undefined && pathToFileURL(process.argv[1]).href === import.meta.url) {
   const runs = process.argv[2] === undefined ? RUNS : Number(process.argv[2]);
   assert.ok(Number.isSafeInteger(runs) && runs > 0, "pass a positive number of cases");
-  const start = performance.now();
-  const result = await checkSoundness(runs);
-  process.stdout.write(JSON.stringify({ ...result, elapsedMs: Math.round(performance.now() - start) }, null, 2) + "\n");
+  process.stdout.write(JSON.stringify(await checkSoundness(runs), null, 2) + "\n");
 }
