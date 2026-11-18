@@ -2,7 +2,7 @@
 
 These are not built:
 
-- Workspace discovery reads pnpm and npm files only. Yarn and Bun also use the `workspaces` field, so `discovery: npm` may read them, but no test covers it.
+- Workspace discovery reads pnpm and npm declarations. Yarn and Bun also use the `workspaces` field. The [field replay](evidence.md#field-replay) checked manifest discovery in Babel, a Yarn workspace. Yarn and Bun installation and dependency resolution are outside that replay.
 - Dependencies come from manifests and configured edges. Imports in source files are not read.
 - `unmatched` accepts only `all`.
 - A compare listing of 300 or more files fails closed. Paging through a larger diff would let such a change skip lanes safely.
