@@ -217,6 +217,13 @@ unmatched: all
     ]);
   });
 
+  it("keeps a file at a workspace directory's path unmatched", async () => {
+    const path = "packages/ui";
+    const plan = await planFor("acme", [path]);
+    expect(placementKinds(plan, path)).toEqual(["unmatched"]);
+    expect(running(plan)).toEqual(ALL);
+  });
+
   it("knows a package that no lane reaches, so the path is not unmatched", async () => {
     const plan = await planFor("acme", ["tools/scripts/run.mjs"]);
     expect(placementKinds(plan, "tools/scripts/run.mjs")).toEqual(["package"]);
