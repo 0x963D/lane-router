@@ -1,0 +1,122 @@
+[
+  {
+    "repo": "babel/babel",
+    "branch": "main",
+    "head": "bf3497da72a3c6385d049675955ffdb6b81c5fa0"
+  },
+  {
+    "repo": "changesets/changesets",
+    "branch": "main",
+    "head": "9a035ec36045aeb6141dd0bbac9ab9e3c69ac0bc"
+  },
+  {
+    "repo": "effect-ts/effect",
+    "branch": "main",
+    "head": "0daa5aa98f3c08c069ffe05e6e4d0e86866fe75f"
+  },
+  {
+    "repo": "microsoft/playwright",
+    "branch": "main",
+    "head": "8124fc39233c4c349b9dbebd4abc4103738eae81"
+  },
+  {
+    "repo": "npm/cli",
+    "branch": "latest",
+    "head": "cfd03796843cc9ae26c7034ab99bae6c002a4ba4"
+  },
+  {
+    "repo": "pnpm/pnpm",
+    "branch": "main",
+    "head": "b0a7dac0fe88264cdef0f258cdb755d5d28c4a8f"
+  },
+  {
+    "repo": "puppeteer/puppeteer",
+    "branch": "main",
+    "head": "4ee6cff57442b7e03f7b27fb8018ee5ebaeab68b"
+  },
+  {
+    "repo": "reduxjs/redux-toolkit",
+    "branch": "master",
+    "head": "1a7d3b5251ceda61b77928e357a22086b45aaab1"
+  },
+  {
+    "repo": "rollup/plugins",
+    "branch": "master",
+    "head": "b09437adcd7010c2a6cd20c778be0e4626f640f3"
+  },
+  {
+    "repo": "sveltejs/kit",
+    "branch": "main",
+    "head": "c5cc48f1a09bda4698a81ed094b728f4e2d7da6e"
+  },
+  {
+    "repo": "sveltejs/svelte",
+    "branch": "main",
+    "head": "dc5d1dc76bd104c44673f4d88d852b472b3e2803"
+  },
+  {
+    "repo": "TanStack/query",
+    "branch": "main",
+    "head": "7ed5ea920e124ca8aa117b295851ad199b83ff97"
+  },
+  {
+    "repo": "TanStack/router",
+    "branch": "main",
+    "head": "0b6d4f3f6b42e704555d9ff0014ddbf8b44f8e09"
+  },
+  {
+    "repo": "TanStack/table",
+    "branch": "main",
+    "head": "564a459b74834c77631e0d6fdba7661383bbc1b4"
+  },
+  {
+    "repo": "trpc/trpc",
+    "branch": "main",
+    "head": "e57a6448bdb67fb5ceabcc5cf601cb74b25b8c92"
+  },
+  {
+    "repo": "typescript-eslint/typescript-eslint",
+    "branch": "main",
+    "head": "a53584297a1fa65f4cc91387b0a7da834ab73ed7"
+  },
+  {
+    "repo": "vercel/ai",
+    "branch": "main",
+    "head": "486e08f0446a5986c2f6fd5bcf8c9b00770e51f7"
+  },
+  {
+    "repo": "vercel/turborepo",
+    "branch": "main",
+    "head": "9e884b49f67f11bd449ea4e2d54dffa7a04afb6d"
+  },
+  {
+    "repo": "vitejs/vite",
+    "branch": "main",
+    "head": "d7dfe9b7beedb756f56e509ed425e18af2aa065c"
+  },
+  {
+    "repo": "vitest-dev/vitest",
+    "branch": "main",
+    "head": "19d62e36d618054736c4b544bda353a90294c850"
+  },
+  {
+    "repo": "vuejs/core",
+    "branch": "main",
+    "head": "148fdacdc3a67aaa2b8d1b615da227c3fcc2df53"
+  },
+  {
+    "repo": "vuejs/pinia",
+    "branch": "v4",
+    "head": "4817135a25431172d363bd928476db7cdbf875c4"
+  },
+  {
+    "repo": "vuejs/router",
+    "branch": "main",
+    "head": "4f8fc1bcdef619b832b55caf9e5583b441ce71a1"
+  },
+  {
+    "repo": "withastro/astro",
+    "branch": "main",
+    "head": "01c942da6308d5b89bd5e3910559f7c255acae20"
+  }
+]

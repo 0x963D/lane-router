@@ -19,6 +19,7 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:mutation": "stryker run",
+    "test:soundness": "node scripts/check-soundness.ts",
     "build": "node scripts/build.ts",
     "demo": "npm run build && node scripts/demo.ts",
     "check:linking": "node scripts/check-linking.ts"
@@ -30,12 +31,14 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@streamparser/json": "0.0.26",
     "@stryker-mutator/core": "10.1.1",
     "@stryker-mutator/vitest-runner": "10.1.1",
     "@types/node": "^24.19.2",
     "@types/picomatch": "^4.0.3",
     "esbuild": "^0.28.2",
     "eslint": "^10.15.0",
+    "fast-check": "4.10.2",
     "prettier": "^3.10.1",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.72.2",
