@@ -4,7 +4,6 @@ import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { appendFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { performance } from "node:perf_hooks";
 import process from "node:process";
 import { fileURLToPath, URL } from "node:url";
 import { parseArgs } from "node:util";
@@ -203,7 +202,6 @@ async function overlay(dir, rootEntries, configId, parent) {
 }
 
 async function decide(dir, base, head) {
-  const start = performance.now();
   const child = spawn(
     process.execPath,
     [CLI, "explain", "--base", base, "--head", head, "--config", CONFIG, "--json"],
@@ -219,18 +217,17 @@ async function decide(dir, base, head) {
     stderr += chunk;
   });
   const [closed, parsed] = await Promise.allSettled([once(child, "close"), readFieldPlan(child.stdout)]);
-  const ms = performance.now() - start;
-  if (closed.status === "rejected") return { error: closed.reason.message, exit: null, signal: null, ms };
+  if (closed.status === "rejected") return { error: closed.reason.message, exit: null, signal: null };
   const [exit, signal] = closed.value;
-  if (exit !== 0) return { error: stderr.trim() || "CLI did not exit successfully", exit, signal, ms };
+  if (exit !== 0) return { error: stderr.trim() || "CLI did not exit successfully", exit, signal };
   try {
     if (parsed.status === "rejected") throw parsed.reason;
     const { base: actualBase, head: actualHead, ...result } = parsed.value;
     assert.equal(actualBase, base);
     assert.equal(actualHead, head);
-    return { ms, ...result };
+    return result;
   } catch (error) {
-    return { error: error.message, exit, signal, ms };
+    return { error: error.message, exit, signal };
   }
 }
 
@@ -307,8 +304,6 @@ function summarize({ repo, branch, head }, rows) {
   const reasons = Object.fromEntries(
     [...new Set(occurrences)].sort().map((reason) => [reason, occurrences.filter((item) => item === reason).length]),
   );
-  const times = completed.map(({ ms }) => ms).sort((a, b) => a - b);
-  const percentile = (p) => (times.length === 0 ? null : Math.round(times[Math.ceil(times.length * p) - 1]));
   const tip = rows.at(-1);
   return {
     repo,
@@ -318,7 +313,8 @@ function summarize({ repo, branch, head }, rows) {
     packages: tip.packages,
     testLanes: tip.testLanes,
     attempted: rows.length,
-    readErrors: rows.filter(({ layoutError }) => layoutError !== null).length,
+    floorOnly: rows.every(({ testLanes }) => testLanes === 0),
+    discoveryMismatches: rows.filter(({ layoutError }) => layoutError !== null).length,
     decisions: completed.length,
     laneVerdicts: completed.reduce((sum, row) => sum + row.lanes, 0),
     skipped: completed.reduce((sum, row) => sum + row.skipped, 0),
@@ -326,8 +322,6 @@ function summarize({ repo, branch, head }, rows) {
     reasons,
     rejections: failures.filter(({ exit, layoutError }) => exit === 1 && layoutError !== null).length,
     crashes: failures.filter(({ exit, layoutError }) => exit !== 1 || layoutError === null).length,
-    p50Ms: percentile(0.5),
-    p95Ms: percentile(0.95),
   };
 }
 
@@ -346,5 +340,5 @@ await saveJson(join(output, "summary.json"), summary);
 if (summary.some((row) => !isClean(row))) process.exitCode = 1;
 
 function isClean(row) {
-  return !row.error && row.readErrors === 0 && row.crashes === 0 && row.rejections === 0;
+  return !row.error && row.discoveryMismatches === 0 && row.crashes === 0 && row.rejections === 0;
 }

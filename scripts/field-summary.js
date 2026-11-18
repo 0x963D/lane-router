@@ -23,12 +23,12 @@ for (const { reasons } of rows) {
   for (const [reason, count] of Object.entries(reasons)) totalReasons[reason] = (totalReasons[reason] ?? 0) + count;
 }
 const table = [
-  "| Repository at replay tip | Workspace | Head packages / test lanes | Read errors | Plans | Skipped / lane verdicts | Fallbacks and reasons | Rejected / crashed | p50 / p95 ms |",
-  "| --- | --- | ---: | ---: | ---: | ---: | --- | ---: | ---: |",
+  "| Repository at replay tip | Workspace | Head packages / test lanes | Discovery mismatches | Plans | Skipped / lane verdicts | Fallbacks and reasons | Rejected / crashed |",
+  "| --- | --- | ---: | ---: | ---: | ---: | --- | ---: |",
   ...rows.map(
     (row) =>
-      `| [${row.repo} @ ${row.head.slice(0, 12)}](https://github.com/${row.repo}/commit/${row.head}) | ${row.manager} | ${row.packages} / ${row.testLanes} | ${row.readErrors} | ${row.decisions} / ${row.attempted} | ${row.skipped} / ${row.laneVerdicts} | ${row.fallbacks} (${counts(row.reasons)}) | ${row.rejections} / ${row.crashes} | ${row.p50Ms ?? "n/a"} / ${row.p95Ms ?? "n/a"} |`,
+      `| [${row.repo} @ ${row.head.slice(0, 12)}](https://github.com/${row.repo}/commit/${row.head}) | ${row.manager} | ${row.packages} / ${row.testLanes} | ${row.discoveryMismatches} | ${row.decisions} / ${row.attempted} | ${row.skipped} / ${row.laneVerdicts} | ${row.fallbacks} (${counts(row.reasons)}) | ${row.rejections} / ${row.crashes} |`,
   ),
-  `| **Total (${rows.length} repositories)** | | | ${sum("readErrors")} | ${sum("decisions")} / ${sum("attempted")} | ${sum("skipped")} / ${sum("laneVerdicts")} | ${sum("fallbacks")} (${counts(totalReasons)}) | ${sum("rejections")} / ${sum("crashes")} | |`,
+  `| **Total (${rows.length} repositories)** | | | ${sum("discoveryMismatches")} | ${sum("decisions")} / ${sum("attempted")} | ${sum("skipped")} / ${sum("laneVerdicts")} | ${sum("fallbacks")} (${counts(totalReasons)}) | ${sum("rejections")} / ${sum("crashes")} |`,
 ];
 process.stdout.write(table.join("\n") + "\n");
