@@ -1,0 +1,15 @@
+{
+  "mutate": ["src/**/*.ts"],
+  "testRunner": "vitest",
+  "vitest": {
+    "configFile": "vitest.config.ts",
+    "related": true
+  },
+  "reporters": ["clear-text", "progress", "json"],
+  "jsonReporter": {
+    "fileName": "coverage/mutation.json"
+  },
+  "tempDirName": "coverage/mutation-sandbox",
+  "ignorePatterns": ["coverage", "coverage/**", "docs/images"],
+  "concurrency": 4
+}
