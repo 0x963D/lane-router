@@ -232,9 +232,9 @@ function dependencyGraph(
 ): ReadonlyMap<PackageName, readonly PackageName[]> {
   const graph = new Map<PackageName, PackageName[]>();
   for (const { name, dependencies } of workspace.packages) {
-    const previous = graph.get(name) ?? [];
-    previous.push(...dependencies);
-    graph.set(name, previous);
+    const previous = graph.get(name);
+    if (previous === undefined) graph.set(name, [...dependencies]);
+    else previous.push(...dependencies);
   }
   for (const { from, to } of edges) graph.get(from)?.push(to);
   return graph;

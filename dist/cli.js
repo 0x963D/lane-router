@@ -9316,9 +9316,9 @@ function compileGraph(workspace, config, graph) {
 function dependencyGraph(workspace, edges) {
   const graph = /* @__PURE__ */ new Map();
   for (const { name, dependencies } of workspace.packages) {
-    const previous = graph.get(name) ?? [];
-    previous.push(...dependencies);
-    graph.set(name, previous);
+    const previous = graph.get(name);
+    if (previous === void 0) graph.set(name, [...dependencies]);
+    else previous.push(...dependencies);
   }
   for (const { from, to } of edges) graph.get(from)?.push(to);
   return graph;

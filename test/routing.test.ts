@@ -364,12 +364,13 @@ describe("failing closed", () => {
     );
   });
 
-  it("never lets the listed paths of an incomplete list decide anything", async () => {
-    const listed = changedFiles([{ path: "README.md", previousPath: null }]).paths;
-    const plan = await planWith("acme", () =>
-      Promise.resolve(incomplete({ kind: "truncated", listed: 300, limit: 300 }, listed)),
-    );
-    expect(plan.event.kind).toBe("incomplete");
+  it("preserves the incomplete cause even when the list includes a manifest", async () => {
+    const listed = changedFiles(
+      ["README.md", "packages/web/package.json"].map((path) => ({ path, previousPath: null })),
+    ).paths;
+    const cause = { kind: "truncated", listed: 300, limit: 300 } as const;
+    const plan = await planWith("acme", () => Promise.resolve(incomplete(cause, listed)));
+    expect(plan.event).toMatchObject({ kind: "incomplete", cause });
     expect(placementKinds(plan, "README.md")).toEqual(["docs"]);
     expect(running(plan)).toEqual(ALL);
   });
