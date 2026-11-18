@@ -310,6 +310,19 @@ describe("workspace discovery", () => {
     expect(running(await planFor("acme", ["packages/ui/src/button.tsx"], files))).toEqual(["lint"]);
   });
 
+  it.each(["link:local/ui", "file:local/ui", "local/ui/dist"])(
+    "follows local subdirectory specifier %s without a dot prefix",
+    async (specifier) => {
+      const files = {
+        "pnpm-workspace.yaml": 'packages: ["packages/*", "packages/web/e2e", "packages/web/local/ui", "tools/*"]\n',
+        "packages/web/local/ui/package.json": JSON.stringify({ name: "@acme/local" }),
+        "packages/web/package.json": JSON.stringify({ name: "@acme/web", dependencies: { kit: specifier } }),
+      };
+      const plan = await planFor("acme", ["packages/web/local/ui/index.js"], files);
+      expect(running(plan)).toEqual(["web", "e2e", "lint"]);
+    },
+  );
+
   it("does not match a sibling directory with the same prefix", async () => {
     const plan = await planFor("acme", ["packages/ui/src/button.tsx"], {
       "packages/web/package.json": JSON.stringify({
@@ -499,6 +512,27 @@ describe("workspace discovery", () => {
     const plan = await planFor("acme", ["packages/web/src/app.tsx"]);
     expect(placementsOf(plan, "packages/web/src/app.tsx")).toMatchObject([{ kind: "package", package: "@acme/web" }]);
     expect(running(plan)).toEqual(["web", "e2e", "lint"]);
+  });
+
+  it("reports a workspace inventory failure before planning", async () => {
+    const files = new Map([
+      [CONFIG, 'lanes:\n  ui:\n    packages: ["@acme/ui"]\nunmatched: all\n'],
+      ["package.json", JSON.stringify({ workspaces: ["packages/*"] })],
+    ]);
+    const result = await loadModel(
+      {
+        files: () => Promise.reject(new Error("listing unavailable")),
+        read: (path) => {
+          const text = files.get(path);
+          return Promise.resolve(text === undefined ? { kind: "missing" } : { kind: "file", text });
+        },
+      },
+      CONFIG,
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: [{ file: ".", message: "cannot list the repository files: listing unavailable" }],
+    });
   });
 
   it("reports one problem naming both files when auto finds neither", async () => {
