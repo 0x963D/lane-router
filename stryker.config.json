@@ -10,6 +10,7 @@
     "fileName": "coverage/mutation.json"
   },
   "tempDirName": "coverage/mutation-sandbox",
+  "symlinkNodeModules": false,
   "ignorePatterns": ["coverage", "coverage/**", "docs/images"],
-  "concurrency": 4
+  "concurrency": 1
 }

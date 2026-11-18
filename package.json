@@ -18,7 +18,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
-    "test:mutation": "stryker run",
+    "test:mutation": "node scripts/test-mutation.js",
     "test:soundness": "node scripts/check-soundness.ts",
     "build": "node scripts/build.ts",
     "demo": "npm run build && node scripts/demo.ts",
