@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
+import { directoryTree } from "../src/adapters/directory.ts";
 import { changedFiles, incomplete, type IncompleteCause } from "../src/core/change.ts";
-import { reasonLine } from "../src/render.ts";
-import { CONFIG } from "./support/model.ts";
+import { compileGlobs, globProblem } from "../src/core/glob.ts";
+import { parseLaneName } from "../src/core/ids.ts";
+import { planLanes } from "../src/core/plan.ts";
+import { baseGraphOf, loadModel } from "../src/load/index.ts";
+import { explainJson, reasonLine } from "../src/render.ts";
+import { err } from "../src/result.ts";
+import { fixtureCopy } from "./support/fixtures.ts";
+import { CONFIG, modelOf } from "./support/model.ts";
 import { decisionOf, evidenceOf, placementKinds, placementsOf, planFor, planWith, running } from "./support/plan.ts";
 
 /*
@@ -75,6 +82,42 @@ describe("built-in inputs", () => {
 });
 
 describe("paths rows", () => {
+  it.each([
+    ["  ", "a glob cannot be empty"],
+    ["path\\file", "use / as the path separator"],
+    ["/outside", "globs are relative to the repository root"],
+    ["./inside", "globs are relative to the repository root"],
+    ["!pattern", "a glob cannot start with !"],
+    ["dir/../outside", "a glob cannot reach outside the repository root"],
+  ])("rejects %j with the corresponding glob problem", (pattern, message) => {
+    expect(globProblem(pattern)).toBe(message);
+  });
+
+  it("reports a glob longer than the matcher can compile", () => {
+    expect(globProblem("a".repeat(70_000))).toMatch(/length/i);
+  });
+
+  it("accepts a literal trailing exclamation point and handles an empty pattern list", () => {
+    expect(globProblem("file!")).toBeUndefined();
+    expect(compileGlobs({ match: ["file!"] })("file!")).toBe(true);
+    expect(compileGlobs({ match: [] })("file!")).toBe(false);
+  });
+
+  it("distinguishes malformed lane names from reserved output names", () => {
+    expect(parseLaneName("-web")).toEqual(err("malformed"));
+    expect(parseLaneName("matrix")).toEqual(err("reserved"));
+    expect(parseLaneName("web-2")).toEqual({ ok: true, value: "web-2" });
+  });
+
+  it("matches a dotfile through a wildcard", async () => {
+    const config = acmeConfig({
+      paths: '  - match: ["shared/*"]\n    lanes: [web]\n    why: Only the web build reads the shared input.\n',
+    });
+    const plan = await planFor("acme", ["shared/.generated"], { [CONFIG]: config });
+    expect(running(plan)).toEqual(["web", "lint"]);
+    expect(evidenceOf(plan, "web")).toEqual(["row"]);
+  });
+
   it("selects every lane for lanes: all, with the row's why as evidence", async () => {
     const plan = await planFor("acme", [".github/workflows/ci.yml"]);
     expect(running(plan)).toEqual(ALL);
@@ -122,6 +165,32 @@ describe("paths rows", () => {
 });
 
 describe("package placement", () => {
+  it("follows a cycle and reaches a root-level package through its shortest chain", async () => {
+    const files = {
+      [CONFIG]: `lanes:
+  multi:
+    packages: [app, helper]
+  isolated:
+    packages: [isolated]
+unmatched: all
+`,
+      "pnpm-workspace.yaml": 'packages: ["app", "helper", "kit", "isolated"]\n',
+      "app/package.json": '{"name":"app","dependencies":{"helper":"*"}}',
+      "helper/package.json": '{"name":"helper","devDependencies":{"app":"*","kit":"*"}}',
+      "kit/package.json": '{"name":"kit"}',
+      "isolated/package.json": '{"name":"isolated"}',
+    };
+    const plan = await planFor("acme", ["kit/index.ts"], files);
+    expect(running(plan)).toEqual(["multi"]);
+    expect(decisionOf(plan, "multi")).toMatchObject({
+      because: [{ through: { kind: "reads", chain: ["helper", "kit"], graph: "head" } }],
+    });
+    expect(plan.lanes.map(reasonLine)).toEqual([
+      "kit/index.ts is in kit, read through helper",
+      "nothing it reads changed",
+    ]);
+  });
+
   it("selects the lanes whose closure holds the package through manifest dependencies", async () => {
     const plan = await planFor("acme", ["packages/ui/src/button.tsx"]);
     expect(running(plan)).toEqual(["web", "e2e", "lint"]);
@@ -241,6 +310,45 @@ describe("an empty change", () => {
 });
 
 describe("failing closed", () => {
+  it("keeps the manifest path and the rejected base graph's cause", async () => {
+    const path = "packages/ui/package.json";
+    const plan = await planLanes(await modelOf("acme"), {
+      mode: "push",
+      range: { base: "before", head: "after" },
+      changes: () => Promise.resolve(changedFiles([{ path, previousPath: null }], { mergeBase: "merged" })),
+      baseGraph: (commit, { allowNewConfig }) => {
+        expect(commit).toBe("merged");
+        expect(allowNewConfig).toBe(false);
+        return Promise.reject(new Error("manifest cannot be read"));
+      },
+    });
+    expect(plan.mode).toBe("push");
+    expect(running(plan)).toEqual(ALL);
+    expect(plan.event).toMatchObject({
+      kind: "incomplete",
+      cause: { kind: "no-base-graph", commit: "merged", reason: "manifest cannot be read" },
+      paths: [{ path, placements: [{ kind: "package" }] }],
+    });
+  });
+
+  it("treats a missing base config as new only when the config changed", async () => {
+    const plan = await planLanes(await modelOf("acme"), {
+      mode: "pr",
+      range: { base: "before", head: "after" },
+      changes: () => Promise.resolve(changedFiles([{ path: CONFIG, previousPath: null }], { mergeBase: "merged" })),
+      baseGraph: (commit, { allowNewConfig }) => {
+        expect(commit).toBe("merged");
+        expect(allowNewConfig).toBe(true);
+        return Promise.resolve(err("base is unavailable"));
+      },
+    });
+    expect(running(plan)).toEqual(ALL);
+    expect(evidenceOf(plan, "api")).toEqual(["incomplete"]);
+    expect(plan.event).toMatchObject({
+      cause: { kind: "no-base-graph", commit: "merged", reason: "base is unavailable" },
+    });
+  });
+
   it.each<IncompleteCause>([
     { kind: "truncated", listed: 300, limit: 300 },
     { kind: "count-mismatch", listed: 2, expected: 3 },
@@ -281,7 +389,115 @@ describe("failing closed", () => {
   });
 });
 
+describe("base and head coverage", () => {
+  it("keeps a removed lane and the base floor without applying it to other lanes", async () => {
+    const base = directoryTree(
+      fixtureCopy("acme", {
+        [CONFIG]: 'lanes:\n  build:\n    floor: true\n  old:\n    packages: ["@acme/api"]\nunmatched: all\n',
+      }),
+    );
+    const head = directoryTree(
+      fixtureCopy("acme", {
+        [CONFIG]:
+          'lanes:\n  build:\n    packages: ["@acme/api"]\n  other:\n    packages: ["@acme/api"]\nunmatched: all\n',
+      }),
+    );
+    const model = await loadModel(head, CONFIG, base);
+    if (!model.ok) throw new Error(JSON.stringify(model.error));
+    const plan = await planLanes(model.value, {
+      mode: "pr",
+      range: { base: "before", head: "after" },
+      changes: () => Promise.resolve(changedFiles([{ path: "packages/ui/src/button.tsx", previousPath: null }])),
+      baseGraph: () => Promise.resolve(err("base was already read")),
+    });
+    expect(running(plan)).toEqual(["build", "old"]);
+    expect(evidenceOf(plan, "build")).toEqual(["floor"]);
+    expect(evidenceOf(plan, "old")).toEqual(["removed"]);
+    const json: unknown = JSON.parse([...explainJson(plan)].join("\n"));
+    expect(json).toMatchObject({
+      lanes: [
+        { lane: "build", base: "before", decision: "run" },
+        { lane: "other", base: "before", decision: "skip" },
+        { lane: "old", base: "before", decision: "run" },
+      ],
+    });
+  });
+
+  it("uses the graph at the merge base for package placements and explicit rows", async () => {
+    const path = "packages/ui/src/button.tsx";
+    const claim = "shared/claimed.txt";
+    const config = acmeConfig({
+      paths: '  - match: ["shared/claimed.txt"]\n    packages: ["@acme/ui"]\n    via: name\n    why: Shared input.\n',
+    });
+    const base = directoryTree(fixtureCopy("acme", { [CONFIG]: config }));
+    const head = directoryTree(
+      fixtureCopy("acme", {
+        [CONFIG]: config,
+        "packages/web/package.json": '{"name":"@acme/web"}',
+      }),
+    );
+    const model = await loadModel(head, CONFIG);
+    if (!model.ok) throw new Error(JSON.stringify(model.error));
+    const plan = await planLanes(model.value, {
+      mode: "pr",
+      range: { base: "before", head: "after" },
+      changes: () =>
+        Promise.resolve(
+          changedFiles(
+            [path, claim, "packages/web/package.json"].map((path) => ({ path, previousPath: null })),
+            { mergeBase: "merged" },
+          ),
+        ),
+      baseGraph: baseGraphOf(head, CONFIG, {
+        resolve: (ref) => Promise.resolve(ref === "merged" ? ref : undefined),
+        treeAt: () => base,
+      }),
+    });
+    expect(plan.event.kind).toBe("ordinary");
+    const web = decisionOf(plan, "web");
+    if (web.kind !== "run") throw new Error("web reads the changed package");
+    const reads = web.because.flatMap((reason) =>
+      reason.kind === "placement" && [path, claim].includes(reason.path)
+        ? [{ path: reason.path, through: reason.through }]
+        : [],
+    );
+    const through = { kind: "reads", chain: ["@acme/web", "@acme/ui"], graph: "base" };
+    expect(reads).toEqual([
+      { path, through },
+      { path: claim, through },
+    ]);
+  });
+});
+
 describe("renames", () => {
+  it("normalizes and deduplicates both names relative to the routed root", () => {
+    const files = changedFiles(
+      [
+        { previousPath: "project/mono/././packages//ui/src/new.ts", path: "project/mono/packages/ui/src/new.ts" },
+        { previousPath: "project/mono/packages/api/src/old.ts", path: "project/mono/packages/ui/src/new.ts" },
+      ],
+      { under: "project/mono///", mergeBase: "merged" },
+    );
+    expect(files).toMatchObject({
+      kind: "complete",
+      mergeBase: "merged",
+      paths: ["packages/api/src/old.ts", "packages/ui/src/new.ts"],
+    });
+  });
+
+  it("keeps the first invalid path and the valid part of an incomplete rename listing", () => {
+    const files = changedFiles([
+      { previousPath: "/absolute.ts", path: "packages/ui/src/new.ts" },
+      { previousPath: null, path: "packages/./bad.ts" },
+      { previousPath: null, path: "packages/file\0.ts" },
+    ]);
+    expect(files).toMatchObject({
+      kind: "incomplete",
+      cause: { kind: "invalid-path", raw: "/absolute.ts" },
+      paths: ["packages/ui/src/new.ts"],
+    });
+  });
+
   it("route both the old and the new path", async () => {
     const plan = await planFor("acme", [{ path: "packages/ui/src/a.ts", previousPath: "packages/api/src/a.ts" }]);
     expect(placementKinds(plan, "packages/api/src/a.ts")).toEqual(["package"]);

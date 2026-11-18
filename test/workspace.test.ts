@@ -483,11 +483,35 @@ describe("workspace discovery", () => {
     ]);
   });
 
-  it("reports a duplicate package name with both directories", async () => {
-    const problems = await problemsOf("acme", { "packages/ui/package.json": JSON.stringify({ name: "@acme/api" }) });
+  it("reports a duplicate npm workspace package name with both directories", async () => {
+    const problems = await problemsOf("npm-array", {
+      "packages/two/package.json": JSON.stringify({ name: "@npm/one" }),
+    });
     expect(problems).toHaveLength(1);
-    expect(problems[0]?.file).toBe("packages/ui/package.json");
-    expect(problems[0]?.message).toContain("packages/api");
+    expect(problems[0]?.file).toBe("packages/two/package.json");
+    expect(problems[0]?.message).toContain("packages/one");
+  });
+
+  it("reads a pnpm test fixture with a repeated package name and includes both copies' dependencies", async () => {
+    const layout = {
+      [CONFIG]:
+        'lanes:\n  feature:\n    packages: ["@acme/check"]\n  web:\n    packages: ["@acme/web"]\nunmatched: all\n',
+      "pnpm-workspace.yaml": 'packages: ["packages/*", "fixtures/*"]\n',
+      "fixtures/first/package.json": JSON.stringify({ name: "@acme/check", devDependencies: { "@acme/api": "*" } }),
+      "fixtures/second/package.json": JSON.stringify({ name: "@acme/check", devDependencies: { "@acme/ui": "*" } }),
+    };
+    for (const path of ["fixtures/first/check.ts", "fixtures/second/check.ts", "packages/api/src/user.ts"]) {
+      expect(running(await planFor("acme", [path], layout))).toEqual(["feature"]);
+    }
+    expect(running(await planFor("acme", ["packages/ui/src/button.tsx"], layout))).toEqual(["feature", "web"]);
+  });
+
+  it("reads UTF-8 BOMs at the start of root and workspace package manifests", async () => {
+    const plan = await planFor("npm-array", ["packages/two/index.js"], {
+      "package.json": '\uFEFF{"workspaces":["packages/*"]}',
+      "packages/one/package.json": '\uFEFF{"name":"@npm/one","devDependencies":{"@npm/two":"*"}}',
+    });
+    expect(running(plan)).toEqual(["one", "two"]);
   });
 
   it("reports a manifest that is not valid JSON", async () => {

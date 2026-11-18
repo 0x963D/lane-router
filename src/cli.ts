@@ -18,7 +18,7 @@ export type ExitCode = 0 | 1 | 2;
 
 export interface CliIo {
   readonly cwd: string;
-  readonly stdout: (text: string) => void;
+  readonly stdout: (text: string) => void | Promise<void>;
   readonly stderr: (text: string) => void;
 }
 
@@ -39,7 +39,7 @@ export async function runCli(argv: readonly string[], io: CliIo): Promise<ExitCo
     return 2;
   }
   if (invocation.value === "help") {
-    io.stdout(USAGE);
+    await io.stdout(USAGE);
     return 0;
   }
   const { config, json } = invocation.value;
@@ -63,7 +63,11 @@ export async function runCli(argv: readonly string[], io: CliIo): Promise<ExitCo
       changes: repo.changes,
       baseGraph: baseGraphOf(tree, config, repo),
     });
-    io.stdout(json ? explainJson(plan) : explainText(plan));
+    if (json) {
+      for (const part of explainJson(plan)) await io.stdout(part);
+    } else {
+      await io.stdout(explainText(plan));
+    }
     return 0;
   } catch (error) {
     io.stderr(messageOf(error));

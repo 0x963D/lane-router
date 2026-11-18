@@ -63,9 +63,9 @@ export interface WorkspacePackage {
   readonly dependencies: readonly PackageName[];
 }
 
-/** Keyed by plain string so that a config reference can be looked up before it is branded. */
 export interface Workspace {
-  readonly packages: ReadonlyMap<string, WorkspacePackage>;
+  readonly packages: readonly WorkspacePackage[];
+  readonly names: ReadonlyMap<string, PackageName>;
 }
 
 export interface Lane {
@@ -183,7 +183,7 @@ export function compile(input: {
     lanes,
     rows: config.rows.map(({ match, target, why }, index) => ({
       row: { index, why, target },
-      hits: compileGlobs({ match, except: [] }),
+      hits: compileGlobs({ match }),
       reach: rowReach(target),
     })),
     isDocs: compileGlobs(config.docsOnly),
@@ -221,9 +221,7 @@ function compileGraph(workspace: Workspace, config: Config, graph: Graph): Compi
     for (const name of lane.packages) addReach(roots, name, lane.name, { kind: "reads", chain: [name], graph });
   }
   const dirs = new Map(
-    [...workspace.packages.values()].map(
-      ({ name, dir }) => [dir, { name, dir, reach: closure.get(name) ?? NO_LANES }] as const,
-    ),
+    workspace.packages.map(({ name, dir }) => [dir, { name, dir, reach: closure.get(name) ?? NO_LANES }] as const),
   );
   return { closure, roots, dirs };
 }
@@ -233,7 +231,11 @@ function dependencyGraph(
   edges: readonly DependencyEdge[],
 ): ReadonlyMap<PackageName, readonly PackageName[]> {
   const graph = new Map<PackageName, PackageName[]>();
-  for (const { name, dependencies } of workspace.packages.values()) graph.set(name, [...dependencies]);
+  for (const { name, dependencies } of workspace.packages) {
+    const previous = graph.get(name) ?? [];
+    previous.push(...dependencies);
+    graph.set(name, previous);
+  }
   for (const { from, to } of edges) graph.get(from)?.push(to);
   return graph;
 }

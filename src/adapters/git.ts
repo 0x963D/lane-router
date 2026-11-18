@@ -32,14 +32,18 @@ export interface GitRepo {
 
 /** `cwd` is the routed root. It may sit below the top of the repository. */
 export function gitRepo(cwd: string): GitRepo {
-  const git = async (args: readonly string[]): Promise<string> => {
+  const runGit = async (args: readonly string[], input?: string): Promise<Buffer> => {
     try {
-      const { stdout } = await execFileAsync("git", args, { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+      const run = execFileAsync("git", args, { cwd, encoding: "buffer", maxBuffer: 256 * 1024 * 1024 });
+      run.child.stdin?.on("error", () => {});
+      run.child.stdin?.end(input);
+      const { stdout } = await run;
       return stdout;
     } catch (error) {
       throw new Error(`git ${args.join(" ")} failed: ${stderrOf(error)}`, { cause: error });
     }
   };
+  const git = async (args: readonly string[]): Promise<string> => (await runGit(args)).toString("utf8");
   const prefix = async (): Promise<string> => (await git(["rev-parse", "--show-prefix"])).trim();
 
   return {
@@ -51,19 +55,38 @@ export function gitRepo(cwd: string): GitRepo {
       }
     },
     treeAt: (commit) => {
-      let listing: Promise<ReadonlyMap<string, string>> | undefined;
-      const modes = (): Promise<ReadonlyMap<string, string>> =>
-        (listing ??= git(["ls-tree", "-r", "-z", commit]).then(parseModes));
+      let listing: Promise<ReadonlyMap<string, TreeEntry>> | undefined;
+      const entries = (): Promise<ReadonlyMap<string, TreeEntry>> =>
+        (listing ??= git(["ls-tree", "-r", "-z", commit]).then(parseEntries));
+      const pending: { id: string; resolve: (text: string) => void; reject: (error: unknown) => void }[] = [];
+      const readBlob = (id: string): Promise<string> =>
+        new Promise((resolve, reject) => {
+          pending.push({ id, resolve, reject });
+          if (pending.length > 1) return;
+          // Workspace discovery asks for its manifests together. Share one Git process for those reads.
+          queueMicrotask(() => {
+            const batch = pending.splice(0);
+            const ids = batch.map(({ id }) => id);
+            void runGit(["cat-file", "--batch"], ids.join("\n") + "\n")
+              .then((output) => {
+                const blobs = parseBlobs(output, ids);
+                for (const { id, resolve } of batch) resolve(blobs.get(id) ?? "");
+              })
+              .catch((error: unknown) => {
+                for (const { reject } of batch) reject(error);
+              });
+          });
+        });
       return {
-        files: async () => [...(await modes()).keys()].sort(),
+        files: async () => [...(await entries()).keys()].sort(),
         read: async (path): Promise<TreeRead> => {
           const refusal = pathRefusal(path);
           if (refusal !== undefined) return { kind: "refused", refusal };
-          const mode = (await modes()).get(path);
-          if (mode === undefined) return { kind: "missing" };
-          const link = LINKS.get(mode);
+          const entry = (await entries()).get(path);
+          if (entry === undefined) return { kind: "missing" };
+          const link = LINKS.get(entry.mode);
           if (link !== undefined) return { kind: "refused", refusal: link };
-          return { kind: "file", text: await git(["cat-file", "blob", `${commit}:./${path}`]) };
+          return { kind: "file", text: await readBlob(entry.id) };
         },
       };
     },
@@ -80,11 +103,39 @@ export function gitRepo(cwd: string): GitRepo {
   };
 }
 
-/** `ls-tree -z` prints `<mode> <type> <object>`, a tab, the path and a NUL for each entry. */
-function parseModes(output: string): ReadonlyMap<string, string> {
+interface TreeEntry {
+  readonly mode: string;
+  readonly id: string;
+}
+
+function parseEntries(output: string): ReadonlyMap<string, TreeEntry> {
   return new Map(
-    split(output).map((entry) => [entry.slice(entry.indexOf("\t") + 1), entry.slice(0, entry.indexOf(" "))] as const),
+    split(output).map((entry) => {
+      const tab = entry.indexOf("\t");
+      const [mode, , id] = entry.slice(0, tab).split(" ");
+      if (mode === undefined || id === undefined) throw new Error("git returned an invalid tree entry");
+      return [entry.slice(tab + 1), { mode, id }] as const;
+    }),
   );
+}
+
+/** `cat-file --batch` frames each blob with a byte count and a trailing newline. */
+function parseBlobs(output: Buffer, ids: readonly string[]): ReadonlyMap<string, string> {
+  const blobs = new Map<string, string>();
+  let start = 0;
+  for (const id of ids) {
+    const headerEnd = output.indexOf(10, start);
+    const [found, type, rawSize] = output.toString("ascii", start, headerEnd).split(" ");
+    const size = Number(rawSize);
+    const end = headerEnd + 1 + size;
+    if (found !== id || type !== "blob" || !Number.isSafeInteger(size) || size < 0 || output[end] !== 10) {
+      throw new Error(`git returned an invalid blob for ${id}`);
+    }
+    blobs.set(id, output.toString("utf8", headerEnd + 1, end));
+    start = end + 1;
+  }
+  if (start !== output.length) throw new Error("git returned extra data after the blob batch");
+  return blobs;
 }
 
 function split(output: string): string[] {
@@ -93,5 +144,6 @@ function split(output: string): string[] {
 
 function stderrOf(error: unknown): string {
   const stderr = error instanceof Error && "stderr" in error ? error.stderr : undefined;
-  return typeof stderr === "string" && stderr.trim() !== "" ? stderr.trim() : String(error);
+  const message = Buffer.isBuffer(stderr) ? stderr.toString("utf8").trim() : "";
+  return message || String(error);
 }

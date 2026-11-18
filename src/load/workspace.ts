@@ -40,6 +40,7 @@ interface Dependency {
 }
 
 interface WorkspaceDefinition {
+  readonly manager: "pnpm" | "npm";
   readonly globs: GlobSet;
   readonly catalogs: ReadonlyMap<string, ReadonlyMap<string, string>>;
   readonly overrides: readonly { readonly file: string; readonly dependency: Dependency }[];
@@ -62,11 +63,12 @@ export async function discoverWorkspace(
   const read = await Promise.all(dirs.map((dir) => readManifest(tree, dir)));
 
   const problems: Problem[] = read.flatMap((result) => (result.ok ? [] : result.error));
-  const byName = new Map<string, Manifest>();
-  for (const manifest of read.flatMap((result) => (result.ok && result.value !== undefined ? [result.value] : []))) {
-    const claimed = byName.get(manifest.name);
-    if (claimed === undefined) byName.set(manifest.name, manifest);
-    else {
+  const manifests = read.flatMap((result) => (result.ok && result.value !== undefined ? [result.value] : []));
+  const firstByName = new Map<string, Manifest>();
+  for (const manifest of manifests) {
+    const claimed = firstByName.get(manifest.name);
+    if (claimed === undefined) firstByName.set(manifest.name, manifest);
+    else if (definition.value.manager === "npm") {
       problems.push({
         file: manifest.dir + IN_PACKAGE,
         at: null,
@@ -77,11 +79,11 @@ export async function discoverWorkspace(
   }
   if (isNonEmpty(problems)) return err(problems);
 
-  const byDir = new Map<string, Manifest>([...byName.values()].map((manifest) => [manifest.dir, manifest]));
-  const pathPackages = [...byDir.values()].sort((a, b) => b.dir.length - a.dir.length);
+  const names = new Map([...firstByName].map(([key, manifest]) => [key, manifest.name]));
+  const pathPackages = [...manifests].sort((a, b) => b.dir.length - a.dir.length);
   const collect = (key: string, specifier: string, dirs: readonly string[], targets: Set<PackageName>): boolean => {
-    const keyed = byName.get(key);
-    if (keyed !== undefined) targets.add(keyed.name);
+    const keyed = names.get(key);
+    if (keyed !== undefined) targets.add(keyed);
     if (specifier.startsWith("catalog:")) {
       specifier = definition.value.catalogs.get(specifier.slice("catalog:".length).trim() || "default")?.get(key) ?? "";
       if (specifier.startsWith("catalog:")) return true;
@@ -121,8 +123,8 @@ export async function discoverWorkspace(
       protocol === "workspace:"
         ? (/^workspace:(?:(?<alias>[^._/][^@]*)@)?(?<version>.*)$/.exec(specifier)?.groups?.alias ?? key)
         : /^(?:[A-Za-z][A-Za-z0-9+.-]*:)?((?:@[^/]+\/)?[^@/:]+)(?:@.*)?$/.exec(specifier)?.[1];
-    const dependency = name === undefined ? undefined : byName.get(name);
-    if (dependency !== undefined) targets.add(dependency.name);
+    const dependency = name === undefined ? undefined : names.get(name);
+    if (dependency !== undefined) targets.add(dependency);
     return protocol !== "workspace:" || dependency !== undefined;
   };
   const overridden = new Set<PackageName>();
@@ -131,12 +133,12 @@ export async function discoverWorkspace(
     dependency: { key, specifier, where },
   } of definition.value.overrides) {
     // A nested override can resolve a relative path at a consumer, while a root override uses the root.
-    if (!collect(key, specifier, ["", ...byDir.keys()], overridden)) {
+    if (!collect(key, specifier, ["", ...manifests.map(({ dir }) => dir)], overridden)) {
       problems.push({ file, at: null, where, message: "does not resolve to a workspace package" });
     }
   }
-  const packages = new Map<string, WorkspacePackage>();
-  for (const { name, dir, dependencies } of byName.values()) {
+  const packages: WorkspacePackage[] = [];
+  for (const { name, dir, dependencies } of manifests) {
     const resolved = new Set(overridden);
     for (const { key, specifier, where } of dependencies) {
       if (!collect(key, specifier, [dir], resolved))
@@ -147,9 +149,9 @@ export async function discoverWorkspace(
           message: "does not resolve to a workspace package",
         });
     }
-    packages.set(name, { name, dir, dependencies: [...resolved] });
+    packages.push({ name, dir, dependencies: [...resolved] });
   }
-  return isNonEmpty(problems) ? err(problems) : ok({ packages });
+  return isNonEmpty(problems) ? err(problems) : ok({ packages, names });
 }
 
 async function workspaceDefinition(
@@ -207,6 +209,7 @@ function pnpmWorkspace(source: string): Result<WorkspaceDefinition, NonEmpty<Pro
       const overrides = field("overrides", emptyMapping(overrideValues));
       if (!isValid(packages) || !isValid(catalog) || !isValid(catalogs) || !isValid(overrides)) return INVALID;
       return {
+        manager: "pnpm" as const,
         globs: globSet(packages),
         overrides: overrides.map((dependency) => ({ file: WORKSPACE_FILE, dependency })),
         catalogs: new Map([
@@ -231,7 +234,7 @@ function npmWorkspace(input: unknown): Result<WorkspaceDefinition, NonEmpty<Prob
     input,
   );
   return decoded.ok
-    ? ok({ globs: globSet(decoded.value), catalogs: new Map(), overrides: [] })
+    ? ok({ manager: "npm", globs: globSet(decoded.value), catalogs: new Map(), overrides: [] })
     : err(jsonProblems(MANIFEST, decoded.error));
 }
 
@@ -315,7 +318,7 @@ async function readManifest(tree: RepoTree, dir: RepoPath): Promise<Result<Manif
 }
 
 function jsonFile(file: string, source: string): Result<unknown, NonEmpty<Problem>> {
-  const json = parseJson(source);
+  const json = parseJson(source.replace(/^\uFEFF/, ""));
   return json.ok ? json : err([{ file, at: json.error, where: null, message: "is not valid JSON" }]);
 }
 

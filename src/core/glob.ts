@@ -5,7 +5,7 @@ export type PathMatcher = (path: string) => boolean;
 
 export interface GlobSet {
   readonly match: readonly string[];
-  readonly except: readonly string[];
+  readonly except?: readonly string[];
 }
 
 const OPTIONS = { dot: true } as const;
@@ -13,7 +13,7 @@ const OPTIONS = { dot: true } as const;
 /** Rows, docs-only and workspace globs all compile here, so no two rules disagree on what a glob means. */
 export function compileGlobs({ match, except }: GlobSet): PathMatcher {
   if (match.length === 0) return () => false;
-  return picomatch([...match], { ...OPTIONS, ignore: [...except] });
+  return picomatch([...match], except === undefined ? OPTIONS : { ...OPTIONS, ignore: [...except] });
 }
 
 /** Config and workspace validation call this on every glob, which keeps `compileGlobs` total afterwards. */

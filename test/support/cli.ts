@@ -13,7 +13,9 @@ export async function cli(args: readonly string[], cwd: string): Promise<CliRun>
   const stderr: string[] = [];
   const code = await runCli(args, {
     cwd,
-    stdout: (text) => stdout.push(text),
+    stdout: (text) => {
+      stdout.push(text);
+    },
     stderr: (text) => stderr.push(text),
   });
   return { code, stdout: stdout.join("\n"), stderr: stderr.join("\n") };

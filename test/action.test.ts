@@ -27,13 +27,14 @@ function parsed(text: string | undefined): unknown {
 }
 
 describe("the files input", () => {
-  it("is trusted as complete and never calls the API", async () => {
+  it.each([undefined, "child"] as const)("is trusted as complete and never calls the API (%s)", async (driver) => {
     const github = await fakeGitHub();
     const run = await runAction({
       workspace: ACME,
       inputs: { files: "packages/ui/src/button.tsx\n\n" },
       event: pullRequest(1),
       github,
+      ...(driver === undefined ? {} : { process: driver }),
     });
     expect(run.exitCode).toBe(0);
     expect(parsed(run.outputs.lanes)).toEqual(["web", "e2e", "lint"]);
@@ -310,7 +311,7 @@ describe("errors before a model exists", () => {
   });
 
   it("fail the step on a workspace problem", async () => {
-    const dir = fixtureCopy("acme", { "packages/ui/package.json": JSON.stringify({ name: "@acme/api" }) });
+    const dir = fixtureCopy("acme", { "packages/ui/package.json": "{" });
     const run = await runAction({ workspace: dir, inputs: { files: "README.md" }, event: pullRequest(1) });
     expect(run.exitCode).toBe(1);
     expect(run.outputs).toEqual({});

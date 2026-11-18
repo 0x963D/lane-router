@@ -80,6 +80,8 @@ In a docs-only change, every matching explicit `paths` row counts, whatever its 
 
 A package is a directory that matches a workspace glob and holds a `package.json` with a `name`. pnpm `!` negations are honoured. The repository root is never a package. Dependencies come from `dependencies`, `devDependencies`, `peerDependencies` and `optionalDependencies`. Each value must be a string.
 
+When pnpm lists several packages with the same name, each directory keeps its package placement. A lane or dependency referring to that name reaches every copy and the union of their dependencies. npm discovery reports duplicate names as an error.
+
 lane-router collects a safe larger set of dependency edges. It ignores version compatibility and keeps every workspace package an entry could name. For each entry:
 
 1. Add the workspace package whose name matches the dependency key, whatever the specifier says.

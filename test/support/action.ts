@@ -2,14 +2,12 @@ import { spawn } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { summary } from "@actions/core";
+import { vi } from "vitest";
 import { parse } from "yaml";
+import { runAction as action } from "../../src/action.ts";
 import { tempDir } from "./fixtures.ts";
 import { REPOSITORY, type FakeGitHub } from "./fake-github.ts";
-
-/*
- * Runs the Action the way the runner does: a separate Node process with INPUT_* and GITHUB_* set,
- * every input default filled in from action.yml, and outputs read back from the files @actions/core wrote.
- */
 
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const ENTRY = join(ROOT, "src/bin/action.ts");
@@ -61,6 +59,7 @@ export async function runAction(options: {
   readonly inputs?: Readonly<Record<string, string>>;
   readonly event: ActionEvent;
   readonly github?: FakeGitHub;
+  readonly process?: "child";
 }): Promise<ActionRun> {
   const scratch = tempDir();
   const files = {
@@ -94,13 +93,49 @@ export async function runAction(options: {
     GITHUB_API_URL: options.github?.url ?? "http://127.0.0.1:9",
   });
 
-  const { exitCode, stdout } = await node(ENTRY, { cwd: options.workspace, env });
+  const driver = options.process === "child" ? node : inProcess;
+  const { exitCode, stdout } = await driver(ENTRY, { cwd: options.workspace, env });
   return {
     exitCode,
     outputs: parseOutputs(readFileSync(files.output, "utf8")),
     summary: readFileSync(files.summary, "utf8"),
     annotations: parseAnnotations(stdout),
   };
+}
+
+async function inProcess(_entry: string, { cwd, env }: { cwd: string; env: Record<string, string> }) {
+  const cwdStub = vi.spyOn(process, "cwd").mockReturnValue(cwd);
+  const lastExit = process.exitCode;
+  process.exitCode = 0;
+  let stdout = "";
+  const stdoutStub = vi.spyOn(process.stdout, "write").mockImplementation((chunk: string | Uint8Array) => {
+    stdout += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+    return true;
+  });
+  // The runner starts a fresh process. Its summary object otherwise caches the first output path.
+  const summaryStub = vi.spyOn(summary, "write").mockImplementation(() => {
+    const path = env.GITHUB_STEP_SUMMARY;
+    if (path === undefined) throw new Error("missing summary path");
+    writeFileSync(path, summary.stringify());
+    return Promise.resolve(summary.emptyBuffer());
+  });
+  for (const key of Object.keys(process.env)) {
+    if (/^(INPUT_|GITHUB_|RUNNER_|ACTIONS_)/.test(key)) vi.stubEnv(key, undefined);
+  }
+  for (const [key, value] of Object.entries(env)) {
+    if (/^(INPUT_|GITHUB_|RUNNER_|ACTIONS_)/.test(key)) vi.stubEnv(key, value);
+  }
+  try {
+    await action();
+    return { exitCode: process.exitCode, stdout };
+  } finally {
+    vi.unstubAllEnvs();
+    process.exitCode = lastExit;
+    summary.emptyBuffer();
+    summaryStub.mockRestore();
+    stdoutStub.mockRestore();
+    cwdStub.mockRestore();
+  }
 }
 
 function node(entry: string, options: { readonly cwd: string; readonly env: Record<string, string> }) {

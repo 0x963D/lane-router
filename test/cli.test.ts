@@ -1,6 +1,7 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { runCli } from "../src/cli.ts";
 import { cli } from "./support/cli.ts";
 import { fixtureDir, tempDir } from "./support/fixtures.ts";
 import { gitFixture, type GitFixture } from "./support/git-fixture.ts";
@@ -15,6 +16,29 @@ function decisions(lanes: Readonly<Record<string, "run" | "skip">>) {
 }
 
 describe("lane-router explain", () => {
+  it("writes the explanation in bounded chunks and waits for the output sink", async () => {
+    const repo = acmeRepo();
+    repo.write("tools/new-file.ts", "export const x = 1;\n");
+    const head = repo.commit("Add an unclaimed path");
+    const parts: string[] = [];
+    const code = await runCli(["explain", "--base", repo.base, "--head", head, "--json"], {
+      cwd: repo.dir,
+      stdout: async (text) => {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        parts.push(text);
+      },
+      stderr: (message) => {
+        throw new Error(message);
+      },
+    });
+    expect(code).toBe(0);
+    expect(parts.length).toBeGreaterThan(4);
+    expect(JSON.parse(parts.join("\n"))).toMatchObject({
+      ...decisions({ api: "run", web: "run", e2e: "run", lint: "run" }),
+      paths: [{ path: "tools/new-file.ts", placements: [{ kind: "unmatched", lanes: ["api", "web", "e2e", "lint"] }] }],
+    });
+  });
+
   it("diffs the merge base of --base and --head against --head", async () => {
     const repo = acmeRepo();
     repo.git("checkout", "--quiet", "-b", "feature");
@@ -119,6 +143,24 @@ describe("lane-router explain", () => {
     const { code, stdout } = await cli(["explain", "--base", repo.base, "--head", head, "--json"], repo.dir);
     expect(code).toBe(0);
     expect(JSON.parse(stdout)).toMatchObject(decisions({ core: "run", lint: "run" }));
+  });
+
+  it("reads batched manifests by UTF-8 byte length, including shared blob IDs", async () => {
+    const repo = acmeRepo();
+    repo.write("pnpm-workspace.yaml", 'packages: ["packages/*", "fixtures/*"]\n');
+    repo.write(
+      CONFIG,
+      'lanes:\n  check:\n    packages: ["check"]\n  ui:\n    packages: ["@acme/ui"]\nunmatched: all\n',
+    );
+    const manifest = '{"name":"check","description":"été 🧪","devDependencies":{"@acme/ui":"*"}}\n';
+    repo.write("fixtures/one/package.json", manifest);
+    repo.write("fixtures/two/package.json", manifest);
+    const base = repo.commit("Add test fixtures with the same manifest");
+    repo.write("fixtures/two/check.js", "export const check = 1;\n");
+    const head = repo.commit("Change the second fixture");
+    const { code, stdout } = await cli(["explain", "--base", base, "--head", head, "--json"], repo.dir);
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout)).toMatchObject(decisions({ check: "run", ui: "skip" }));
   });
 
   it("exits 0 with every lane running when the revisions share no history", async () => {

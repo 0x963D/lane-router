@@ -62,10 +62,10 @@ export function openConfig(file: string, source: string): Result<OpenConfig, Non
 const REJECT = { unknownKeys: "reject" } as const;
 
 function packageIn(workspace: Workspace): Decoder<PackageName> {
-  const names = [...workspace.packages.keys()];
+  const names = [...workspace.names.keys()];
   return refine(nonEmptyString, (name, context) => {
-    const found = workspace.packages.get(name);
-    if (found !== undefined) return found.name;
+    const found = workspace.names.get(name);
+    if (found !== undefined) return found;
     const suggestion = closest(name, names);
     return context.fail(`unknown package ${name}${suggestion === undefined ? "" : `, did you mean ${suggestion}?`}`);
   });
