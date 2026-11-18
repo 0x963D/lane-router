@@ -149,7 +149,14 @@ function changePath(file: Scenario["change"][number], dirs: readonly string[]): 
 }
 
 export async function checkSoundness(numRuns = RUNS) {
-  const counts = { cases: 0, affected: 0, unaffected: 0, excessRuns: 0, reasons: new Map<string, number>() };
+  const counts = {
+    cases: 0,
+    affected: 0,
+    unaffected: 0,
+    falseSkips: 0,
+    excessRuns: 0,
+    reasons: new Map<string, number>(),
+  };
   await fc.assert(
     fc.asyncProperty(scenario, async (input) => {
       const { tree, dirs, lanes } = materialize(input);
@@ -173,6 +180,7 @@ export async function checkSoundness(numRuns = RUNS) {
       for (const [index, { lane, decision }] of plan.lanes.entries()) {
         if (oracle(input, lanes[index]?.roots ?? [], index)) {
           counts.affected++;
+          if (decision.kind === "skip") counts.falseSkips++;
           assert.equal(decision.kind, "run", `${lane.name} skipped an affected lane`);
         } else {
           counts.unaffected++;
