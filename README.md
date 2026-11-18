@@ -79,6 +79,7 @@ The examples use tags so they are easy to read. In your own workflow, pin `actio
 - [Fail-closed guarantees](docs/fail-closed.md): every case that runs every lane or fails the step, which files the Action will read, and why workflow files need review rules.
 - [Limitations](docs/limitations.md): what v0.1 does not do.
 - [Decision records](docs/decisions/README.md): each design choice and the code that implements it.
+- [Routing evidence](docs/evidence.md) covers mutation testing, a soundness oracle and real workspace replays.
 
 ## When Turborepo or Nx is the better tool
 
