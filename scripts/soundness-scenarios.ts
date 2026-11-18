@@ -1,5 +1,7 @@
 import fc from "fast-check";
 
+export const SHARED_PATHS = 4;
+
 type Edge = [from: number, to: number];
 const fields = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"] as const;
 
@@ -12,12 +14,15 @@ export type File =
 export const scenario = fc.integer({ min: 2, max: 8 }).chain((size) => {
   const index = fc.integer({ min: 0, max: size - 1 });
   const roots = fc.uniqueArray(index, { maxLength: 3 });
-  const claim = fc.integer({ min: 0, max: size + 3 });
+  const claim = fc.integer({ min: 0, max: size + SHARED_PATHS - 1 });
   const edge = fc.tuple(index, index);
   const deps = fc.array(edge, { maxLength: size * 2 });
   const file = fc.oneof(
     { weight: 6, arbitrary: fc.record({ kind: fc.constant("package"), owner: index, note: fc.boolean() }) },
-    { weight: 3, arbitrary: fc.record({ kind: fc.constant("claim"), claim: fc.integer({ min: 0, max: 3 }) }) },
+    {
+      weight: 3,
+      arbitrary: fc.record({ kind: fc.constant("claim"), claim: fc.integer({ min: 0, max: SHARED_PATHS - 1 }) }),
+    },
     { weight: 2, arbitrary: fc.constant({ kind: "docs" }) },
     { weight: 1, arbitrary: fc.constant({ kind: "unmatched" }) },
     { weight: 1, arbitrary: fc.constant({ kind: "lockfile" }) },
@@ -73,7 +78,7 @@ export const scenario = fc.integer({ min: 2, max: 8 }).chain((size) => {
         case "graph": {
           const { reader, offset, field } = change;
           const target = (reader + offset) % size;
-          const claim = target + 4;
+          const claim = target + SHARED_PATHS;
           const added: Edge = [reader, target];
           return {
             ...input,
@@ -136,7 +141,7 @@ export function expectedRuns(input: Scenario) {
         (file.kind === "package" && file.note),
     );
   const claims = files.flatMap((file) =>
-    file.kind === "claim" ? [file.claim] : file.kind === "package" ? [file.owner + 4] : [],
+    file.kind === "claim" ? [file.claim] : file.kind === "package" ? [file.owner + SHARED_PATHS] : [],
   );
   const owners = files.flatMap((file) => (file.kind === "package" || file.kind === "manifest" ? [file.owner] : []));
   const fallback = files.some(

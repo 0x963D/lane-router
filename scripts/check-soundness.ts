@@ -4,7 +4,7 @@ import fc from "fast-check";
 import { changedFiles } from "../src/core/change.ts";
 import { planLanes } from "../src/core/plan.ts";
 import { formatProblems, loadModel, type RepoTree } from "../src/load/index.ts";
-import { expectedRuns, scenario, type File, type Scenario } from "./soundness-scenarios.ts";
+import { expectedRuns, scenario, SHARED_PATHS, type File, type Scenario } from "./soundness-scenarios.ts";
 
 const CONFIG = ".github/lanes.yml";
 const RANGE = { base: "base", head: "head" };
@@ -37,7 +37,8 @@ function materialize(input: Scenario) {
   const dirs = input.nested.map((nested, index) =>
     index > 0 && nested ? `packages/${name(0)}/children/${name(index)}` : `packages/${name(index)}`,
   );
-  const pattern = (claim: number) => (claim < 4 ? claimPath(claim) : `${dirs[claim - 4] ?? ""}/src/**`);
+  const pattern = (claim: number) =>
+    claim < SHARED_PATHS ? claimPath(claim) : `${dirs[claim - SHARED_PATHS] ?? ""}/src/**`;
   const config = {
     lanes: Object.fromEntries(
       input.lanes.map(({ roots, floor }, index) => [laneName(index), { packages: roots.map(name), floor }]),
@@ -126,6 +127,7 @@ export async function checkSoundness(numRuns = RUNS) {
           return result.ok ? result : { ok: false, error: formatProblems(result.error) };
         },
       });
+      if (plan.event.kind === "incomplete") assert.fail(JSON.stringify(plan.event.cause));
       assert.deepEqual(
         plan.lanes.map(({ lane }) => lane.name),
         input.lanes.map((_, index) => laneName(index)),
