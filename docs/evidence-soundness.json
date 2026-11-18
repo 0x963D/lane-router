@@ -1,0 +1,11 @@
+{
+  "seed": 619473,
+  "cases": 250000,
+  "required": 967320,
+  "other": 66424,
+  "excessRuns": 0,
+  "graphSensitiveCases": 169729,
+  "graphSensitiveVerdicts": 292509,
+  "graphSensitiveCasePercent": 67.89,
+  "graphSensitiveVerdictPercent": 30.24
+}
