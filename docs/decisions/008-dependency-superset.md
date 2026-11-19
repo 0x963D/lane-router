@@ -12,6 +12,8 @@ Collect candidates in a set. Every dependency key that names a workspace package
 
 A `link:`, `file:` or bare path inside a workspace package adds an edge to its deepest owner. This includes subdirectories without manifests and archives stored inside a package. A path outside every workspace package adds no path edge and is not an error. Files outside all workspace packages use path rules. An unclaimed changed file runs every lane through `unmatched: all`.
 
+For pnpm workspaces with repeated package names, keep each directory as a package placement. A reference to the shared name reaches every copy and the union of their dependencies. npm discovery reports repeated package names as an error.
+
 An unresolved `workspace:` name fails closed because pnpm refuses that installation. A `workspace:` path follows the local-path rule. pnpm 11.18.0 accepts dangling workspace paths.
 
 Expand catalogs by dependency key. Trim their names and use `default` for an empty name. Keep key lookup when an entry is absent or recursive. Empty top-level catalog mappings count as absent. Collect catalog paths relative to both the consumer and the workspace root because pnpm releases use different bases.

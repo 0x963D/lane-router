@@ -9133,6 +9133,9 @@ var require_dist = __commonJS({
   }
 });
 
+// src/bin/cli.ts
+import { once } from "node:events";
+
 // src/cli.ts
 import { parseArgs } from "node:util";
 
@@ -9206,7 +9209,7 @@ var import_posix = __toESM(require_posix(), 1);
 var OPTIONS = { dot: true };
 function compileGlobs({ match, except }) {
   if (match.length === 0) return () => false;
-  return (0, import_posix.default)([...match], { ...OPTIONS, ignore: [...except] });
+  return (0, import_posix.default)([...match], except === void 0 ? OPTIONS : { ...OPTIONS, ignore: [...except] });
 }
 function globProblem(glob2) {
   if (glob2.trim() === "") return "a glob cannot be empty";
@@ -9279,7 +9282,7 @@ function compile(input) {
     lanes,
     rows: config.rows.map(({ match, target, why }, index) => ({
       row: { index, why, target },
-      hits: compileGlobs({ match, except: [] }),
+      hits: compileGlobs({ match }),
       reach: rowReach(target)
     })),
     isDocs: compileGlobs(config.docsOnly),
@@ -9306,15 +9309,17 @@ function compileGraph(workspace, config, graph) {
     for (const name of lane.packages) addReach(roots, name, lane.name, { kind: "reads", chain: [name], graph });
   }
   const dirs = new Map(
-    [...workspace.packages.values()].map(
-      ({ name, dir }) => [dir, { name, dir, reach: closure.get(name) ?? NO_LANES }]
-    )
+    workspace.packages.map(({ name, dir }) => [dir, { name, dir, reach: closure.get(name) ?? NO_LANES }])
   );
   return { closure, roots, dirs };
 }
 function dependencyGraph(workspace, edges) {
   const graph = /* @__PURE__ */ new Map();
-  for (const { name, dependencies } of workspace.packages.values()) graph.set(name, [...dependencies]);
+  for (const { name, dependencies } of workspace.packages) {
+    const previous = graph.get(name);
+    if (previous === void 0) graph.set(name, [...dependencies]);
+    else previous.push(...dependencies);
+  }
   for (const { from, to } of edges) graph.get(from)?.push(to);
   return graph;
 }
@@ -9543,10 +9548,10 @@ function openConfig(file, source) {
 }
 var REJECT = { unknownKeys: "reject" };
 function packageIn(workspace) {
-  const names = [...workspace.packages.keys()];
+  const names = [...workspace.names.keys()];
   return refine(nonEmptyString, (name, context) => {
-    const found = workspace.packages.get(name);
-    if (found !== void 0) return found.name;
+    const found = workspace.names.get(name);
+    if (found !== void 0) return found;
     const suggestion = closest(name, names);
     return context.fail(`unknown package ${name}${suggestion === void 0 ? "" : `, did you mean ${suggestion}?`}`);
   });
@@ -9739,11 +9744,12 @@ async function discoverWorkspace(tree, discovery) {
   });
   const read = await Promise.all(dirs.map((dir) => readManifest(tree, dir)));
   const problems = read.flatMap((result) => result.ok ? [] : result.error);
-  const byName = /* @__PURE__ */ new Map();
-  for (const manifest of read.flatMap((result) => result.ok && result.value !== void 0 ? [result.value] : [])) {
-    const claimed = byName.get(manifest.name);
-    if (claimed === void 0) byName.set(manifest.name, manifest);
-    else {
+  const manifests = read.flatMap((result) => result.ok && result.value !== void 0 ? [result.value] : []);
+  const firstByName = /* @__PURE__ */ new Map();
+  for (const manifest of manifests) {
+    const claimed = firstByName.get(manifest.name);
+    if (claimed === void 0) firstByName.set(manifest.name, manifest);
+    else if (definition.value.manager === "npm") {
       problems.push({
         file: manifest.dir + IN_PACKAGE,
         at: null,
@@ -9753,11 +9759,11 @@ async function discoverWorkspace(tree, discovery) {
     }
   }
   if (isNonEmpty(problems)) return err(problems);
-  const byDir = new Map([...byName.values()].map((manifest) => [manifest.dir, manifest]));
-  const pathPackages = [...byDir.values()].sort((a, b) => b.dir.length - a.dir.length);
+  const names = new Map([...firstByName].map(([key, manifest]) => [key, manifest.name]));
+  const pathPackages = [...manifests].sort((a, b) => b.dir.length - a.dir.length);
   const collect = (key, specifier, dirs2, targets) => {
-    const keyed = byName.get(key);
-    if (keyed !== void 0) targets.add(keyed.name);
+    const keyed = names.get(key);
+    if (keyed !== void 0) targets.add(keyed);
     if (specifier.startsWith("catalog:")) {
       specifier = definition.value.catalogs.get(specifier.slice("catalog:".length).trim() || "default")?.get(key) ?? "";
       if (specifier.startsWith("catalog:")) return true;
@@ -9785,8 +9791,8 @@ async function discoverWorkspace(tree, discovery) {
       return true;
     }
     const name = protocol === "workspace:" ? /^workspace:(?:(?<alias>[^._/][^@]*)@)?(?<version>.*)$/.exec(specifier)?.groups?.alias ?? key : /^(?:[A-Za-z][A-Za-z0-9+.-]*:)?((?:@[^/]+\/)?[^@/:]+)(?:@.*)?$/.exec(specifier)?.[1];
-    const dependency = name === void 0 ? void 0 : byName.get(name);
-    if (dependency !== void 0) targets.add(dependency.name);
+    const dependency = name === void 0 ? void 0 : names.get(name);
+    if (dependency !== void 0) targets.add(dependency);
     return protocol !== "workspace:" || dependency !== void 0;
   };
   const overridden = /* @__PURE__ */ new Set();
@@ -9794,12 +9800,12 @@ async function discoverWorkspace(tree, discovery) {
     file,
     dependency: { key, specifier, where }
   } of definition.value.overrides) {
-    if (!collect(key, specifier, ["", ...byDir.keys()], overridden)) {
+    if (!collect(key, specifier, ["", ...manifests.map(({ dir }) => dir)], overridden)) {
       problems.push({ file, at: null, where, message: "does not resolve to a workspace package" });
     }
   }
-  const packages = /* @__PURE__ */ new Map();
-  for (const { name, dir, dependencies } of byName.values()) {
+  const packages = [];
+  for (const { name, dir, dependencies } of manifests) {
     const resolved = new Set(overridden);
     for (const { key, specifier, where } of dependencies) {
       if (!collect(key, specifier, [dir], resolved))
@@ -9810,9 +9816,9 @@ async function discoverWorkspace(tree, discovery) {
           message: "does not resolve to a workspace package"
         });
     }
-    packages.set(name, { name, dir, dependencies: [...resolved] });
+    packages.push({ name, dir, dependencies: [...resolved] });
   }
-  return isNonEmpty(problems) ? err(problems) : ok({ packages });
+  return isNonEmpty(problems) ? err(problems) : ok({ packages, names });
 }
 async function workspaceDefinition(tree, discovery) {
   const manifest = await readFile(tree, MANIFEST);
@@ -9862,6 +9868,7 @@ function pnpmWorkspace(source) {
       const overrides = field("overrides", emptyMapping(overrideValues));
       if (!isValid(packages) || !isValid(catalog) || !isValid(catalogs) || !isValid(overrides)) return INVALID;
       return {
+        manager: "pnpm",
         globs: globSet(packages),
         overrides: overrides.map((dependency) => ({ file: WORKSPACE_FILE, dependency })),
         catalogs: new Map([
@@ -9880,7 +9887,7 @@ function npmWorkspace(input) {
     object((field) => field("workspaces", npmWorkspaces), IGNORE),
     input
   );
-  return decoded.ok ? ok({ globs: globSet(decoded.value), catalogs: /* @__PURE__ */ new Map(), overrides: [] }) : err(jsonProblems(MANIFEST, decoded.error));
+  return decoded.ok ? ok({ manager: "npm", globs: globSet(decoded.value), catalogs: /* @__PURE__ */ new Map(), overrides: [] }) : err(jsonProblems(MANIFEST, decoded.error));
 }
 var workspaceGlob = refine(string, (raw, context) => {
   const excluded = raw.startsWith("!");
@@ -9943,7 +9950,7 @@ async function readManifest(tree, dir) {
   return ok(name === void 0 ? void 0 : { name, dir, dependencies: decoded.value.dependencies });
 }
 function jsonFile(file, source) {
-  const json = parseJson(source);
+  const json = parseJson(source.replace(/^\uFEFF/, ""));
   return json.ok ? json : err([{ file, at: json.error, where: null, message: "is not valid JSON" }]);
 }
 function jsonProblems(file, issues) {
@@ -10005,14 +10012,19 @@ var LINKS = /* @__PURE__ */ new Map([
   ["160000", "submodule"]
 ]);
 function gitRepo(cwd) {
-  const git = async (args) => {
+  const runGit = async (args, input) => {
     try {
-      const { stdout } = await execFileAsync("git", args, { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+      const run = execFileAsync("git", args, { cwd, encoding: "buffer", maxBuffer: 256 * 1024 * 1024 });
+      run.child.stdin?.on("error", () => {
+      });
+      run.child.stdin?.end(input);
+      const { stdout } = await run;
       return stdout;
     } catch (error) {
       throw new Error(`git ${args.join(" ")} failed: ${stderrOf(error)}`, { cause: error });
     }
   };
+  const git = async (args) => (await runGit(args)).toString("utf8");
   const prefix = async () => (await git(["rev-parse", "--show-prefix"])).trim();
   return {
     resolve: async (ref) => {
@@ -10024,17 +10036,32 @@ function gitRepo(cwd) {
     },
     treeAt: (commit) => {
       let listing;
-      const modes = () => listing ??= git(["ls-tree", "-r", "-z", commit]).then(parseModes);
+      const entries2 = () => listing ??= git(["ls-tree", "-r", "-z", commit]).then(parseEntries);
+      const pending = [];
+      const readBlob = (id) => new Promise((resolve, reject) => {
+        pending.push({ id, resolve, reject });
+        if (pending.length > 1) return;
+        queueMicrotask(() => {
+          const batch = pending.splice(0);
+          const ids = batch.map(({ id: id2 }) => id2);
+          void runGit(["cat-file", "--batch"], ids.join("\n") + "\n").then((output) => {
+            const blobs = parseBlobs(output, ids);
+            for (const { id: id2, resolve: resolve2 } of batch) resolve2(blobs.get(id2) ?? "");
+          }).catch((error) => {
+            for (const { reject: reject2 } of batch) reject2(error);
+          });
+        });
+      });
       return {
-        files: async () => [...(await modes()).keys()].sort(),
+        files: async () => [...(await entries2()).keys()].sort(),
         read: async (path) => {
           const refusal = pathRefusal(path);
           if (refusal !== void 0) return { kind: "refused", refusal };
-          const mode = (await modes()).get(path);
-          if (mode === void 0) return { kind: "missing" };
-          const link = LINKS.get(mode);
+          const entry = (await entries2()).get(path);
+          if (entry === void 0) return { kind: "missing" };
+          const link = LINKS.get(entry.mode);
           if (link !== void 0) return { kind: "refused", refusal: link };
-          return { kind: "file", text: await git(["cat-file", "blob", `${commit}:./${path}`]) };
+          return { kind: "file", text: await readBlob(entry.id) };
         }
       };
     },
@@ -10050,17 +10077,40 @@ function gitRepo(cwd) {
     prefix
   };
 }
-function parseModes(output) {
+function parseEntries(output) {
   return new Map(
-    split(output).map((entry) => [entry.slice(entry.indexOf("	") + 1), entry.slice(0, entry.indexOf(" "))])
+    split(output).map((entry) => {
+      const tab = entry.indexOf("	");
+      const [mode, , id] = entry.slice(0, tab).split(" ");
+      if (mode === void 0 || id === void 0) throw new Error("git returned an invalid tree entry");
+      return [entry.slice(tab + 1), { mode, id }];
+    })
   );
+}
+function parseBlobs(output, ids) {
+  const blobs = /* @__PURE__ */ new Map();
+  let start = 0;
+  for (const id of ids) {
+    const headerEnd = output.indexOf(10, start);
+    const [found, type, rawSize] = output.toString("ascii", start, headerEnd).split(" ");
+    const size = Number(rawSize);
+    const end = headerEnd + 1 + size;
+    if (found !== id || type !== "blob" || !Number.isSafeInteger(size) || size < 0 || output[end] !== 10) {
+      throw new Error(`git returned an invalid blob for ${id}`);
+    }
+    blobs.set(id, output.toString("utf8", headerEnd + 1, end));
+    start = end + 1;
+  }
+  if (start !== output.length) throw new Error("git returned extra data after the blob batch");
+  return blobs;
 }
 function split(output) {
   return output.split("\0").filter((entry) => entry !== "");
 }
 function stderrOf(error) {
   const stderr = error instanceof Error && "stderr" in error ? error.stderr : void 0;
-  return typeof stderr === "string" && stderr.trim() !== "" ? stderr.trim() : String(error);
+  const message = Buffer.isBuffer(stderr) ? stderr.toString("utf8").trim() : "";
+  return message || String(error);
 }
 
 // src/core/route.ts
@@ -10392,26 +10442,45 @@ function reasonJson(routing, reason) {
     }
   }
 }
-function explainJson(plan) {
+function* explainJson(plan) {
   const { event } = plan;
-  const lanes = plan.lanes.map((planned2) => {
-    const { decision } = planned2;
-    const common = { lane: planned2.lane.name, base: baseOf(plan), reason: reasonLine(planned2) };
-    return decision.kind === "run" ? { ...common, decision: "run", because: decision.because.map((reason) => reasonJson(event, reason)) } : { ...common, decision: "skip", because: decision.because };
-  });
-  const json = {
+  const paths = pathsOf(event);
+  const header = {
     mode: plan.mode,
     base: event.range.base,
     head: event.range.head,
-    files: pathsOf(event).length,
+    files: paths.length,
     complete: isComplete(plan),
     docsOnly: event.kind === "docs-only",
-    noneRequired: lanes.every((lane) => lane.decision === "skip"),
-    incomplete: event.kind === "incomplete" ? event.cause : null,
-    lanes,
-    paths: pathsOf(event).map(({ path, placements }) => ({ path, placements: placements.map(placementJson) }))
+    noneRequired: plan.lanes.every(({ decision }) => decision.kind === "skip"),
+    incomplete: event.kind === "incomplete" ? event.cause : null
   };
-  return JSON.stringify(json, null, 2);
+  const laneJson = (planned2) => {
+    const { decision } = planned2;
+    const common = { lane: planned2.lane.name, base: baseOf(plan), reason: reasonLine(planned2) };
+    return decision.kind === "run" ? { ...common, decision: "run", because: decision.because.map((reason) => reasonJson(event, reason)) } : { ...common, decision: "skip", because: decision.because };
+  };
+  yield JSON.stringify(header, null, 2).slice(0, -2) + ",";
+  yield* arrayProperty("lanes", plan.lanes, laneJson, ",");
+  yield* arrayProperty(
+    "paths",
+    paths,
+    ({ path, placements }) => ({ path, placements: placements.map(placementJson) }),
+    ""
+  );
+  yield "}";
+}
+function* arrayProperty(key, items, toJson, suffix) {
+  if (items.length === 0) {
+    yield `  "${key}": []${suffix}`;
+    return;
+  }
+  yield `  "${key}": [`;
+  for (const [index, item] of items.entries()) {
+    const json = JSON.stringify(toJson(item), null, 2);
+    yield `    ${json.replaceAll("\n", "\n    ")}${index === items.length - 1 ? "" : ","}`;
+  }
+  yield `  ]${suffix}`;
 }
 
 // src/cli.ts
@@ -10424,7 +10493,7 @@ ${USAGE}`);
     return 2;
   }
   if (invocation.value === "help") {
-    io.stdout(USAGE);
+    await io.stdout(USAGE);
     return 0;
   }
   const { config, json } = invocation.value;
@@ -10449,7 +10518,11 @@ ${USAGE}`);
       changes: repo.changes,
       baseGraph: baseGraphOf(tree, config, repo)
     });
-    io.stdout(json ? explainJson(plan) : explainText(plan));
+    if (json) {
+      for (const part of explainJson(plan)) await io.stdout(part);
+    } else {
+      await io.stdout(explainText(plan));
+    }
     return 0;
   } catch (error) {
     io.stderr(messageOf(error));
@@ -10484,8 +10557,10 @@ function parse(argv) {
 // src/bin/cli.ts
 process.exitCode = await runCli(process.argv.slice(2), {
   cwd: process.cwd(),
-  stdout: (text) => process.stdout.write(`${text}
-`),
+  stdout: async (text) => {
+    if (!process.stdout.write(`${text}
+`)) await once(process.stdout, "drain");
+  },
   stderr: (text) => process.stderr.write(`${text}
 `)
 });

@@ -352,28 +352,54 @@ function reasonJson(routing: Routing, reason: RunReason): RunReasonJson {
   }
 }
 
-export function explainJson(plan: Plan): string {
+export function* explainJson(plan: Plan): Generator<string> {
   const { event } = plan;
-  const lanes = plan.lanes.map((planned): LaneJson => {
+  const paths = pathsOf(event);
+  const header: Omit<PlanJson, "lanes" | "paths"> = {
+    mode: plan.mode,
+    base: event.range.base,
+    head: event.range.head,
+    files: paths.length,
+    complete: isComplete(plan),
+    docsOnly: event.kind === "docs-only",
+    noneRequired: plan.lanes.every(({ decision }) => decision.kind === "skip"),
+    incomplete: event.kind === "incomplete" ? event.cause : null,
+  };
+  const laneJson = (planned: PlannedLane): LaneJson => {
     const { decision } = planned;
     const common = { lane: planned.lane.name, base: baseOf(plan), reason: reasonLine(planned) };
     return decision.kind === "run"
       ? { ...common, decision: "run", because: decision.because.map((reason) => reasonJson(event, reason)) }
       : { ...common, decision: "skip", because: decision.because };
-  });
-  const json: PlanJson = {
-    mode: plan.mode,
-    base: event.range.base,
-    head: event.range.head,
-    files: pathsOf(event).length,
-    complete: isComplete(plan),
-    docsOnly: event.kind === "docs-only",
-    noneRequired: lanes.every((lane) => lane.decision === "skip"),
-    incomplete: event.kind === "incomplete" ? event.cause : null,
-    lanes,
-    paths: pathsOf(event).map(({ path, placements }) => ({ path, placements: placements.map(placementJson) })),
   };
-  return JSON.stringify(json, null, 2);
+  yield JSON.stringify(header, null, 2).slice(0, -2) + ",";
+  yield* arrayProperty("lanes", plan.lanes, laneJson, ",");
+  yield* arrayProperty(
+    "paths",
+    paths,
+    ({ path, placements }) => ({ path, placements: placements.map(placementJson) }),
+    "",
+  );
+  yield "}";
+}
+
+/** Keep the document parseable without building a string for all the lanes and paths at once. */
+function* arrayProperty<T>(
+  key: "lanes" | "paths",
+  items: readonly T[],
+  toJson: (item: T) => object,
+  suffix: string,
+): Generator<string> {
+  if (items.length === 0) {
+    yield `  "${key}": []${suffix}`;
+    return;
+  }
+  yield `  "${key}": [`;
+  for (const [index, item] of items.entries()) {
+    const json = JSON.stringify(toJson(item), null, 2);
+    yield `    ${json.replaceAll("\n", "\n    ")}${index === items.length - 1 ? "" : ","}`;
+  }
+  yield `  ]${suffix}`;
 }
 
 export interface Notice {

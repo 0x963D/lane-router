@@ -217,7 +217,7 @@ describe("workspace discovery", () => {
     expect(running(await planFor("acme", ["packages/ui/src/button.tsx"], manifest("external")))).toEqual(["lint"]);
   });
 
-  it.each(["catalog:", "catalog:default", "catalog:ui2"])(
+  it.each(["catalog:", "catalog:default", "catalog:ui2", "catalog: ui2 "])(
     "dereferences %s before finding its target",
     async (catalog) => {
       for (const specifier of [
@@ -236,6 +236,27 @@ describe("workspace discovery", () => {
       }
     },
   );
+
+  it("keeps a catalog dependency key without interpreting a recursive entry as a package name", async () => {
+    const files = {
+      [CONFIG]: 'lanes:\n  web:\n    packages: ["@acme/web"]\nunmatched: all\n',
+      "pnpm-workspace.yaml":
+        'packages: ["packages/*", "packages/web/e2e", "tools/*"]\ncatalog:\n  "@acme/ui": "catalog:@acme/api"\n',
+      "packages/web/package.json": JSON.stringify({ name: "@acme/web", dependencies: { "@acme/ui": "catalog:" } }),
+    };
+    expect(running(await planFor("acme", ["packages/ui/src/button.tsx"], files))).toEqual(["web"]);
+    expect(running(await planFor("acme", ["packages/api/src/user.ts"], files))).toEqual([]);
+  });
+
+  it("does not resolve absolute dependency paths relative to the consumer", async () => {
+    const files = {
+      "pnpm-workspace.yaml": 'packages: ["packages/*", "packages/web/e2e", "packages/web/local", "tools/*"]\n',
+      "packages/web/local/package.json": JSON.stringify({ name: "@acme/local" }),
+      "packages/web/package.json": JSON.stringify({ name: "@acme/web", dependencies: { kit: "link:/local" } }),
+    };
+    const plan = await planFor("acme", ["packages/web/local/index.js"], files);
+    expect(running(plan)).toEqual(["lint"]);
+  });
 
   it.each([
     "workspace:../missing",
@@ -288,6 +309,19 @@ describe("workspace discovery", () => {
     expect(running(await planFor("acme", ["packages/ui/inner/dist/index.js"], files))).toEqual(["web", "e2e", "lint"]);
     expect(running(await planFor("acme", ["packages/ui/src/button.tsx"], files))).toEqual(["lint"]);
   });
+
+  it.each(["link:local/ui", "file:local/ui", "local/ui/dist"])(
+    "follows local subdirectory specifier %s without a dot prefix",
+    async (specifier) => {
+      const files = {
+        "pnpm-workspace.yaml": 'packages: ["packages/*", "packages/web/e2e", "packages/web/local/ui", "tools/*"]\n',
+        "packages/web/local/ui/package.json": JSON.stringify({ name: "@acme/local" }),
+        "packages/web/package.json": JSON.stringify({ name: "@acme/web", dependencies: { kit: specifier } }),
+      };
+      const plan = await planFor("acme", ["packages/web/local/ui/index.js"], files);
+      expect(running(plan)).toEqual(["web", "e2e", "lint"]);
+    },
+  );
 
   it("does not match a sibling directory with the same prefix", async () => {
     const plan = await planFor("acme", ["packages/ui/src/button.tsx"], {
@@ -449,6 +483,22 @@ describe("workspace discovery", () => {
     },
   );
 
+  it("keeps the workspace target named by a nested, versioned override selector", async () => {
+    const plan = await planFor("acme", ["packages/ui/src/button.tsx"], {
+      "package.json": JSON.stringify({
+        overrides: { "parent@^1.0.0": { "@acme/ui@^3.0.0": { ".": "3.1.0" } } },
+      }),
+    });
+    expect(running(plan)).toEqual(["api", "web", "e2e", "lint"]);
+  });
+
+  it("reports an unresolved workspace override at its declaration", async () => {
+    const problems = await problemsOf("acme", {
+      "package.json": JSON.stringify({ overrides: { parent: { legacy: "workspace:@missing/ui@*" } } }),
+    });
+    expect(problems).toMatchObject([{ file: "package.json", where: "overrides.parent.legacy" }]);
+  });
+
   it("keeps valid override targets beside ignored values", async () => {
     const plan = await planFor("acme", ["packages/ui/src/button.tsx"], {
       "package.json": JSON.stringify({
@@ -462,6 +512,27 @@ describe("workspace discovery", () => {
     const plan = await planFor("acme", ["packages/web/src/app.tsx"]);
     expect(placementsOf(plan, "packages/web/src/app.tsx")).toMatchObject([{ kind: "package", package: "@acme/web" }]);
     expect(running(plan)).toEqual(["web", "e2e", "lint"]);
+  });
+
+  it("reports a workspace inventory failure before planning", async () => {
+    const files = new Map([
+      [CONFIG, 'lanes:\n  ui:\n    packages: ["@acme/ui"]\nunmatched: all\n'],
+      ["package.json", JSON.stringify({ workspaces: ["packages/*"] })],
+    ]);
+    const result = await loadModel(
+      {
+        files: () => Promise.reject(new Error("listing unavailable")),
+        read: (path) => {
+          const text = files.get(path);
+          return Promise.resolve(text === undefined ? { kind: "missing" } : { kind: "file", text });
+        },
+      },
+      CONFIG,
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: [{ file: ".", message: "cannot list the repository files: listing unavailable" }],
+    });
   });
 
   it("reports one problem naming both files when auto finds neither", async () => {
@@ -483,11 +554,35 @@ describe("workspace discovery", () => {
     ]);
   });
 
-  it("reports a duplicate package name with both directories", async () => {
-    const problems = await problemsOf("acme", { "packages/ui/package.json": JSON.stringify({ name: "@acme/api" }) });
+  it("reports a duplicate npm workspace package name with both directories", async () => {
+    const problems = await problemsOf("npm-array", {
+      "packages/two/package.json": JSON.stringify({ name: "@npm/one" }),
+    });
     expect(problems).toHaveLength(1);
-    expect(problems[0]?.file).toBe("packages/ui/package.json");
-    expect(problems[0]?.message).toContain("packages/api");
+    expect(problems[0]).toMatchObject({ file: "packages/two/package.json", where: "name" });
+    expect(problems[0]?.message).toContain("packages/one");
+  });
+
+  it("reads a pnpm test fixture with a repeated package name and includes both copies' dependencies", async () => {
+    const layout = {
+      [CONFIG]:
+        'lanes:\n  feature:\n    packages: ["@acme/check"]\n  web:\n    packages: ["@acme/web"]\nunmatched: all\n',
+      "pnpm-workspace.yaml": 'packages: ["packages/*", "fixtures/*"]\n',
+      "fixtures/first/package.json": JSON.stringify({ name: "@acme/check", devDependencies: { "@acme/api": "*" } }),
+      "fixtures/second/package.json": JSON.stringify({ name: "@acme/check", devDependencies: { "@acme/ui": "*" } }),
+    };
+    for (const path of ["fixtures/first/check.ts", "fixtures/second/check.ts", "packages/api/src/user.ts"]) {
+      expect(running(await planFor("acme", [path], layout))).toEqual(["feature"]);
+    }
+    expect(running(await planFor("acme", ["packages/ui/src/button.tsx"], layout))).toEqual(["feature", "web"]);
+  });
+
+  it("reads UTF-8 BOMs at the start of root and workspace package manifests", async () => {
+    const plan = await planFor("npm-array", ["packages/two/index.js"], {
+      "package.json": '\uFEFF{"workspaces":["packages/*"]}',
+      "packages/one/package.json": '\uFEFF{"name":"@npm/one","devDependencies":{"@npm/two":"*"}}',
+    });
+    expect(running(plan)).toEqual(["one", "two"]);
   });
 
   it("reports a manifest that is not valid JSON", async () => {

@@ -36,6 +36,7 @@ jobs:
       - run: npm run lint
       - run: npm run format:check
       - run: npm test
+      - run: npm run test:soundness:mutations
       - run: npm run build
       - name: Check that dist matches the source
         run: git diff --exit-code -- dist

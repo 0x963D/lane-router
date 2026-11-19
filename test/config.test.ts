@@ -32,11 +32,11 @@ unmatched: all
 
   it("reports workspace and config problems together", async () => {
     const problems = await problemsOf("acme", {
-      "packages/ui/package.json": JSON.stringify({ name: "@acme/api" }),
+      "packages/ui/package.json": JSON.stringify({ name: "@acme/ui", devDependencies: { broken: 1 } }),
       [CONFIG]: `${lanes}workspace:\n  edgs: []\nunmatched: all\n`,
     });
     expect(problems.map(({ file, where }) => ({ file, where }))).toEqual([
-      { file: "packages/ui/package.json", where: "name" },
+      { file: "packages/ui/package.json", where: "devDependencies.broken" },
       { file: CONFIG, where: "workspace.edgs" },
     ]);
   });

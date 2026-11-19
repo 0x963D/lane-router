@@ -1,6 +1,6 @@
 {
   "name": "lane-router",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "lane-router works out which CI test lanes a change can affect in a JavaScript monorepo, so a workflow can skip the rest.",
   "license": "MIT",
   "author": "Dan Doca",
@@ -18,6 +18,9 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
+    "test:mutation": "node scripts/test-mutation.js",
+    "test:soundness": "node scripts/check-soundness.ts",
+    "test:soundness:mutations": "node scripts/check-soundness-mutations.js",
     "build": "node scripts/build.ts",
     "demo": "npm run build && node scripts/demo.ts",
     "check:linking": "node scripts/check-linking.ts"
@@ -29,10 +32,14 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@streamparser/json": "0.0.26",
+    "@stryker-mutator/core": "10.1.1",
+    "@stryker-mutator/vitest-runner": "10.1.1",
     "@types/node": "^24.19.2",
     "@types/picomatch": "^4.0.3",
     "esbuild": "^0.28.2",
     "eslint": "^10.15.0",
+    "fast-check": "4.10.2",
     "prettier": "^3.10.1",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.72.2",
