@@ -100,6 +100,41 @@ describe("the compare API", () => {
     expect(run.outputs.complete).toBe("true");
   });
 
+  it("routes the tested destination when the base moved a file edited by the pull request", async () => {
+    const repo = gitFixture(ACME, tempDir());
+    const from = "packages/ui/src/moved.ts";
+    const to = "packages/api/src/moved.ts";
+    const original = "export const value = 1;\\n";
+    repo.write(from, original);
+    const fork = repo.commit("Add a file to edit");
+    repo.git("switch", "-c", "patch");
+    repo.write(from, "export const value = 2;\\n");
+    const head = repo.commit("Edit the file");
+    repo.git("switch", "main");
+    repo.move(from, to);
+    const base = repo.commit("Move the file into the API package");
+    repo.git("merge", "--no-ff", "--no-edit", "patch");
+    const merge = repo.git("rev-parse", "HEAD");
+    expect(repo.git("diff", "--name-only", base, merge)).toBe(to);
+
+    const github = await fakeGitHub();
+    compare(github, base, head, [from], { status: "diverged", mergeBase: fork });
+    compare(github, base, merge, [to]);
+    const event = {
+      name: "pull_request",
+      payload: { pull_request: { base: { sha: base }, head: { sha: head }, changed_files: 1 } },
+    };
+    const run = await runAction({ workspace: repo.dir, event, github, sha: merge });
+    expect(run.outputs.api).toBe("run");
+    expect(run.outputs.complete).toBe("true");
+    expect(github.requests).toEqual([`/repos/acme/mono/compare/${base}...${merge}`]);
+
+    repo.git("switch", "--detach", head);
+    const otherCheckout = await runAction({ workspace: repo.dir, event, github, sha: merge });
+    expect(parsed(otherCheckout.outputs.lanes)).toEqual(ALL);
+    expect(otherCheckout.outputs.complete).toBe("false");
+  });
+
   it("fails closed when the listing differs from the pull request's changed_files", async () => {
     const github = await fakeGitHub();
     compare(github, BASE, HEAD, ["README.md", "docs/guide.md"]);

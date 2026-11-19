@@ -59,6 +59,7 @@ export async function runAction(options: {
   readonly inputs?: Readonly<Record<string, string>>;
   readonly event: ActionEvent;
   readonly github?: FakeGitHub;
+  readonly sha?: string;
   readonly process?: "child" | "in-process";
 }): Promise<ActionRun> {
   const scratch = tempDir();
@@ -89,7 +90,7 @@ export async function runAction(options: {
     GITHUB_OUTPUT: files.output,
     GITHUB_STEP_SUMMARY: files.summary,
     GITHUB_REPOSITORY: REPOSITORY,
-    GITHUB_SHA: "f".repeat(40),
+    GITHUB_SHA: options.sha ?? (options.event.name === "pull_request" ? "" : "f".repeat(40)),
     GITHUB_API_URL: options.github?.url ?? "http://127.0.0.1:9",
   });
 

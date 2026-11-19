@@ -44,8 +44,11 @@ interface Invocation {
   readonly range: Range;
   readonly source:
     | { readonly kind: "files"; readonly files: ChangedFiles }
-    /** `expectedCount` is the pull request's `changed_files` when the range is the event's own. */
-    | { readonly kind: "compare"; readonly expectedCount: number | null };
+    | {
+        readonly kind: "compare";
+        readonly expectedCount: number | null;
+        readonly mergeCheckout: boolean;
+      };
   readonly github: { readonly apiUrl: string; readonly repository: string; readonly token: string };
 }
 
@@ -134,7 +137,17 @@ function toInvocation(inputs: Inputs, event: GitHubEvent, env: NodeJS.ProcessEnv
   const fromEvent = eventDefaults(event);
   const mode = inputs.mode ?? fromEvent?.mode;
   const base = inputs.base === "" ? fromEvent?.base : inputs.base;
-  const head = inputs.head === "" ? (fromEvent?.head ?? env.GITHUB_SHA ?? "") : inputs.head;
+  const ownRange = inputs.base === "" && inputs.head === "";
+  const mergeHead =
+    event.kind === "pull_request" &&
+    env.GITHUB_EVENT_NAME === "pull_request" &&
+    ownRange &&
+    inputs.files === "" &&
+    env.GITHUB_SHA &&
+    env.GITHUB_SHA !== event.head
+      ? env.GITHUB_SHA
+      : undefined;
+  const head = inputs.head || mergeHead || fromEvent?.head || env.GITHUB_SHA || "";
   const repository = env.GITHUB_REPOSITORY ?? "";
   const eventText = event.kind === "other" ? `a ${event.name || "manual"} event` : `a ${event.kind} event`;
 
@@ -154,7 +167,6 @@ function toInvocation(inputs: Inputs, event: GitHubEvent, env: NodeJS.ProcessEnv
   ];
   if (mode === undefined || failures.some((failure) => failure !== false)) return INVALID;
 
-  const ownRange = inputs.base === "" && inputs.head === "";
   return {
     root: resolve(inputs.workingDirectory),
     config: inputs.config,
@@ -162,7 +174,12 @@ function toInvocation(inputs: Inputs, event: GitHubEvent, env: NodeJS.ProcessEnv
     range: { base: base ?? null, head },
     source:
       inputs.files === ""
-        ? { kind: "compare", expectedCount: event.kind === "pull_request" && ownRange ? event.changedFiles : null }
+        ? {
+            kind: "compare",
+            expectedCount:
+              event.kind === "pull_request" && ownRange && mergeHead === undefined ? event.changedFiles : null,
+            mergeCheckout: mergeHead !== undefined,
+          }
         : {
             kind: "files",
             files: changedFiles(
@@ -212,8 +229,18 @@ function requestFor(invocation: Invocation, head: RepoTree): PlanRequest {
   const changes: ChangeSource =
     source.kind === "files"
       ? () => Promise.resolve(source.files)
-      : async (requested) =>
-          github.compare(requested, { mode, expectedCount: source.expectedCount, under: await under() });
+      : async (requested) => {
+          if (source.mergeCheckout && (await repo.resolve("HEAD")) !== requested.head)
+            throw new Error(
+              "the checkout is not the pull request merge commit; set base and head for a custom checkout",
+            );
+          return github.compare(requested, {
+            mode,
+            mergeCheckout: source.mergeCheckout,
+            expectedCount: source.expectedCount,
+            under: await under(),
+          });
+        };
   return { mode, range, changes, baseGraph: baseGraphOf(head, invocation.config, repo) };
 }
 

@@ -9,7 +9,8 @@ It also runs every lane when it cannot trust the list of changed files. Then `co
 
 - a routing config or package manifest change whose base model cannot be built, because there is no base commit, the commit was not fetched, its config or a manifest does not parse, a name in the base config does not resolve there, or reading it failed,
 - a compare listing of 300 or more files, which is the most the endpoint returns,
-- a pull request whose compare listing differs from its `changed_files` count,
+- a pull request head whose compare listing differs from its `changed_files` count when routing the default branch diff,
+- a default pull request merge checkout that does not match `GITHUB_SHA` or does not extend the pull request base,
 - a push with no `before` commit to compare against, such as the first push of a branch, whose `before` is all zeros,
 - a push whose head does not extend its base, such as a force push,
 - a compare status other than `ahead`, `identical`, `behind` or `diverged`,

@@ -76,4 +76,6 @@ Pin `actions/checkout` and this action to full commit SHAs, following [GitHub's 
 
 The token needs only `contents: read`, which the compare endpoint requires.
 
-The Action reads the config and the workspace from the checked-out tree. On a pull request the default checkout is the merge commit, which is also what CI tests.
+The Action reads the config and the workspace from the checked-out tree. On a `pull_request` event with the default checkout and no range overrides, it compares the pull request base to the merge commit in `GITHUB_SHA`. This includes paths moved by the merge. The merge commit must match the checkout and extend the pull request base. The pull request file count describes the branch diff, so it is checked only when the default range uses the pull request's own head.
+
+If your workflow checks out the pull request head or another revision, set `base` and `head` to the range you want to route.

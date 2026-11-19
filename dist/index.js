@@ -29832,12 +29832,13 @@ function githubRepo(options) {
     return decoded.value;
   };
   return {
-    compare: async (range, { mode, expectedCount, under }) => {
+    compare: async (range, { mode, mergeCheckout, expectedCount, under }) => {
       if (range.base === null) return incomplete({ kind: "no-base" });
       const path = `/compare/${encodeURIComponent(range.base)}...${encodeURIComponent(range.head)}`;
       const { status, mergeBase, files: listed } = await get(path, compareResponse);
       const files = changedFiles(listed, { under, mergeBase });
       const extendsBase = (status === "ahead" || status === "identical") && mergeBase === range.base;
+      if (mergeCheckout && !extendsBase) throw new Error("the pull request merge commit does not extend its base");
       if (mode === "push" && !extendsBase) {
         return incomplete({ kind: "not-fast-forward", status, mergeBase }, files.paths);
       }
@@ -30205,7 +30206,9 @@ function toInvocation(inputs, event, env, context) {
   const fromEvent = eventDefaults(event);
   const mode = inputs.mode ?? fromEvent?.mode;
   const base = inputs.base === "" ? fromEvent?.base : inputs.base;
-  const head = inputs.head === "" ? fromEvent?.head ?? env.GITHUB_SHA ?? "" : inputs.head;
+  const ownRange = inputs.base === "" && inputs.head === "";
+  const mergeHead = event.kind === "pull_request" && env.GITHUB_EVENT_NAME === "pull_request" && ownRange && inputs.files === "" && env.GITHUB_SHA && env.GITHUB_SHA !== event.head ? env.GITHUB_SHA : void 0;
+  const head = inputs.head || mergeHead || fromEvent?.head || env.GITHUB_SHA || "";
   const repository = env.GITHUB_REPOSITORY ?? "";
   const eventText = event.kind === "other" ? `a ${event.name || "manual"} event` : `a ${event.kind} event`;
   const failures = [
@@ -30216,13 +30219,16 @@ function toInvocation(inputs, event, env, context) {
     inputs.files === "" && repository === "" && context.fail("GITHUB_REPOSITORY is not set, so the compare API cannot be called")
   ];
   if (mode === void 0 || failures.some((failure) => failure !== false)) return INVALID;
-  const ownRange = inputs.base === "" && inputs.head === "";
   return {
     root: resolve(inputs.workingDirectory),
     config: inputs.config,
     mode,
     range: { base: base ?? null, head },
-    source: inputs.files === "" ? { kind: "compare", expectedCount: event.kind === "pull_request" && ownRange ? event.changedFiles : null } : {
+    source: inputs.files === "" ? {
+      kind: "compare",
+      expectedCount: event.kind === "pull_request" && ownRange && mergeHead === void 0 ? event.changedFiles : null,
+      mergeCheckout: mergeHead !== void 0
+    } : {
       kind: "files",
       files: changedFiles(
         lines(inputs.files).map((path) => ({ path, previousPath: null })),
@@ -30254,7 +30260,18 @@ function requestFor(invocation, head) {
   const github = githubRepo(invocation.github);
   const repo = gitRepo(invocation.root);
   const under = () => relative2(process.cwd(), invocation.root) === "" ? Promise.resolve("") : repo.prefix();
-  const changes = source.kind === "files" ? () => Promise.resolve(source.files) : async (requested) => github.compare(requested, { mode, expectedCount: source.expectedCount, under: await under() });
+  const changes = source.kind === "files" ? () => Promise.resolve(source.files) : async (requested) => {
+    if (source.mergeCheckout && await repo.resolve("HEAD") !== requested.head)
+      throw new Error(
+        "the checkout is not the pull request merge commit; set base and head for a custom checkout"
+      );
+    return github.compare(requested, {
+      mode,
+      mergeCheckout: source.mergeCheckout,
+      expectedCount: source.expectedCount,
+      under: await under()
+    });
+  };
   return { mode, range, changes, baseGraph: baseGraphOf(head, invocation.config, repo) };
 }
 async function publish(plan) {

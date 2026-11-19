@@ -95,7 +95,12 @@ export interface GitHubRepo {
    */
   compare(
     range: Range,
-    options: { readonly mode: Mode; readonly expectedCount: number | null; readonly under: string },
+    options: {
+      readonly mode: Mode;
+      readonly mergeCheckout?: boolean;
+      readonly expectedCount: number | null;
+      readonly under: string;
+    },
   ): Promise<ChangedFiles>;
 }
 
@@ -123,12 +128,13 @@ export function githubRepo(options: {
   };
 
   return {
-    compare: async (range, { mode, expectedCount, under }) => {
+    compare: async (range, { mode, mergeCheckout, expectedCount, under }) => {
       if (range.base === null) return incomplete({ kind: "no-base" });
       const path = `/compare/${encodeURIComponent(range.base)}...${encodeURIComponent(range.head)}`;
       const { status, mergeBase, files: listed } = await get(path, compareResponse);
       const files = changedFiles(listed, { under, mergeBase });
       const extendsBase = (status === "ahead" || status === "identical") && mergeBase === range.base;
+      if (mergeCheckout && !extendsBase) throw new Error("the pull request merge commit does not extend its base");
       if (mode === "push" && !extendsBase) {
         return incomplete({ kind: "not-fast-forward", status, mergeBase }, files.paths);
       }
