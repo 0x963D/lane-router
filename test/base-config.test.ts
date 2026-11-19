@@ -4,7 +4,7 @@ import { directoryTree } from "../src/adapters/directory.ts";
 import { changedFiles } from "../src/core/change.ts";
 import { planLanes } from "../src/core/plan.ts";
 import { baseGraphOf, loadModel } from "../src/load/index.ts";
-import { jsonObject, runAction } from "./support/action.ts";
+import { jsonObject, pullRequestCheckout, runAction } from "./support/action.ts";
 import { explainJson } from "./support/cli.ts";
 import { compare, fakeGitHub } from "./support/fake-github.ts";
 import { fixtureDir, tempDir } from "./support/fixtures.ts";
@@ -62,26 +62,20 @@ describe("base and head routing configs", () => {
   });
 
   it("publishes removed lanes in every Action output and the summary", async () => {
-    const repo = gitFixture(ACME, tempDir());
-    repo.write(
-      CONFIG,
-      ORIGINAL.replace(/ {2}web:\r?\n {4}packages:.*\r?\n {2}e2e:\r?\n {4}packages:.*\r?\n/, "").replace(
-        "lanes: [web]",
-        "lanes: []",
-      ),
-    );
-    repo.write(BUTTON, "export const Button = 'broken';\n");
-    const head = repo.commit("Remove lanes and change the button");
-    const github = await fakeGitHub();
-    compare(github, repo.base, head, [CONFIG, BUTTON], { mergeBase: repo.base });
-    const run = await runAction({
-      workspace: repo.root,
-      event: {
-        name: "pull_request",
-        payload: { pull_request: { base: { sha: repo.base }, head: { sha: head }, changed_files: 2 } },
-      },
-      github,
+    const { base, merge, runner } = pullRequestCheckout(gitFixture(ACME, tempDir()), (repo) => {
+      repo.write(
+        CONFIG,
+        ORIGINAL.replace(/ {2}web:\r?\n {4}packages:.*\r?\n {2}e2e:\r?\n {4}packages:.*\r?\n/, "").replace(
+          "lanes: [web]",
+          "lanes: []",
+        ),
+      );
+      repo.write(BUTTON, "export const Button = 'broken';\n");
+      return repo.commit("Remove lanes and change the button");
     });
+    const github = await fakeGitHub();
+    compare(github, base, merge, [CONFIG, BUTTON]);
+    const run = await runAction({ ...runner(2), github });
     expect(run.exitCode).toBe(0);
     expect(run.outputs.complete).toBe("true");
     expect(JSON.parse(run.outputs.lanes ?? "null")).toEqual(["api", "lint", "web", "e2e"]);

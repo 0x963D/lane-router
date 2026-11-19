@@ -6,7 +6,8 @@ These are not built:
 - Dependencies come from manifests and configured edges. Imports in source files are not read.
 - `unmatched` accepts only `all`.
 - A compare listing of 300 or more files fails closed. Paging through a larger diff would let such a change skip lanes safely.
-- A `merge_group` event needs `mode`, `base` and `head` set by hand.
+- A depth-1 merge checkout has enough history for the first-parent compare. If a routing config or package manifest changes, use `fetch-depth: 0` to give the Action the base model too.
+- A `merge_group` event needs explicit `mode` and `base` inputs for a compare. Supply `head` if the checkout differs from `GITHUB_SHA`.
 - There is no Marketplace listing yet.
 
 ## Dependency boundaries

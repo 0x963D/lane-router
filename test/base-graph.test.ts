@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PlanJson } from "../src/render.ts";
-import { jsonObject, runAction, type ActionEvent } from "./support/action.ts";
+import { jsonObject, pullRequestCheckout, runAction, type ActionEvent } from "./support/action.ts";
 import { explainJson, runningLanes } from "./support/cli.ts";
 import { compare, fakeGitHub } from "./support/fake-github.ts";
 import { fixtureCopy, fixtureDir, tempDir } from "./support/fixtures.ts";
@@ -17,7 +17,6 @@ const ACME = fixtureDir("acme");
 const ALL = ["api", "web", "e2e", "lint"];
 const BASE = "a".repeat(40);
 const HEAD = "b".repeat(40);
-const UNFETCHED = "c".repeat(40);
 const WEB_MANIFEST = "packages/web/package.json";
 const UI_MANIFEST = "packages/ui/package.json";
 const BUTTON = "packages/ui/src/button.tsx";
@@ -38,6 +37,13 @@ function pullRequest(changedFiles: number): ActionEvent {
     name: "pull_request",
     payload: { pull_request: { base: { sha: BASE }, head: { sha: HEAD }, changed_files: changedFiles } },
   };
+}
+
+function shallowPrCheckout() {
+  const { repo, base, merge, runner } = pullRequestCheckout(acmeRepo());
+  const workspace = tempDir();
+  repo.git("clone", "--depth", "1", "--no-local", repo.dir, workspace);
+  return { base, merge, runner: (count: number) => ({ ...runner(count), workspace }) };
 }
 
 /** How each placement of `path` reached `lane`: the package chain, and the graph it was found in. */
@@ -84,28 +90,28 @@ describe("a package manifest change", () => {
   });
 
   it("is judged in the Action against the base graph at the compare API's merge base", async () => {
-    const repo = acmeRepo();
-    renameUi(repo);
+    const { repo, base, head, runner } = pullRequestCheckout(acmeRepo(), renameUi);
+    repo.git("switch", "--detach", head);
     const github = await fakeGitHub();
-    compare(github, BASE, HEAD, [UI_MANIFEST, BUTTON], { mergeBase: repo.base });
+    compare(github, base, head, [UI_MANIFEST, BUTTON], { status: "diverged", mergeBase: repo.base });
 
-    const run = await runAction({ workspace: repo.dir, event: pullRequest(2), github });
+    const run = await runAction({ ...runner(2), github });
     expect(run.exitCode).toBe(0);
     expect(JSON.parse(run.outputs.lanes ?? "null")).toEqual(["web", "e2e", "lint"]);
     expect(run.outputs.complete).toBe("true");
   });
 
   it("runs every lane when the merge base was not fetched", async () => {
-    const repo = acmeRepo();
+    const { base, merge, runner } = shallowPrCheckout();
     const github = await fakeGitHub();
-    compare(github, BASE, HEAD, [WEB_MANIFEST], { mergeBase: UNFETCHED });
+    compare(github, base, merge, [WEB_MANIFEST]);
 
-    const run = await runAction({ workspace: repo.dir, event: pullRequest(1), github });
+    const run = await runAction({ ...runner(1), github });
     expect(run.exitCode).toBe(0);
     expect(JSON.parse(run.outputs.lanes ?? "null")).toEqual(ALL);
     expect(run.outputs.complete).toBe("false");
     expect(jsonObject(run.outputs.reasons).api).toBe(
-      "fail closed, the base routing model at ccccccc cannot be built: " +
+      `fail closed, the base routing model at ${base.slice(0, 7)} cannot be built: ` +
         "the commit is not in the local repository, so fetch more history, for example with fetch-depth: 0",
     );
     expect(run.annotations.map(({ level }) => level)).toEqual(["warning"]);
@@ -130,11 +136,11 @@ describe("a package manifest change", () => {
 
 describe("a change with no package manifest", () => {
   it("never reads the base graph, so a shallow checkout routes it precisely", async () => {
-    const repo = acmeRepo();
+    const { base, merge, runner } = shallowPrCheckout();
     const github = await fakeGitHub();
-    compare(github, BASE, HEAD, [BUTTON], { mergeBase: UNFETCHED });
+    compare(github, base, merge, [BUTTON]);
 
-    const run = await runAction({ workspace: repo.dir, event: pullRequest(1), github });
+    const run = await runAction({ ...runner(1), github });
     expect(JSON.parse(run.outputs.lanes ?? "null")).toEqual(["web", "e2e", "lint"]);
     expect(run.outputs.complete).toBe("true");
   });

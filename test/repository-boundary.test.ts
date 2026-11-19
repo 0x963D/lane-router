@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { directoryTree } from "../src/adapters/directory.ts";
 import { loadModel } from "../src/load/index.ts";
-import { runAction, type ActionEvent } from "./support/action.ts";
+import { pullRequestCheckout, runAction, type ActionEvent } from "./support/action.ts";
 import { cli } from "./support/cli.ts";
 import { fakeGitHub } from "./support/fake-github.ts";
 import { fixtureDir, tempDir } from "./support/fixtures.ts";
@@ -197,13 +197,14 @@ describe("parse errors", () => {
   });
 
   it("never quote a GitHub response body that is not JSON", async () => {
+    const { base, merge, runner } = pullRequestCheckout(gitFixture(ACME, tempDir()));
     const github = await fakeGitHub();
-    github.on(`/compare/${BASE}...${HEAD}`, { text: SENTINEL });
-    const run = await runAction({ workspace: ACME, event: PULL_REQUEST, github });
+    github.on(`/compare/${base}...${merge}`, { text: SENTINEL });
+    const run = await runAction({ ...runner(1), github });
     expect(run.exitCode).toBe(0);
     expect(run.outputs.complete).toBe("false");
     expect(run.annotations.map(({ message }) => message)).toEqual([
-      `lane-router failed closed and selected every lane: GET /compare/${BASE}...${HEAD} returned a body that is not valid JSON`,
+      `lane-router failed closed and selected every lane: GET /compare/${base}...${merge} returned a body that is not valid JSON`,
     ]);
     expect(JSON.stringify(run)).not.toContain(SENTINEL);
   });

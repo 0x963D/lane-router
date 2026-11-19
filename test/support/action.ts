@@ -8,6 +8,7 @@ import { parse } from "yaml";
 import { runAction as action } from "../../src/action.ts";
 import { tempDir } from "./fixtures.ts";
 import { REPOSITORY, type FakeGitHub } from "./fake-github.ts";
+import type { GitFixture } from "./git-fixture.ts";
 
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const ENTRY = join(ROOT, "src/bin/action.ts");
@@ -22,6 +23,29 @@ export interface ActionRun {
 /** `text` is written to the event file as is, for a payload that is not JSON. */
 export type ActionEvent =
   { readonly name: string; readonly payload: unknown } | { readonly name: string; readonly text: string };
+
+export function pullRequestCheckout(repo: GitFixture, edit = (repo: GitFixture) => repo.commit("Advance the PR head")) {
+  repo.git("switch", "-c", "patch");
+  const head = edit(repo);
+  repo.git("switch", "main");
+  const base = repo.commit("Advance the base");
+  repo.git("merge", "--no-ff", "--no-edit", "patch");
+  const merge = repo.git("rev-parse", "HEAD");
+  return {
+    repo,
+    base,
+    head,
+    merge,
+    runner: (changedFiles: number) => ({
+      workspace: repo.dir,
+      event: {
+        name: "pull_request",
+        payload: { pull_request: { base: { sha: base }, head: { sha: head }, changed_files: changedFiles } },
+      },
+      sha: merge,
+    }),
+  };
+}
 
 function isMapping(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -59,6 +83,7 @@ export async function runAction(options: {
   readonly inputs?: Readonly<Record<string, string>>;
   readonly event: ActionEvent;
   readonly github?: FakeGitHub;
+  readonly sha?: string;
   readonly process?: "child" | "in-process";
 }): Promise<ActionRun> {
   const scratch = tempDir();
@@ -89,7 +114,7 @@ export async function runAction(options: {
     GITHUB_OUTPUT: files.output,
     GITHUB_STEP_SUMMARY: files.summary,
     GITHUB_REPOSITORY: REPOSITORY,
-    GITHUB_SHA: "f".repeat(40),
+    GITHUB_SHA: options.sha ?? "f".repeat(40),
     GITHUB_API_URL: options.github?.url ?? "http://127.0.0.1:9",
   });
 

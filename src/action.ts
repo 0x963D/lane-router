@@ -42,9 +42,15 @@ interface Invocation {
   readonly config: string;
   readonly mode: Mode;
   readonly range: Range;
+  readonly explicitHead: boolean;
+  readonly pullRequest?: {
+    readonly head: string;
+    readonly eventSha: string | undefined;
+    readonly target: boolean;
+    readonly defaultBase: boolean;
+  };
   readonly source:
     | { readonly kind: "files"; readonly files: ChangedFiles }
-    /** `expectedCount` is the pull request's `changed_files` when the range is the event's own. */
     | { readonly kind: "compare"; readonly expectedCount: number | null };
   readonly github: { readonly apiUrl: string; readonly repository: string; readonly token: string };
 }
@@ -62,7 +68,7 @@ export async function runAction(): Promise<void> {
       core.setFailed(formatProblems(model.error));
       return;
     }
-    await publish(await planLanes(model.value, requestFor(invocation.value, head)));
+    await publish(await planLanes(model.value, await requestFor(invocation.value, head)));
   } catch (error) {
     core.setFailed(messageOf(error));
   }
@@ -134,7 +140,18 @@ function toInvocation(inputs: Inputs, event: GitHubEvent, env: NodeJS.ProcessEnv
   const fromEvent = eventDefaults(event);
   const mode = inputs.mode ?? fromEvent?.mode;
   const base = inputs.base === "" ? fromEvent?.base : inputs.base;
-  const head = inputs.head === "" ? (fromEvent?.head ?? env.GITHUB_SHA ?? "") : inputs.head;
+  const explicitHead = inputs.head !== "";
+  const ownRange = inputs.base === "" && !explicitHead;
+  const pullRequest =
+    event.kind === "pull_request"
+      ? {
+          head: event.head,
+          eventSha: env.GITHUB_SHA,
+          target: env.GITHUB_EVENT_NAME === "pull_request_target",
+          defaultBase: inputs.base === "",
+        }
+      : undefined;
+  const head = inputs.head || fromEvent?.head || env.GITHUB_SHA || "";
   const repository = env.GITHUB_REPOSITORY ?? "";
   const eventText = event.kind === "other" ? `a ${event.name || "manual"} event` : `a ${event.kind} event`;
 
@@ -154,15 +171,19 @@ function toInvocation(inputs: Inputs, event: GitHubEvent, env: NodeJS.ProcessEnv
   ];
   if (mode === undefined || failures.some((failure) => failure !== false)) return INVALID;
 
-  const ownRange = inputs.base === "" && inputs.head === "";
   return {
     root: resolve(inputs.workingDirectory),
     config: inputs.config,
     mode,
     range: { base: base ?? null, head },
+    explicitHead,
+    ...(pullRequest === undefined ? {} : { pullRequest }),
     source:
       inputs.files === ""
-        ? { kind: "compare", expectedCount: event.kind === "pull_request" && ownRange ? event.changedFiles : null }
+        ? {
+            kind: "compare",
+            expectedCount: event.kind === "pull_request" && ownRange ? event.changedFiles : null,
+          }
         : {
             kind: "files",
             files: changedFiles(
@@ -199,22 +220,79 @@ function lines(text: string): string[] {
     .filter((line) => line !== "");
 }
 
-/**
- * Builds closures only. Every read happens inside `planLanes`, where a failure fails closed. The
- * checkout holds only head, so a base graph is read from git in `working-directory`'s repository.
- */
-function requestFor(invocation: Invocation, head: RepoTree): PlanRequest {
-  const { source, mode, range } = invocation;
+async function requestFor(invocation: Invocation, head: RepoTree): Promise<PlanRequest> {
+  const { source, mode, pullRequest, explicitHead } = invocation;
+  let { range } = invocation;
   const github = githubRepo(invocation.github);
   const repo = gitRepo(invocation.root);
+  const baseGraph = baseGraphOf(head, invocation.config, repo);
   const under = (): Promise<string> =>
     relative(process.cwd(), invocation.root) === "" ? Promise.resolve("") : repo.prefix();
+
+  let branchDiff = false;
+  if (explicitHead || (source.kind === "compare" && range.base !== null)) {
+    try {
+      const checkout = await repo.resolve("HEAD");
+      if (checkout === undefined)
+        throw new Error("cannot resolve HEAD, so check out the repository before running lane-router");
+      if (explicitHead) {
+        const supplied = range.head === checkout ? checkout : await repo.resolve(range.head);
+        if (supplied === undefined) {
+          throw new Error(
+            "cannot resolve the head input, so supply HEAD or a revision that is available in the checkout",
+          );
+        }
+        if (supplied !== checkout) {
+          throw new Error(
+            "the head input does not match the checkout, so check out that commit or set head to the tested revision",
+          );
+        }
+      } else if (pullRequest === undefined) {
+        if (checkout !== range.head) {
+          throw new Error(
+            "the checkout does not match the event's head, so check out that commit or set head to the tested revision",
+          );
+        }
+      } else if (!pullRequest.target && checkout !== pullRequest.eventSha && checkout !== pullRequest.head) {
+        throw new Error(
+          "the checkout matches neither the pull request merge commit nor its head, so set head to the tested revision",
+        );
+      }
+      const targetBase = pullRequest?.target === true && checkout === pullRequest.eventSha;
+      branchDiff = targetBase || checkout === pullRequest?.head;
+      if (explicitHead || !targetBase) {
+        let { base } = range;
+        if (source.kind === "compare" && pullRequest?.defaultBase && !branchDiff) {
+          const parents = await repo.parentsOf(checkout);
+          const [first, second] = parents;
+          if (parents.length === 2 && first !== undefined && second === pullRequest.head) base = first;
+        }
+        range = { base, head: checkout };
+      }
+    } catch (error) {
+      return {
+        mode,
+        range,
+        baseGraph,
+        changes: () => {
+          throw error;
+        },
+      };
+    }
+  }
+
   const changes: ChangeSource =
     source.kind === "files"
       ? () => Promise.resolve(source.files)
       : async (requested) =>
-          github.compare(requested, { mode, expectedCount: source.expectedCount, under: await under() });
-  return { mode, range, changes, baseGraph: baseGraphOf(head, invocation.config, repo) };
+          github.compare(requested, {
+            mode,
+            requireBaseAncestor: pullRequest !== undefined && !branchDiff,
+            expectedCount: branchDiff ? source.expectedCount : null,
+            resolveBase: (ref) => repo.resolve(ref),
+            under: await under(),
+          });
+  return { mode, range, changes, baseGraph };
 }
 
 /** Renders everything before the first write, so a rendering bug cannot leave half the outputs set. */

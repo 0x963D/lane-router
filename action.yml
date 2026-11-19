@@ -13,10 +13,10 @@ inputs:
     description: The repository root to read the config and the workspace from.
     default: "."
   base:
-    description: The base commit. Defaults to the event's base.
+    description: The base revision. Defaults to the verified PR merge's first parent or the event base.
     default: ""
   head:
-    description: The head commit. Defaults to the event's head.
+    description: The head revision, which must resolve to the checkout when supplied. See the Action inputs guide for event defaults.
     default: ""
   files:
     description: Newline-separated changed paths, relative to working-directory and trusted as complete. Skips the compare API.

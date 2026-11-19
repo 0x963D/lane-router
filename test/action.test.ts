@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { jsonObject, runAction, type ActionEvent } from "./support/action.ts";
+import { jsonObject, pullRequestCheckout, runAction, type ActionEvent } from "./support/action.ts";
 import { compare, fakeGitHub } from "./support/fake-github.ts";
 import { fixtureCopy, fixtureDir, tempDir } from "./support/fixtures.ts";
 import { gitFixture } from "./support/git-fixture.ts";
@@ -90,20 +90,34 @@ describe("the files input", () => {
   });
 });
 
+function prCheckout(options: { at?: string } = {}) {
+  return pullRequestCheckout(gitFixture(ACME, tempDir(), options));
+}
+
 describe("the compare API", () => {
-  it("compares the pull request's base and head", async () => {
+  it("compares the default merge checkout and ignores the branch file count", async () => {
+    const { base, merge, runner } = prCheckout();
     const github = await fakeGitHub();
-    compare(github, BASE, HEAD, ["packages/ui/src/button.tsx"]);
-    const run = await runAction({ workspace: ACME, event: pullRequest(1), github });
-    expect(github.requests).toEqual([`/repos/acme/mono/compare/${BASE}...${HEAD}`]);
+    compare(github, base, merge, ["packages/ui/src/button.tsx"]);
+    const run = await runAction({ ...runner(2), github });
+    expect(github.requests).toEqual([`/repos/acme/mono/compare/${base}...${merge}`]);
     expect(parsed(run.outputs.lanes)).toEqual(["web", "e2e", "lint"]);
     expect(run.outputs.complete).toBe("true");
+    expect(run.annotations).toEqual([]);
   });
 
-  it("fails closed when the listing differs from the pull request's changed_files", async () => {
+  it.each(["pull_request", "pull_request_target"])("checks changed_files on a %s head checkout", async (name) => {
+    const { repo, base, head, runner } = prCheckout();
+    repo.git("switch", "--detach", head);
     const github = await fakeGitHub();
-    compare(github, BASE, HEAD, ["README.md", "docs/guide.md"]);
-    const run = await runAction({ workspace: ACME, event: pullRequest(3), github });
+    compare(github, base, head, ["README.md", "docs/guide.md"], { status: "diverged", mergeBase: repo.base });
+    const options = runner(3);
+    const run = await runAction({
+      ...options,
+      event: { ...options.event, name },
+      sha: name === "pull_request_target" ? base : options.sha,
+      github,
+    });
     expect(run.exitCode).toBe(0);
     expect(parsed(run.outputs.lanes)).toEqual(ALL);
     expect(run.outputs.complete).toBe("false");
@@ -111,14 +125,15 @@ describe("the compare API", () => {
   });
 
   it("fails closed when the listing reaches the 300-file cap", async () => {
+    const { base, merge, runner } = prCheckout();
     const github = await fakeGitHub();
     compare(
       github,
-      BASE,
-      HEAD,
+      base,
+      merge,
       Array.from({ length: 300 }, (_, index) => `docs/page-${String(index)}.md`),
     );
-    const run = await runAction({ workspace: ACME, event: pullRequest(300), github });
+    const run = await runAction({ ...runner(300), github });
     expect(run.exitCode).toBe(0);
     expect(parsed(run.outputs.lanes)).toEqual(ALL);
     expect(run.outputs.complete).toBe("false");
@@ -126,55 +141,197 @@ describe("the compare API", () => {
     expect(run.annotations[0]?.message).toContain("at most 300 files");
   });
 
-  it("skips the count check for a caller-supplied range", async () => {
+  it("skips the count check for an explicit PR head input and accepts a matching ref", async () => {
+    const { repo, base, head, runner } = prCheckout();
+    repo.git("switch", "patch");
     const github = await fakeGitHub();
-    compare(github, "c".repeat(40), HEAD, ["packages/ui/src/button.tsx"]);
-    const run = await runAction({
-      workspace: ACME,
-      inputs: { base: "c".repeat(40) },
-      event: pullRequest(9),
-      github,
-    });
+    compare(github, base, head, ["packages/ui/src/button.tsx"], { status: "diverged", mergeBase: repo.base });
+    const run = await runAction({ ...runner(9), inputs: { head: "patch" }, github });
+    expect(parsed(run.outputs.lanes)).toEqual(["web", "e2e", "lint"]);
     expect(run.outputs.complete).toBe("true");
+    expect(run.annotations).toEqual([]);
   });
 
   it("routes both paths of a rename", async () => {
+    const { base, merge, runner } = prCheckout();
     const github = await fakeGitHub();
-    compare(github, BASE, HEAD, [
+    compare(github, base, merge, [
       { filename: "packages/ui/src/user.ts", previous_filename: "packages/api/src/user.ts", status: "renamed" },
     ]);
-    const run = await runAction({ workspace: ACME, event: pullRequest(1), github });
+    const run = await runAction({ ...runner(1), github });
     expect(run.outputs.complete).toBe("true");
     expect(run.outputs.api).toBe("run");
   });
 
   it("accepts file statuses it does not model, such as copied", async () => {
+    const { base, merge, runner } = prCheckout();
     const github = await fakeGitHub();
-    compare(github, BASE, HEAD, [{ filename: "packages/ui/src/copy.tsx", status: "copied" }]);
-    const run = await runAction({ workspace: ACME, event: pullRequest(1), github });
+    compare(github, base, merge, [{ filename: "packages/ui/src/copy.tsx", status: "copied" }]);
+    const run = await runAction({ ...runner(1), github });
     expect(run.outputs.complete).toBe("true");
   });
 
-  it("routes a pull request whose base branch moved on, which the compare API reports as diverged", async () => {
+  it.each(["merge", "head"] as const)(
+    "routes a diverged PR head checkout when the event SHA is the %s",
+    async (eventCheckout) => {
+      const { repo, base, head, merge, runner } = prCheckout();
+      repo.git("switch", "--detach", head);
+      const github = await fakeGitHub();
+      compare(github, base, head, ["packages/ui/src/button.tsx"], { status: "diverged", mergeBase: repo.base });
+      const run = await runAction({ ...runner(1), sha: eventCheckout === "merge" ? merge : head, github });
+      expect(github.requests).toEqual([`/repos/acme/mono/compare/${base}...${head}`]);
+      expect(parsed(run.outputs.lanes)).toEqual(["web", "e2e", "lint"]);
+      expect(run.outputs.complete).toBe("true");
+      expect(run.annotations).toEqual([]);
+    },
+  );
+
+  it("re-roots paths under a nested working-directory and fails closed on a path outside it", async () => {
+    const { base, merge, runner } = prCheckout({ at: "mono" });
     const github = await fakeGitHub();
-    compare(github, BASE, HEAD, ["packages/ui/src/button.tsx"], { status: "diverged", mergeBase: MERGE_BASE });
-    const run = await runAction({ workspace: ACME, event: pullRequest(1), github });
+    compare(github, base, merge, ["mono/packages/ui/src/button.tsx"]);
+    const inputs = { "working-directory": "mono" };
+    const inside = await runAction({ ...runner(1), inputs, github });
+    expect(parsed(inside.outputs.lanes)).toEqual(["web", "e2e", "lint"]);
+
+    compare(github, base, merge, ["mono/packages/ui/src/button.tsx", "LICENSE"]);
+    const outside = await runAction({ ...runner(2), inputs, github });
+    expect(parsed(outside.outputs.lanes)).toEqual(ALL);
+    expect(outside.outputs.complete).toBe("false");
+  });
+
+  it("requires an explicit head for a checkout outside the PR", async () => {
+    const { repo, base, runner } = prCheckout();
+    repo.git("switch", "--detach", base);
+    const github = await fakeGitHub();
+    const run = await runAction({ ...runner(1), github });
+    expect(run.exitCode).toBe(0);
+    expect(parsed(run.outputs.lanes)).toEqual(ALL);
+    expect(run.outputs.complete).toBe("false");
+    expect(run.annotations[0]?.message).toContain("matches neither");
+    expect(github.requests).toEqual([]);
+  });
+
+  it("keeps the event range on the pull_request_target base tip", async () => {
+    const { repo, base, head, runner } = prCheckout();
+    repo.git("switch", "--detach", base);
+    const github = await fakeGitHub();
+    compare(github, base, head, ["packages/ui/src/button.tsx"], { status: "diverged", mergeBase: repo.base });
+    const options = runner(1);
+    const run = await runAction({
+      ...options,
+      event: { ...options.event, name: "pull_request_target" },
+      sha: base,
+      github,
+    });
+    expect(github.requests).toEqual([`/repos/acme/mono/compare/${base}...${head}`]);
     expect(parsed(run.outputs.lanes)).toEqual(["web", "e2e", "lint"]);
     expect(run.outputs.complete).toBe("true");
   });
 
-  it("re-roots paths under a nested working-directory and fails closed on a path outside it", async () => {
-    const repo = gitFixture(ACME, tempDir(), { at: "mono" });
+  it("uses a matching explicit head on the pull_request_target base tip", async () => {
+    const { repo, base, runner } = prCheckout();
+    repo.git("switch", "--detach", base);
     const github = await fakeGitHub();
-    compare(github, BASE, HEAD, ["mono/packages/ui/src/button.tsx"]);
-    const inputs = { "working-directory": "mono" };
-    const inside = await runAction({ workspace: repo.dir, inputs, event: pullRequest(1), github });
-    expect(parsed(inside.outputs.lanes)).toEqual(["web", "e2e", "lint"]);
+    compare(github, base, base, [], { status: "identical" });
+    const options = runner(1);
+    const run = await runAction({
+      ...options,
+      event: { ...options.event, name: "pull_request_target" },
+      inputs: { head: "HEAD" },
+      sha: base,
+      github,
+    });
+    expect(github.requests).toEqual([`/repos/acme/mono/compare/${base}...${base}`]);
+    expect(parsed(run.outputs.lanes)).toEqual([]);
+    expect(run.outputs.complete).toBe("true");
+  });
+});
 
-    compare(github, BASE, HEAD, ["mono/packages/ui/src/button.tsx", "LICENSE"]);
-    const outside = await runAction({ workspace: repo.dir, inputs, event: pullRequest(2), github });
-    expect(parsed(outside.outputs.lanes)).toEqual(ALL);
-    expect(outside.outputs.complete).toBe("false");
+describe("the compare head and checkout", () => {
+  it.each(["push", "workflow_dispatch", "merge_group", "pull_request", "pull_request_target"])(
+    "(c) rejects a mismatched explicit head on %s with or without supplied files",
+    async (name) => {
+      const { repo, base, head, merge, runner } = prCheckout();
+      const github = await fakeGitHub();
+      compare(github, repo.base, head, ["README.md"]);
+      const options = runner(1);
+      const event =
+        name === "push"
+          ? push(base, merge)
+          : name.startsWith("pull_request")
+            ? { ...options.event, name }
+            : { name, payload: {} };
+      for (const files of ["", "README.md"]) {
+        const run = await runAction({
+          ...options,
+          github,
+          event,
+          sha: name === "pull_request_target" ? base : merge,
+          inputs: { mode: name === "push" ? "push" : "pr", base: repo.base, head, files },
+        });
+        expect(run.exitCode).toBe(0);
+        expect.soft(parsed(run.outputs.lanes)).toEqual(ALL);
+        expect.soft(run.outputs.complete).toBe("false");
+        expect.soft(run.annotations[0]?.message ?? "").toContain("head input does not match");
+      }
+      expect(github.requests).toEqual([]);
+    },
+  );
+
+  it.each(["push", "workflow_dispatch", "merge_group"])(
+    "(a) rejects an event head that differs from the %s checkout",
+    async (name) => {
+      const { repo, base, head, merge, runner } = prCheckout();
+      const github = await fakeGitHub();
+      compare(github, base, merge, ["README.md"]);
+      repo.git("switch", "--detach", head);
+      const run = await runAction({
+        ...runner(1),
+        event: name === "push" ? push(base, merge) : { name, payload: {} },
+        inputs: { mode: "push", base },
+        github,
+      });
+      expect(run.exitCode).toBe(0);
+      expect(parsed(run.outputs.lanes)).toEqual(ALL);
+      expect(run.outputs.complete).toBe("false");
+      expect(run.annotations[0]?.message).toContain("checkout does not match the event's head");
+      expect(github.requests).toEqual([]);
+    },
+  );
+
+  it("(c) names an unresolvable head input", async () => {
+    const { runner } = prCheckout();
+    const run = await runAction({ ...runner(1), inputs: { files: "README.md", head: "unknown-revision" } });
+    expect(parsed(run.outputs.lanes)).toEqual(ALL);
+    expect(run.outputs.complete).toBe("false");
+    expect(run.annotations[0]?.message).toContain("cannot resolve the head input");
+  });
+
+  it("(c) names a base the compare response did not resolve", async () => {
+    const { merge, base, runner } = prCheckout();
+    const github = await fakeGitHub();
+    github.on(`/compare/unfetched-base...${merge}`, {
+      body: { status: "ahead", merge_base_commit: { sha: base }, files: [] },
+    });
+    const run = await runAction({ ...runner(1), inputs: { base: "unfetched-base" }, github });
+    expect(parsed(run.outputs.lanes)).toEqual(ALL);
+    expect(run.outputs.complete).toBe("false");
+    expect(run.annotations[0]?.message).toContain("compare response did not resolve the base");
+  });
+
+  it("(c) retries with a locally resolved base SHA when the compare response omits the base", async () => {
+    const { repo, merge, base, runner } = prCheckout();
+    repo.git("branch", "local-base", base);
+    const github = await fakeGitHub();
+    github.on(`/compare/local-base...${merge}`, {
+      body: { status: "ahead", merge_base_commit: { sha: base }, files: [] },
+    });
+    compare(github, base, merge, ["packages/ui/src/button.tsx"]);
+    const run = await runAction({ ...runner(1), inputs: { base: "local-base" }, github });
+    expect(parsed(run.outputs.lanes)).toEqual(["web", "e2e", "lint"]);
+    expect(run.outputs.complete).toBe("true");
+    expect(run.annotations).toEqual([]);
   });
 });
 
@@ -182,10 +339,11 @@ describe("a push", () => {
   const BUTTON = "packages/ui/src/button.tsx";
 
   it("routes before...after precisely when head extends before", async () => {
+    const { dir: workspace, base: head } = gitFixture(ACME, tempDir());
     const github = await fakeGitHub();
-    compare(github, BASE, HEAD, [BUTTON], { status: "ahead", mergeBase: BASE });
-    const run = await runAction({ workspace: ACME, event: push(BASE), github });
-    expect(github.requests).toEqual([`/repos/acme/mono/compare/${BASE}...${HEAD}`]);
+    compare(github, BASE, head, [BUTTON], { status: "ahead", mergeBase: BASE });
+    const run = await runAction({ workspace, event: push(BASE, head), github });
+    expect(github.requests).toEqual([`/repos/acme/mono/compare/${BASE}...${head}`]);
     expect(run.summary).toContain("mode push");
     expect(parsed(run.outputs.lanes)).toEqual(["web", "e2e", "lint"]);
     expect(run.outputs.api).toBe("skip");
@@ -193,9 +351,10 @@ describe("a push", () => {
   });
 
   it("runs every lane after a force push, which the compare API reports as diverged", async () => {
+    const { dir: workspace, base: head } = gitFixture(ACME, tempDir());
     const github = await fakeGitHub();
-    compare(github, BASE, HEAD, [BUTTON], { status: "diverged", mergeBase: MERGE_BASE });
-    const run = await runAction({ workspace: ACME, event: push(BASE), github });
+    compare(github, BASE, head, [BUTTON], { status: "diverged", mergeBase: MERGE_BASE });
+    const run = await runAction({ workspace, event: push(BASE, head), github });
     expect(run.exitCode).toBe(0);
     expect(parsed(run.outputs.lanes)).toEqual(ALL);
     expect(run.outputs.complete).toBe("false");
@@ -206,18 +365,20 @@ describe("a push", () => {
   });
 
   it("runs every lane when the push moved the branch back, which the compare API reports as behind", async () => {
+    const { dir: workspace, base: head } = gitFixture(ACME, tempDir());
     const github = await fakeGitHub();
-    compare(github, BASE, HEAD, [BUTTON], { status: "behind", mergeBase: HEAD });
-    const run = await runAction({ workspace: ACME, event: push(BASE), github });
+    compare(github, BASE, head, [BUTTON], { status: "behind", mergeBase: head });
+    const run = await runAction({ workspace, event: push(BASE, head), github });
     expect(parsed(run.outputs.lanes)).toEqual(ALL);
     expect(run.outputs.complete).toBe("false");
     expect(jsonObject(run.outputs.reasons).api).toContain("status behind");
   });
 
   it("runs every lane when the merge base is not before, whatever the status says", async () => {
+    const { dir: workspace, base: head } = gitFixture(ACME, tempDir());
     const github = await fakeGitHub();
-    compare(github, BASE, HEAD, [BUTTON], { status: "ahead", mergeBase: MERGE_BASE });
-    const run = await runAction({ workspace: ACME, event: push(BASE), github });
+    compare(github, BASE, head, [BUTTON], { status: "ahead", mergeBase: MERGE_BASE });
+    const run = await runAction({ workspace, event: push(BASE, head), github });
     expect(parsed(run.outputs.lanes)).toEqual(ALL);
     expect(run.outputs.complete).toBe("false");
     expect(jsonObject(run.outputs.reasons).api).toContain("merge base ccccccc");
@@ -243,11 +404,12 @@ describe("a push", () => {
   });
 
   it("applies the same rule to a base and head given as inputs", async () => {
+    const { dir: workspace, base: head } = gitFixture(ACME, tempDir());
     const github = await fakeGitHub();
-    compare(github, BASE, HEAD, [BUTTON], { status: "diverged", mergeBase: MERGE_BASE });
+    compare(github, BASE, head, [BUTTON], { status: "diverged", mergeBase: MERGE_BASE });
     const run = await runAction({
-      workspace: ACME,
-      inputs: { mode: "push", base: BASE, head: HEAD },
+      workspace,
+      inputs: { mode: "push", base: BASE, head },
       event: { name: "workflow_dispatch", payload: {} },
       github,
     });
@@ -256,9 +418,10 @@ describe("a push", () => {
   });
 
   it("routes the same with a mode input that agrees with the event", async () => {
+    const { dir: workspace, base: head } = gitFixture(ACME, tempDir());
     const github = await fakeGitHub();
-    compare(github, BASE, HEAD, [BUTTON], { status: "ahead", mergeBase: BASE });
-    const run = await runAction({ workspace: ACME, inputs: { mode: "push" }, event: push(BASE), github });
+    compare(github, BASE, head, [BUTTON], { status: "ahead", mergeBase: BASE });
+    const run = await runAction({ workspace, inputs: { mode: "push" }, event: push(BASE, head), github });
     expect(run.exitCode).toBe(0);
     expect(run.summary).toContain("mode push");
     expect(parsed(run.outputs.lanes)).toEqual(["web", "e2e", "lint"]);
@@ -266,9 +429,10 @@ describe("a push", () => {
   });
 
   it("runs every lane on a compare status it does not know", async () => {
+    const { dir: workspace, base: head } = gitFixture(ACME, tempDir());
     const github = await fakeGitHub();
-    compare(github, BASE, HEAD, [BUTTON], { status: "sideways", mergeBase: BASE });
-    const run = await runAction({ workspace: ACME, event: push(BASE), github });
+    compare(github, BASE, head, [BUTTON], { status: "sideways", mergeBase: BASE });
+    const run = await runAction({ workspace, event: push(BASE, head), github });
     expect(run.exitCode).toBe(0);
     expect(parsed(run.outputs.lanes)).toEqual(ALL);
     expect(run.outputs.complete).toBe("false");
@@ -280,8 +444,9 @@ describe("a push", () => {
 describe("errors after the config is valid", () => {
   it("select every lane, annotate the error and let the step succeed when the API fails", async () => {
     const github = await fakeGitHub();
-    github.on(`/compare/${BASE}...${HEAD}`, { status: 500, body: { message: "Server Error" } });
-    const run = await runAction({ workspace: ACME, event: pullRequest(1), github });
+    const { base, merge, runner } = prCheckout();
+    github.on(`/compare/${base}...${merge}`, { status: 500, body: { message: "Server Error" } });
+    const run = await runAction({ ...runner(1), github });
     expect(run.exitCode).toBe(0);
     expect(parsed(run.outputs.lanes)).toEqual(ALL);
     expect(run.outputs.complete).toBe("false");
@@ -290,7 +455,8 @@ describe("errors after the config is valid", () => {
   });
 
   it("do the same when the API cannot be reached", async () => {
-    const run = await runAction({ workspace: ACME, event: pullRequest(1) });
+    const { runner } = prCheckout();
+    const run = await runAction(runner(1));
     expect(run.exitCode).toBe(0);
     expect(parsed(run.outputs.lanes)).toEqual(ALL);
     expect(run.annotations).toMatchObject([{ level: "error" }]);
@@ -328,24 +494,27 @@ describe("errors before a model exists", () => {
   });
 
   it("accept an explicit mode with base and head for any other event", async () => {
+    const { dir: workspace, base: head } = gitFixture(ACME, tempDir());
     const github = await fakeGitHub();
-    compare(github, BASE, HEAD, ["packages/api/src/user.ts"]);
+    compare(github, BASE, head, ["packages/ui/src/button.tsx"]);
     const run = await runAction({
-      workspace: ACME,
-      inputs: { mode: "push", base: BASE, head: HEAD },
+      workspace,
+      inputs: { mode: "push", base: BASE, head },
       event: { name: "workflow_dispatch", payload: {} },
       github,
     });
     expect(run.exitCode).toBe(0);
-    expect(parsed(run.outputs.lanes)).toEqual(ALL);
+    expect(parsed(run.outputs.lanes)).toEqual(["web", "e2e", "lint"]);
+    expect(run.outputs.complete).toBe("true");
   });
 
   it("accept mode pr with base and head for an event that implies no mode", async () => {
+    const { dir: workspace, base: head } = gitFixture(ACME, tempDir());
     const github = await fakeGitHub();
-    compare(github, BASE, HEAD, ["packages/ui/src/button.tsx"], { status: "diverged", mergeBase: MERGE_BASE });
+    compare(github, BASE, head, ["packages/ui/src/button.tsx"], { status: "diverged", mergeBase: MERGE_BASE });
     const run = await runAction({
-      workspace: ACME,
-      inputs: { mode: "pr", base: BASE, head: HEAD },
+      workspace,
+      inputs: { mode: "pr", base: BASE, head },
       event: { name: "workflow_dispatch", payload: {} },
       github,
     });

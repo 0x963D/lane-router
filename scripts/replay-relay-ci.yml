@@ -1,0 +1,34 @@
+lanes:
+  demo:
+    floor: true
+  check:
+    floor: true
+  integration:
+    packages: ["@relay/web"]
+  browser:
+    packages: ["@relay/web"]
+
+paths:
+  - match: [".github/workflows/**", "**/package.json", "**/.npmrc", "**/.pnpmfile.*", "patches/**"]
+    lanes: all
+    why: Each job uses the workflow and installs the entire workspace.
+  - match: ["README.md", ".env*", "tsconfig*.json"]
+    lanes: all
+    why: The jobs read the quickstart, proof commands, browser journeys or shared build settings.
+  - match: ["compose.yaml"]
+    lanes: [demo, integration]
+    why: The demo starts Compose and the integration suite checks its configuration.
+  - match: ["Dockerfile", ".dockerignore", "infra/demo/**"]
+    lanes: [demo]
+    why: Compose builds the demo images and mounts the database bootstrap script.
+  - match: ["scripts/check-proofs.mjs", "vitest.config.ts"]
+    lanes: [integration, check]
+    why: The integration job runs the README proofs and both jobs run Vitest.
+  - match: ["playwright.config.ts", "docs/images/**"]
+    lanes: [browser]
+    why: The browser job runs Playwright and writes README captures.
+  - match: ["docs/**/*.md"]
+    lanes: [check, integration]
+    why: The checks read documentation and the README proof commands can select documentation tests.
+
+unmatched: all

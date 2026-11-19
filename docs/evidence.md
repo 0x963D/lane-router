@@ -1,12 +1,24 @@
 # Routing evidence
 
-The figures on this page are for the `v0.1.1` release.
+The soundness, field replay and mutation figures on this page are for the `v0.1.1` release.
 
 lane-router promises to skip a CI lane only when the change cannot affect the inputs the lane declares. When it cannot make that decision safely, it runs the lane.
 
 - **Soundness oracle.** No false skip in 250,000 generated changes within the model of declared inputs. All 16 injected bugs produced a false skip.
 - **Field replay.** 4,800 plans across 24 real repositories, with no discovery mismatches or skips in fallback plans. The replay checks plans without executing test lanes.
 - **Mutation testing.** 96.57% of eligible decision-code mutations caused a test failure or timeout. The `v0.1.0` score was 77.26%. Each score covers its named files.
+
+## Pull request merge paths
+
+In `v0.1.1`, the default pull request checkout was a merge commit, but the Action used the pull request branch's changed paths. If the base branch moved a file that the pull request edited, the Action could skip the lane for the file's destination in the tested merge.
+
+The 250,000 generated changes did not find this bug. The oracle tests planning with a supplied workspace model and file list. It does not test whether the Action gets the diff for the tree that CI checks out.
+
+The bug surfaced while [replaying lane-router on the author's own CI history](own-history.md). In the [checkout regression matrix](../test/action-pr-checkout.test.ts), `v0.1.1` skips the API lane for a file the base branch moved into the API package. The matrix reproduces the skip on both pull request events. The directory rename fixture has its own category because Git needs `merge.directoryRenames=true` to resolve that merge. The matrix also labels cases that check the new range rules.
+
+The matrix uses depth-1 clones for default merge checkouts on both pull request events. It checks the exact lane list from the first-parent diff, including when the payload base differs, and requires `complete=true` with no annotation. It covers the payload-base fallback when the checkout has one parent, three parents, or a different second parent. A manifest change uses the first parent's model in a full checkout and gives fetch-depth advice when the parent object is missing. The [Action tests](../test/action.test.ts) also check requested ranges and the file count check for the pull request head.
+
+The matrix answers compare requests from a local fixture. The `compare` job in [this repository's CI](../.github/workflows/ci.yml) calls the real endpoint on every pull request, from the default shallow checkout. It checks that the plan starts at the merge's first parent and that the endpoint returned a listing.
 
 ## Soundness oracle
 
