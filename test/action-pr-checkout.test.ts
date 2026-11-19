@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { runAction } from "./support/action.ts";
+import { runAction, type ActionRun } from "./support/action.ts";
 import { compare, fakeGitHub, type CompareFile, type FakeGitHub } from "./support/fake-github.ts";
 import { fixtureDir, tempDir } from "./support/fixtures.ts";
 import { gitFixture, type GitFixture } from "./support/git-fixture.ts";
@@ -62,7 +62,8 @@ function history(scenario: Scenario) {
       break;
   }
   const firstParent = repo.commit("Advance the base");
-  repo.git("-c", "merge.directoryRenames=true", "merge", "--no-ff", "--no-edit", "patch");
+  const mergeOptions = scenario === "directory rename" ? ["-c", "merge.directoryRenames=true"] : [];
+  repo.git(...mergeOptions, "merge", "--no-ff", "--no-edit", "patch");
   const merge = repo.git("rev-parse", "HEAD");
   const testedPath = scenario === "file move" ? "packages/api/feature/item.ts" : "packages/api/feature/new.ts";
   if (scenario === "file move" || scenario === "directory rename") {
@@ -77,14 +78,14 @@ function history(scenario: Scenario) {
   repo.git("switch", "-c", "custom", firstParent);
   repo.write("packages/api/custom.ts", "export const custom = 1;\n");
   const custom = repo.commit("Create a different checkout");
-  return { repo, base, firstParent, head, merge, custom };
+  return { repo, base, firstParent, head, merge, custom, fork };
 }
 
 function diffPaths(repo: GitFixture, base: string, head: string) {
   return repo.git("diff", "--name-only", "--no-renames", base, head).split("\n").filter(Boolean);
 }
 
-function compareFromGit(github: FakeGitHub, repo: GitFixture, base: string, head: string) {
+function compareFromGit(github: FakeGitHub, repo: GitFixture, base: string, head: string, baseRef = base) {
   const mergeBase = repo.git("merge-base", base, head);
   const status =
     base === head ? "identical" : mergeBase === base ? "ahead" : mergeBase === head ? "behind" : "diverged";
@@ -99,7 +100,7 @@ function compareFromGit(github: FakeGitHub, repo: GitFixture, base: string, head
         ? { filename: from, status }
         : { filename: to, previous_filename: from, status: "renamed" };
     });
-  compare(github, base, head, files, { status, mergeBase });
+  compare(github, baseRef, head, files, { status, mergeBase, baseCommit: base });
   return files.length;
 }
 
@@ -115,9 +116,21 @@ function affectedLanes(repo: GitFixture, base: string, head: string, paths: read
   return [uiChanged ? "ui" : "", apiChanged || (uiChanged && apiReadsUi) ? "api" : ""].filter(Boolean);
 }
 
+function expectPrecise(run: ActionRun, lanes: readonly string[], label: string) {
+  expect.soft(JSON.parse(run.outputs.lanes ?? "null"), `${label}, selected lanes`).toEqual(lanes);
+  expect.soft(run.outputs.complete, `${label}, complete`).toBe("true");
+}
+
+function expectAncestryFailure(run: ActionRun, label: string) {
+  expect.soft(JSON.parse(run.outputs.lanes ?? "null"), `${label}, selected lanes`).toEqual(LANES);
+  expect.soft(run.outputs.complete, `${label}, complete`).toBe("false");
+  expect.soft(run.annotations[0]?.message ?? "", `${label}, ancestry error`).toContain("does not extend");
+}
+
+// (a) checks the tested tree, (b) needs a resolved directory rename, and (c) checks the new range rules.
 describe("a pull request plans the tested tree", () => {
   it.each(scenarios)("%s", async (scenario) => {
-    const { repo, base, firstParent, head, merge, custom } = history(scenario);
+    const { repo, base, firstParent, head, merge, custom, fork } = history(scenario);
     const github = await fakeGitHub();
     const changedFiles = compareFromGit(github, repo, base, head);
     for (const compareBase of new Set([base, firstParent])) {
@@ -141,9 +154,18 @@ describe("a pull request plans the tested tree", () => {
         [true, true, true],
       ]) {
         const compareBase = baseInput ? firstParent : base;
-        const diffBase = checkout === "head" && compareBase === base ? repo.git("merge-base", base, tree) : compareBase;
+        const diffBase = checkout === "head" ? fork : compareBase;
         const paths = diffPaths(repo, diffBase, tree);
-        const label = `${checkout}, base=${String(baseInput)} head=${String(headInput)} files=${String(filesInput)}`;
+        const kind =
+          scenario === "directory rename"
+            ? "b"
+            : !filesInput &&
+                ((checkout === "head" && baseInput && compareBase !== base) ||
+                  (scenario === "newer payload base" && checkout === "merge" && headInput && !baseInput))
+              ? "c"
+              : "a";
+        const inputs = `${baseInput ? "B" : ""}${headInput ? "H" : ""}${filesInput ? "F" : ""}` || "default";
+        const label = `(${kind}) ${scenario}, pull_request, ${checkout}, ${inputs}`;
         const run = await runAction({
           workspace: repo.dir,
           event,
@@ -156,10 +178,73 @@ describe("a pull request plans the tested tree", () => {
             ...(filesInput ? { files: paths.join("\n") } : {}),
           },
         });
-        for (const lane of affectedLanes(repo, diffBase, tree, paths)) {
+        const affected = affectedLanes(repo, diffBase, tree, paths);
+        for (const lane of affected) {
           expect.soft(run.outputs[lane], `${label}, ${lane}`).toBe("run");
+        }
+        if (!filesInput && checkout === "head") {
+          expectPrecise(run, affected, label);
+          expect.soft(run.annotations, `${label}, annotations`).toEqual([]);
+        }
+        if (checkout === "merge" && inputs === "default") {
+          if (scenario === "newer payload base") expectAncestryFailure(run, label);
+          else expectPrecise(run, affected, label);
         }
       }
     }
+
+    for (const [checkout, tree] of Object.entries({ base, head, merge })) {
+      repo.git("switch", "--detach", tree);
+      const run = await runAction({
+        workspace: repo.dir,
+        event: { ...event, name: "pull_request_target" },
+        github,
+        sha: base,
+        process: "in-process",
+      });
+      const kind = scenario === "directory rename" ? "b" : "a";
+      const label = `(${kind}) ${scenario}, pull_request_target, ${checkout}, default`;
+      const diffBase = checkout === "merge" ? base : fork;
+      const diffHead = checkout === "base" ? head : tree;
+      const affected = affectedLanes(repo, diffBase, tree, diffPaths(repo, diffBase, diffHead));
+      for (const lane of affected) {
+        expect.soft(run.outputs[lane], `${label}, ${lane}`).toBe("run");
+      }
+      if (checkout === "merge" && scenario === "newer payload base") {
+        expectAncestryFailure(run, label);
+      } else {
+        expectPrecise(run, affected, label);
+      }
+      if (checkout === "head") expect.soft(run.annotations, `${label}, annotations`).toEqual([]);
+    }
   });
+
+  it.each(["main", "origin/main", "short SHA", "unfetched-base"])(
+    "(c) accepts a compare base given as %s",
+    async (ref) => {
+      const { repo, firstParent, head, merge } = history("file move");
+      repo.git("update-ref", "refs/remotes/origin/main", firstParent);
+      repo.git("switch", "--detach", merge);
+      const base = ref === "short SHA" ? firstParent.slice(0, 8) : ref;
+      const github = await fakeGitHub();
+      compareFromGit(github, repo, firstParent, merge);
+      if (ref !== "origin/main") compareFromGit(github, repo, firstParent, merge, base);
+      const run = await runAction({
+        workspace: repo.dir,
+        event: {
+          name: "pull_request",
+          payload: { pull_request: { base: { sha: firstParent }, head: { sha: head }, changed_files: 1 } },
+        },
+        github,
+        sha: merge,
+        inputs: { base, head: merge },
+      });
+      expectPrecise(run, ["api"], `(c) ${ref}, pull_request, merge, BH`);
+      expect(run.annotations).toEqual([]);
+      const requests = ref === "origin/main" ? [base, firstParent] : [base];
+      expect(github.requests).toEqual(
+        requests.map((revision) => `/repos/acme/mono/compare/${encodeURIComponent(revision)}...${merge}`),
+      );
+    },
+  );
 });

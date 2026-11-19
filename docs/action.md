@@ -69,31 +69,46 @@ Pin `actions/checkout` and this action to full commit SHAs, following [GitHub's 
 | ------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | `config`            | `.github/lanes.yml`   | The routing config, relative to `working-directory`.                                                                               |
 | `working-directory` | `.`                   | The repository root to read the config and the workspace from.                                                                     |
-| `base`, `head`      | see below             | The revisions to compare. Setting either skips the pull request file-count check.                                                  |
+| `base`, `head`      | see below             | The revisions to compare. A supplied `head` must resolve to the checked-out commit.                                                |
 | `files`             | empty                 | Newline-separated changed paths, relative to `working-directory`. They are trusted as complete, and the compare API is not called. |
 | `token`             | `${{ github.token }}` | The token for the compare endpoint.                                                                                                |
 | `mode`              | from the event        | `pr` or `push`. Must match a `pull_request`, `pull_request_target` or `push` event. Required for any other event.                  |
 
 The token needs only `contents: read`, which the compare endpoint requires.
 
-The Action reads the config and workspace from the checked-out tree. For `pull_request`, `base` defaults to `pull_request.base.sha`. When `files` is empty, the Action chooses the compare head as follows.
+The Action reads the config and workspace from the checkout. With `files` empty and `head` omitted, it selects the compare range from this table.
 
-| `base` | `head` | `files` | What the Action plans                                                                                                                   |
-| ------ | ------ | ------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| Empty  | Empty  | Empty   | Event base to the checked-out merge commit (`GITHUB_SHA`) or PR head (`pull_request.head.sha`). Checks `changed_files` for the PR head. |
-| Set    | Empty  | Empty   | Input base to the checked-out merge commit or PR head.                                                                                  |
-| Empty  | Set    | Empty   | Event base to the input head. The input head must resolve to `HEAD` in the checkout.                                                    |
-| Set    | Set    | Empty   | Input base to the input head. The input head must resolve to `HEAD` in the checkout.                                                    |
-| Empty  | Empty  | Set     | The supplied paths for the checkout. No base model is available if the planner needs one.                                               |
-| Set    | Empty  | Set     | The supplied paths for the checkout. Uses the input base if the planner needs a base model.                                             |
-| Empty  | Set    | Set     | The supplied paths. The input head must resolve to `HEAD`. No base model is available if the planner needs one.                         |
-| Set    | Set    | Set     | The supplied paths. The input head must resolve to `HEAD`. Uses the input base if the planner needs a base model.                       |
+| Event                                                  | Checkout                                   | Default base            | Compare head                                                     | Base must be an ancestor |
+| ------------------------------------------------------ | ------------------------------------------ | ----------------------- | ---------------------------------------------------------------- | ------------------------ |
+| `pull_request`                                         | PR head                                    | `pull_request.base.sha` | Checkout                                                         | No                       |
+| `pull_request`                                         | Test merge (`GITHUB_SHA`)                  | `pull_request.base.sha` | Checkout                                                         | Yes                      |
+| `pull_request`                                         | Any other commit                           | `pull_request.base.sha` | Runs every lane and asks for `head`                              | Yes with `head`          |
+| `pull_request_target`                                  | PR head                                    | `pull_request.base.sha` | Checkout                                                         | No                       |
+| `pull_request_target`                                  | Base tip (`GITHUB_SHA`)                    | `pull_request.base.sha` | PR head, to route the proposed PR change with the base workspace | No                       |
+| `pull_request_target`                                  | Any other commit, including the test merge | `pull_request.base.sha` | Checkout                                                         | Yes                      |
+| `push`                                                 | Event `after`                              | Event `before`          | Checkout                                                         | Yes                      |
+| `push`                                                 | Any other commit                           | Event `before`          | Runs every lane and asks for `head` or the event checkout        | Yes with `head`          |
+| `workflow_dispatch`, `merge_group`, or any other event | `GITHUB_SHA`                               | Set `base`              | Checkout                                                         | In `push` mode           |
+| `workflow_dispatch`, `merge_group`, or any other event | Any other commit                           | Set `base`              | Runs every lane and asks for `head` or the event checkout        | In `push` mode           |
 
-For the event base and PR head pair, the compare starts at their merge base. All other comparisons on `pull_request` require the head to extend the named base. Supply a full base SHA for these comparisons so the Action can verify the compare response. When the checkout matches neither event commit, supply `head` to route it by comparison. If a checkout or comparison fails these checks, every known lane runs and the Action explains why.
+The compare starts at the merge base. If the table requires ancestry, that merge base must equal the resolved base commit. A push with no `before` and no `base` runs every lane. With both revision inputs omitted, the Action checks the listing against `changed_files` when routing the proposed PR change or a PR head checkout. A supplied `base` or `head` disables this count check.
 
-With `files`, supply all changed paths for the tested checkout, including both sides of a rename. The Action trusts this list and calls no compare endpoint.
+| `base` | `head` | `files` | What the Action plans                                                                     |
+| ------ | ------ | ------- | ----------------------------------------------------------------------------------------- |
+| Empty  | Empty  | Empty   | The event range in the table above.                                                       |
+| Set    | Empty  | Empty   | The same range with the supplied base.                                                    |
+| Empty  | Set    | Empty   | Default base to the checked-out commit, using the checkout's ancestry rule.               |
+| Set    | Set    | Empty   | Supplied base to the checked-out commit, using the checkout's ancestry rule.              |
+| Empty  | Empty  | Set     | Supplied paths. A base model is unavailable.                                              |
+| Set    | Empty  | Set     | Supplied paths. Reads the supplied base if a base model is needed.                        |
+| Empty  | Set    | Set     | Supplied paths after verifying `head`. A base model is unavailable.                       |
+| Set    | Set    | Set     | Supplied paths after verifying `head`. Reads the supplied base if a base model is needed. |
 
-For example, these steps check out and route the PR head. Use the same checkout ref in the jobs that run the lanes. You can also omit both routing inputs to enable the `changed_files` check.
+A supplied `head` lets `push` and other events route a checkout that differs from the event head. It also routes a custom `pull_request` checkout if the base is an ancestor. A head that cannot be resolved or differs from the checkout runs every known lane and reports the cause.
+
+With `files`, supply all changed paths for the tested checkout, including both paths of a rename. The Action trusts the list and calls no compare endpoint.
+
+On `pull_request`, check out `pull_request.head.sha` in the plan and lane jobs to route the PR head. Omit both revision inputs for the default PR range and count check. These steps show the equivalent explicit range without the count check.
 
 ```yaml
 - uses: actions/checkout@v7
@@ -107,4 +122,6 @@ For example, these steps check out and route the PR head. Use the same checkout 
     head: ${{ github.event.pull_request.head.sha }}
 ```
 
-On other events with a default range, `pull_request_target` uses the event's PR base and head. `push` uses the event's `before` and `after`.
+If your `pull_request_target` workflow checks out `refs/pull/<number>/merge`, use the same merge commit in the plan and lane jobs and omit `head`. The Action compares the event base to the checked-out merge and runs every known lane if the comparison or ancestry check fails.
+
+To use a custom base, set `base` to a branch, a remote ref such as `origin/main`, a short SHA, or a full SHA. The compare API resolves the base when it recognizes the revision. For a ref found only in the checkout, fetch the ref so the Action can resolve it locally. A full SHA pins the base even if a branch moves. A custom base on a PR head checkout can diverge from the head. For a test merge or another checkout with an ancestry requirement, choose a base contained in the checkout's history.

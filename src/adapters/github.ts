@@ -72,6 +72,7 @@ export function readEvent(name: string, payload: unknown): Result<GitHubEvent, N
 
 const compareResponse = object((field) => {
   const status = field("status", literal(...COMPARE_STATUSES));
+  const baseCommit = field("base_commit", optional(sha("sha")));
   const mergeBase = field("merge_base_commit", sha("sha"));
   const files = field(
     "files",
@@ -83,7 +84,9 @@ const compareResponse = object((field) => {
       }, IGNORE),
     ),
   );
-  return isValid(status) && isValid(mergeBase) && isValid(files) ? { status, mergeBase, files } : INVALID;
+  return isValid(status) && isValid(baseCommit) && isValid(mergeBase) && isValid(files)
+    ? { status, baseCommit, mergeBase, files }
+    : INVALID;
 }, IGNORE);
 
 export interface GitHubRepo {
@@ -98,8 +101,9 @@ export interface GitHubRepo {
     range: Range,
     options: {
       readonly mode: Mode;
-      readonly requireBaseAncestor?: boolean;
+      readonly requireBaseAncestor: boolean;
       readonly expectedCount: number | null;
+      readonly resolveBase: (ref: string) => Promise<string | undefined>;
       readonly under: string;
     },
   ): Promise<ChangedFiles>;
@@ -110,7 +114,8 @@ export function githubRepo(options: {
   readonly repository: string;
   readonly token: string;
 }): GitHubRepo {
-  const get = async <T>(path: string, decoder: Decoder<T>): Promise<T> => {
+  const request = async (base: string, head: string) => {
+    const path = `/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`;
     const response = await fetch(`${options.apiUrl}/repos/${options.repository}${path}`, {
       headers: {
         Accept: "application/vnd.github+json",
@@ -119,26 +124,52 @@ export function githubRepo(options: {
         ...(options.token === "" ? {} : { Authorization: `Bearer ${options.token}` }),
       },
     });
-    if (!response.ok) throw new Error(`GET ${path} returned ${String(response.status)} ${response.statusText}`.trim());
+    if (!response.ok) {
+      const status = `${String(response.status)} ${response.statusText}`.trim();
+      const error = new Error(
+        `GET ${path} returned ${status}, so check that both revisions are available to the compare API or supply files`,
+      );
+      if (response.status === 404) return { kind: "not-found" as const, error };
+      throw error;
+    }
     const body = parseJson(await response.text());
     if (!body.ok) throw new Error(`GET ${path} returned a body that is not valid JSON`);
-    const decoded = decode(decoder, body.value);
-    if (!decoded.ok)
+    const decoded = decode(compareResponse, body.value);
+    if (!decoded.ok) {
       throw new Error(`GET ${path} returned a body lane-router cannot read: ${describe(decoded.error[0])}`);
-    return decoded.value;
+    }
+    return { kind: "listed" as const, ...decoded.value };
   };
 
   return {
-    compare: async (range, { mode, requireBaseAncestor, expectedCount, under }) => {
+    compare: async (range, { mode, requireBaseAncestor, expectedCount, resolveBase, under }) => {
       if (range.base === null) return incomplete({ kind: "no-base" });
-      const path = `/compare/${encodeURIComponent(range.base)}...${encodeURIComponent(range.head)}`;
-      const { status, mergeBase, files: listed } = await get(path, compareResponse);
+      const checkAncestry = requireBaseAncestor || mode === "push";
+      let base = range.base;
+      let reply = await request(base, range.head);
+      if (!fullSha(base) && (reply.kind === "not-found" || (checkAncestry && !fullSha(reply.baseCommit ?? "")))) {
+        const localBase = await resolveBase(base);
+        if (localBase !== undefined) {
+          base = localBase;
+          reply = await request(base, range.head);
+        }
+      }
+      if (reply.kind === "not-found") throw reply.error;
+      const { status, mergeBase, baseCommit, files: listed } = reply;
       const files = changedFiles(listed, { under, mergeBase });
-      const extendsBase = (status === "ahead" || status === "identical") && mergeBase === range.base;
-      if (requireBaseAncestor && !extendsBase)
-        throw new Error("the pull request checkout does not extend its compare base");
-      if (mode === "push" && !extendsBase) {
-        return incomplete({ kind: "not-fast-forward", status, mergeBase }, files.paths);
+      if (checkAncestry) {
+        const resolvedBase = fullSha(base) ? base : baseCommit;
+        if (resolvedBase === undefined || !fullSha(resolvedBase)) {
+          throw new Error("the compare response did not resolve the base to a full SHA, so supply the full base SHA");
+        }
+        if ((status !== "ahead" && status !== "identical") || mergeBase !== resolvedBase.toLowerCase()) {
+          if (requireBaseAncestor) {
+            throw new Error(
+              "the checkout does not extend its compare base, so use an ancestor of the checkout or supply files",
+            );
+          }
+          return incomplete({ kind: "not-fast-forward", status, mergeBase }, files.paths);
+        }
       }
       if (listed.length >= COMPARE_LIMIT) {
         return incomplete({ kind: "truncated", listed: listed.length, limit: COMPARE_LIMIT }, files.paths);
@@ -149,6 +180,10 @@ export function githubRepo(options: {
       return files;
     },
   };
+}
+
+function fullSha(revision: string): boolean {
+  return /^[0-9a-f]{40}$/i.test(revision);
 }
 
 function describe({ path, message }: Issue): string {

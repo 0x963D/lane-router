@@ -42,11 +42,11 @@ interface Invocation {
   readonly config: string;
   readonly mode: Mode;
   readonly range: Range;
+  readonly explicitHead: boolean;
   readonly pullRequest?: {
-    readonly base: string;
     readonly head: string;
-    readonly merge: string | undefined;
-    readonly explicitHead: boolean;
+    readonly eventSha: string | undefined;
+    readonly target: boolean;
   };
   readonly source:
     | { readonly kind: "files"; readonly files: ChangedFiles }
@@ -139,10 +139,11 @@ function toInvocation(inputs: Inputs, event: GitHubEvent, env: NodeJS.ProcessEnv
   const fromEvent = eventDefaults(event);
   const mode = inputs.mode ?? fromEvent?.mode;
   const base = inputs.base === "" ? fromEvent?.base : inputs.base;
-  const ownRange = inputs.base === "" && inputs.head === "";
+  const explicitHead = inputs.head !== "";
+  const ownRange = inputs.base === "" && !explicitHead;
   const pullRequest =
-    event.kind === "pull_request" && env.GITHUB_EVENT_NAME === "pull_request"
-      ? { base: event.base, head: event.head, merge: env.GITHUB_SHA, explicitHead: inputs.head !== "" }
+    event.kind === "pull_request"
+      ? { head: event.head, eventSha: env.GITHUB_SHA, target: env.GITHUB_EVENT_NAME === "pull_request_target" }
       : undefined;
   const head = inputs.head || fromEvent?.head || env.GITHUB_SHA || "";
   const repository = env.GITHUB_REPOSITORY ?? "";
@@ -169,6 +170,7 @@ function toInvocation(inputs: Inputs, event: GitHubEvent, env: NodeJS.ProcessEnv
     config: inputs.config,
     mode,
     range: { base: base ?? null, head },
+    explicitHead,
     ...(pullRequest === undefined ? {} : { pullRequest }),
     source:
       inputs.files === ""
@@ -213,7 +215,7 @@ function lines(text: string): string[] {
 }
 
 async function requestFor(invocation: Invocation, head: RepoTree): Promise<PlanRequest> {
-  const { source, mode, pullRequest } = invocation;
+  const { source, mode, pullRequest, explicitHead } = invocation;
   let { range } = invocation;
   const github = githubRepo(invocation.github);
   const repo = gitRepo(invocation.root);
@@ -221,23 +223,40 @@ async function requestFor(invocation: Invocation, head: RepoTree): Promise<PlanR
   const under = (): Promise<string> =>
     relative(process.cwd(), invocation.root) === "" ? Promise.resolve("") : repo.prefix();
 
-  let requireBaseAncestor = false;
-  if (pullRequest !== undefined && (source.kind === "compare" || pullRequest.explicitHead)) {
+  let branchDiff = false;
+  if (explicitHead || (source.kind === "compare" && range.base !== null)) {
     try {
       const checkout = await repo.resolve("HEAD");
-      if (checkout === undefined) throw new Error("cannot resolve HEAD for the pull request checkout");
-      if (pullRequest.explicitHead) {
-        if (checkout !== (await repo.resolve(range.head))) {
-          throw new Error("the head input does not match the pull request checkout");
+      if (checkout === undefined)
+        throw new Error("cannot resolve HEAD, so check out the repository before running lane-router");
+      if (explicitHead) {
+        const supplied = range.head === checkout ? checkout : await repo.resolve(range.head);
+        if (supplied === undefined) {
+          throw new Error(
+            "cannot resolve the head input, so supply HEAD or a revision that is available in the checkout",
+          );
         }
-      } else if (checkout !== pullRequest.merge && checkout !== pullRequest.head) {
+        if (supplied !== checkout) {
+          throw new Error(
+            "the head input does not match the checkout, so check out that commit or set head to the tested revision",
+          );
+        }
+      } else if (pullRequest === undefined) {
+        if (checkout !== range.head) {
+          throw new Error(
+            "the checkout does not match the event's head, so check out that commit or set head to the tested revision",
+          );
+        }
+      } else if (!pullRequest.target && checkout !== pullRequest.eventSha && checkout !== pullRequest.head) {
         throw new Error(
-          "the checkout matches neither the pull request merge commit nor its head; set head to route a custom checkout",
+          "the checkout matches neither the pull request merge commit nor its head, so set head to the tested revision",
         );
       }
-      range = { base: range.base, head: checkout };
-      requireBaseAncestor =
-        checkout === pullRequest.merge || checkout !== pullRequest.head || range.base !== pullRequest.base;
+      const targetBase = pullRequest?.target === true && checkout === pullRequest.eventSha;
+      branchDiff = targetBase || checkout === pullRequest?.head;
+      if (explicitHead || !targetBase) {
+        range = { base: range.base, head: checkout };
+      }
     } catch (error) {
       return {
         mode,
@@ -256,8 +275,9 @@ async function requestFor(invocation: Invocation, head: RepoTree): Promise<PlanR
       : async (requested) =>
           github.compare(requested, {
             mode,
-            requireBaseAncestor,
-            expectedCount: requireBaseAncestor ? null : source.expectedCount,
+            requireBaseAncestor: pullRequest !== undefined && !branchDiff,
+            expectedCount: branchDiff ? source.expectedCount : null,
+            resolveBase: (ref) => repo.resolve(ref),
             under: await under(),
           });
   return { mode, range, changes, baseGraph };

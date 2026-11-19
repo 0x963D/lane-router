@@ -48,11 +48,12 @@ export function compare(
   base: string,
   head: string,
   files: readonly (string | CompareFile)[],
-  options: { readonly mergeBase?: string; readonly status?: string } = {},
+  options: { readonly baseCommit?: string; readonly mergeBase?: string; readonly status?: string } = {},
 ): void {
-  github.on(`/compare/${base}...${head}`, {
+  github.on(`/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`, {
     body: {
       status: options.status ?? "ahead",
+      base_commit: { sha: options.baseCommit ?? base },
       merge_base_commit: { sha: options.mergeBase ?? base },
       files: files.map((file) => (typeof file === "string" ? { filename: file, status: "modified" } : file)),
     },

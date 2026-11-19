@@ -14,7 +14,9 @@ In `v0.1.1`, the default pull request checkout was a merge commit, but the Actio
 
 The 250,000 generated changes did not find this bug. The oracle tests planning with a supplied workspace model and file list. It does not test whether the Action gets the diff for the tree that CI checks out.
 
-The bug surfaced while trying lane-router on the author's own CI workflows. The [checkout regression matrix](../test/action-pr-checkout.test.ts) uses real Git merges and diffs to check the merge, pull request head and other checkouts across input combinations. The [Action tests](../test/action.test.ts) also check the requested range and the file count check for the pull request head.
+The bug surfaced while trying lane-router on the author's own CI workflows. In the [checkout regression matrix](../test/action-pr-checkout.test.ts), `v0.1.1` skipped a required lane in 13 cells where the planned tree differed from the tested tree. The count includes both pull request events. The directory rename fixture has its own category because Git needs `merge.directoryRenames=true` to resolve that merge. The matrix also labels cases that check the new range rules.
+
+The matrix checks exact lane selections and completeness on the default merge and PR head comparisons whose ranges can be verified. The [Action tests](../test/action.test.ts) also check the requested range and the file count check for the pull request head.
 
 ## Soundness oracle
 
