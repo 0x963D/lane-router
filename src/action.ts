@@ -47,6 +47,7 @@ interface Invocation {
     readonly head: string;
     readonly eventSha: string | undefined;
     readonly target: boolean;
+    readonly defaultBase: boolean;
   };
   readonly source:
     | { readonly kind: "files"; readonly files: ChangedFiles }
@@ -143,7 +144,12 @@ function toInvocation(inputs: Inputs, event: GitHubEvent, env: NodeJS.ProcessEnv
   const ownRange = inputs.base === "" && !explicitHead;
   const pullRequest =
     event.kind === "pull_request"
-      ? { head: event.head, eventSha: env.GITHUB_SHA, target: env.GITHUB_EVENT_NAME === "pull_request_target" }
+      ? {
+          head: event.head,
+          eventSha: env.GITHUB_SHA,
+          target: env.GITHUB_EVENT_NAME === "pull_request_target",
+          defaultBase: inputs.base === "",
+        }
       : undefined;
   const head = inputs.head || fromEvent?.head || env.GITHUB_SHA || "";
   const repository = env.GITHUB_REPOSITORY ?? "";
@@ -255,7 +261,13 @@ async function requestFor(invocation: Invocation, head: RepoTree): Promise<PlanR
       const targetBase = pullRequest?.target === true && checkout === pullRequest.eventSha;
       branchDiff = targetBase || checkout === pullRequest?.head;
       if (explicitHead || !targetBase) {
-        range = { base: range.base, head: checkout };
+        let { base } = range;
+        if (source.kind === "compare" && pullRequest?.defaultBase && !branchDiff) {
+          const parents = await repo.parentsOf(checkout);
+          const [first, second] = parents;
+          if (parents.length === 2 && first !== undefined && second === pullRequest.head) base = first;
+        }
+        range = { base, head: checkout };
       }
     } catch (error) {
       return {

@@ -29685,6 +29685,16 @@ function gitRepo(cwd) {
         return void 0;
       }
     },
+    parentsOf: async (commit) => {
+      try {
+        const object2 = await git(["--no-replace-objects", "cat-file", "commit", commit]);
+        const [headers = ""] = object2.split("\n\n", 1);
+        const parents = headers.split("\n").filter((line) => line.startsWith("parent ")).map((line) => line.slice(7));
+        return parents.every((parent) => /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(parent)) ? parents : [];
+      } catch {
+        return [];
+      }
+    },
     treeAt: (commit) => {
       let listing;
       const entries2 = () => listing ??= git(["ls-tree", "-r", "-z", commit]).then(parseEntries);
@@ -30240,7 +30250,12 @@ function toInvocation(inputs, event, env, context) {
   const base = inputs.base === "" ? fromEvent?.base : inputs.base;
   const explicitHead = inputs.head !== "";
   const ownRange = inputs.base === "" && !explicitHead;
-  const pullRequest = event.kind === "pull_request" ? { head: event.head, eventSha: env.GITHUB_SHA, target: env.GITHUB_EVENT_NAME === "pull_request_target" } : void 0;
+  const pullRequest = event.kind === "pull_request" ? {
+    head: event.head,
+    eventSha: env.GITHUB_SHA,
+    target: env.GITHUB_EVENT_NAME === "pull_request_target",
+    defaultBase: inputs.base === ""
+  } : void 0;
   const head = inputs.head || fromEvent?.head || env.GITHUB_SHA || "";
   const repository = env.GITHUB_REPOSITORY ?? "";
   const eventText = event.kind === "other" ? `a ${event.name || "manual"} event` : `a ${event.kind} event`;
@@ -30328,7 +30343,13 @@ async function requestFor(invocation, head) {
       const targetBase = pullRequest?.target === true && checkout === pullRequest.eventSha;
       branchDiff = targetBase || checkout === pullRequest?.head;
       if (explicitHead || !targetBase) {
-        range = { base: range.base, head: checkout };
+        let { base } = range;
+        if (source.kind === "compare" && pullRequest?.defaultBase && !branchDiff) {
+          const parents = await repo.parentsOf(checkout);
+          const [first, second] = parents;
+          if (parents.length === 2 && first !== void 0 && second === pullRequest.head) base = first;
+        }
+        range = { base, head: checkout };
       }
     } catch (error2) {
       return {

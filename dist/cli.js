@@ -10034,6 +10034,16 @@ function gitRepo(cwd) {
         return void 0;
       }
     },
+    parentsOf: async (commit) => {
+      try {
+        const object2 = await git(["--no-replace-objects", "cat-file", "commit", commit]);
+        const [headers = ""] = object2.split("\n\n", 1);
+        const parents = headers.split("\n").filter((line) => line.startsWith("parent ")).map((line) => line.slice(7));
+        return parents.every((parent) => /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(parent)) ? parents : [];
+      } catch {
+        return [];
+      }
+    },
     treeAt: (commit) => {
       let listing;
       const entries2 = () => listing ??= git(["ls-tree", "-r", "-z", commit]).then(parseEntries);

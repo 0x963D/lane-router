@@ -1,3 +1,4 @@
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { runAction, type ActionRun } from "./support/action.ts";
 import { compare, fakeGitHub, type CompareFile, type FakeGitHub } from "./support/fake-github.ts";
@@ -7,6 +8,7 @@ import { CONFIG } from "./support/model.ts";
 
 const ACME = fixtureDir("acme");
 const UI_FILE = "packages/ui/feature/item.ts";
+const UI_MANIFEST = "packages/ui/package.json";
 const API_MANIFEST = "packages/api/package.json";
 const API_PATH_RULE = "UI files also affect the API lane.";
 const LANES = ["ui", "api"];
@@ -85,6 +87,17 @@ function diffPaths(repo: GitFixture, base: string, head: string) {
   return repo.git("diff", "--name-only", "--no-renames", base, head).split("\n").filter(Boolean);
 }
 
+function shallowMerge(repo: GitFixture, merge: string, firstParent: string) {
+  const checkout = tempDir();
+  repo.git("branch", "test-merge", merge);
+  repo.git("clone", "--quiet", "--depth=1", "--branch=test-merge", pathToFileURL(repo.dir).href, checkout);
+  repo.git("-C", checkout, "switch", "--detach", merge);
+  expect(repo.git("-C", checkout, "rev-parse", "--is-shallow-repository")).toBe("true");
+  expect(repo.git("-C", checkout, "rev-list", "--count", "HEAD")).toBe("1");
+  expect(() => repo.git("-C", checkout, "cat-file", "-t", firstParent)).toThrow();
+  return checkout;
+}
+
 function compareFromGit(github: FakeGitHub, repo: GitFixture, base: string, head: string, baseRef = base) {
   const mergeBase = repo.git("merge-base", base, head);
   const status =
@@ -140,6 +153,7 @@ describe("a pull request plans the tested tree", () => {
       name: "pull_request",
       payload: { pull_request: { base: { sha: base }, head: { sha: head }, changed_files: changedFiles } },
     };
+    const shallow = shallowMerge(repo, merge, firstParent);
 
     for (const [checkout, tree] of Object.entries({ merge, head, custom })) {
       repo.git("switch", "--detach", tree);
@@ -153,7 +167,7 @@ describe("a pull request plans the tested tree", () => {
         [false, true, true],
         [true, true, true],
       ]) {
-        const compareBase = baseInput ? firstParent : base;
+        const compareBase = baseInput || (checkout === "merge" && !filesInput) ? firstParent : base;
         const diffBase = checkout === "head" ? fork : compareBase;
         const paths = diffPaths(repo, diffBase, tree);
         const kind =
@@ -161,13 +175,13 @@ describe("a pull request plans the tested tree", () => {
             ? "b"
             : !filesInput &&
                 ((checkout === "head" && baseInput && compareBase !== base) ||
-                  (scenario === "newer payload base" && checkout === "merge" && headInput && !baseInput))
+                  (checkout === "merge" && headInput && !baseInput && firstParent !== base))
               ? "c"
               : "a";
         const inputs = `${baseInput ? "B" : ""}${headInput ? "H" : ""}${filesInput ? "F" : ""}` || "default";
         const label = `(${kind}) ${scenario}, pull_request, ${checkout}, ${inputs}`;
         const run = await runAction({
-          workspace: repo.dir,
+          workspace: checkout === "merge" && inputs === "default" ? shallow : repo.dir,
           event,
           github,
           sha: merge,
@@ -182,13 +196,9 @@ describe("a pull request plans the tested tree", () => {
         for (const lane of affected) {
           expect.soft(run.outputs[lane], `${label}, ${lane}`).toBe("run");
         }
-        if (!filesInput && checkout === "head") {
+        if (!filesInput && (checkout === "head" || checkout === "merge")) {
           expectPrecise(run, affected, label);
           expect.soft(run.annotations, `${label}, annotations`).toEqual([]);
-        }
-        if (checkout === "merge" && inputs === "default") {
-          if (scenario === "newer payload base") expectAncestryFailure(run, label);
-          else expectPrecise(run, affected, label);
         }
       }
     }
@@ -196,7 +206,7 @@ describe("a pull request plans the tested tree", () => {
     for (const [checkout, tree] of Object.entries({ base, head, merge })) {
       repo.git("switch", "--detach", tree);
       const run = await runAction({
-        workspace: repo.dir,
+        workspace: checkout === "merge" ? shallow : repo.dir,
         event: { ...event, name: "pull_request_target" },
         github,
         sha: base,
@@ -204,19 +214,129 @@ describe("a pull request plans the tested tree", () => {
       });
       const kind = scenario === "directory rename" ? "b" : "a";
       const label = `(${kind}) ${scenario}, pull_request_target, ${checkout}, default`;
-      const diffBase = checkout === "merge" ? base : fork;
+      const diffBase = checkout === "merge" ? firstParent : fork;
       const diffHead = checkout === "base" ? head : tree;
       const affected = affectedLanes(repo, diffBase, tree, diffPaths(repo, diffBase, diffHead));
       for (const lane of affected) {
         expect.soft(run.outputs[lane], `${label}, ${lane}`).toBe("run");
       }
-      if (checkout === "merge" && scenario === "newer payload base") {
-        expectAncestryFailure(run, label);
-      } else {
-        expectPrecise(run, affected, label);
-      }
-      if (checkout === "head") expect.soft(run.annotations, `${label}, annotations`).toEqual([]);
+      expectPrecise(run, affected, label);
+      expect.soft(run.annotations, `${label}, annotations`).toEqual([]);
     }
+
+    if (scenario === "older payload base") {
+      const affected = affectedLanes(repo, base, merge, diffPaths(repo, base, merge));
+      for (const name of ["pull_request", "pull_request_target"]) {
+        const label = `(c) older payload base, ${name}, merge, explicit older base`;
+        const run = await runAction({
+          workspace: shallow,
+          event: { ...event, name },
+          github,
+          sha: name === "pull_request" ? merge : base,
+          process: "in-process",
+          inputs: { base },
+        });
+        expectPrecise(run, affected, label);
+        expect.soft(run.annotations, `${label}, annotations`).toEqual([]);
+      }
+    }
+  });
+
+  it.each(["different second parent", "octopus merge", "single parent"] as const)(
+    "(c) falls back to the payload base for a checkout with %s",
+    async (shape) => {
+      const { repo, base, firstParent, head } = history("older payload base");
+      repo.git("switch", "--detach", firstParent);
+      repo.write("packages/ui/other.ts", "export const other = 1;\n");
+      const side = repo.commit("Edit a different UI path");
+      if (shape !== "single parent") {
+        repo.git("switch", "--detach", firstParent);
+        if (shape === "octopus merge") repo.git("merge", "--no-ff", "--no-edit", head, side);
+        else repo.git("merge", "--no-ff", "--no-edit", side);
+      }
+      const checkout = repo.git("rev-parse", "HEAD");
+      const parents = repo.git("show", "-s", "--format=%P", checkout).split(" ");
+      expect(parents).toEqual(
+        shape === "octopus merge"
+          ? [firstParent, head, side]
+          : shape === "single parent"
+            ? [firstParent]
+            : [firstParent, side],
+      );
+      const github = await fakeGitHub();
+      compareFromGit(github, repo, firstParent, checkout);
+      compareFromGit(github, repo, base, checkout);
+      const changedFiles = compareFromGit(github, repo, base, head);
+      const nonAncestor = repo.git("rev-parse", "newer-base");
+      compareFromGit(github, repo, nonAncestor, checkout);
+      compareFromGit(github, repo, nonAncestor, head);
+      const affected = affectedLanes(repo, base, checkout, diffPaths(repo, base, checkout));
+      expect(affected).toEqual(LANES);
+      for (const name of ["pull_request", "pull_request_target"]) {
+        for (const payloadBase of [base, nonAncestor]) {
+          const ancestry = payloadBase === base ? "ancestor" : "non-ancestor";
+          const label = `(c) ${shape}, ${name}, ${ancestry} fallback`;
+          const run = await runAction({
+            workspace: repo.dir,
+            event: {
+              name,
+              payload: {
+                pull_request: { base: { sha: payloadBase }, head: { sha: head }, changed_files: changedFiles },
+              },
+            },
+            github,
+            sha: name === "pull_request" ? checkout : payloadBase,
+            process: "in-process",
+          });
+          if (payloadBase === base) {
+            expectPrecise(run, affected, label);
+            expect.soft(run.annotations, `${label}, annotations`).toEqual([]);
+            expect.soft(github.requests.at(-1), `${label}, compare`).toContain(`/compare/${base}...${checkout}`);
+          } else {
+            expectAncestryFailure(run, label);
+          }
+        }
+      }
+    },
+  );
+
+  it("(c) loads the first parent's model when the merge changes a workspace manifest", async () => {
+    const { repo, fork } = history("older payload base");
+    repo.git("switch", "--detach", fork);
+    const manifest = repo.git("show", `HEAD:${API_MANIFEST}`);
+    repo.write(API_MANIFEST, '{"name":"@acme/api","dependencies":{"@acme/ui":"workspace:*"}}\n');
+    const base = repo.commit("Make API read UI");
+    repo.git("switch", "-c", "patch-model");
+    repo.write(UI_MANIFEST, '{"name":"@acme/ui","scripts":{"test":"node --test"}}\n');
+    const head = repo.commit("Edit the UI manifest");
+    repo.git("switch", "--detach", base);
+    repo.write(API_MANIFEST, manifest + "\n");
+    const firstParent = repo.commit("Remove the API dependency on UI");
+    repo.git("merge", "--no-ff", "--no-edit", head);
+    const merge = repo.git("rev-parse", "HEAD");
+    const github = await fakeGitHub();
+    const changedFiles = compareFromGit(github, repo, base, head);
+    compareFromGit(github, repo, base, merge);
+    compareFromGit(github, repo, firstParent, merge);
+    const event = {
+      name: "pull_request",
+      payload: { pull_request: { base: { sha: base }, head: { sha: head }, changed_files: changedFiles } },
+    };
+    const full = await runAction({ workspace: repo.dir, event, github, sha: merge, process: "in-process" });
+    const label = "(c) manifest change with first-parent model";
+    const paths = diffPaths(repo, firstParent, merge);
+    expect(paths).toEqual([UI_MANIFEST]);
+    expectPrecise(full, affectedLanes(repo, firstParent, merge, paths), label);
+    expect.soft(full.annotations, `${label}, annotations`).toEqual([]);
+
+    const workspace = shallowMerge(repo, merge, firstParent);
+    const shallow = await runAction({ workspace, event, github, sha: merge, process: "in-process" });
+    expect.soft(JSON.parse(shallow.outputs.lanes ?? "null"), "(c) shallow manifest, selected lanes").toEqual(LANES);
+    expect.soft(shallow.outputs.complete, "(c) shallow manifest, complete").toBe("false");
+    expect
+      .soft(shallow.annotations[0]?.message ?? "", "(c) shallow manifest, missing base")
+      .toContain(firstParent.slice(0, 7));
+    expect.soft(shallow.annotations[0]?.message ?? "", "(c) shallow manifest, fetch advice").toContain("fetch-depth");
   });
 
   it.each(["main", "origin/main", "short SHA", "unfetched-base"])(

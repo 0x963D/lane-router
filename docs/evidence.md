@@ -14,9 +14,9 @@ In `v0.1.1`, the default pull request checkout was a merge commit, but the Actio
 
 The 250,000 generated changes did not find this bug. The oracle tests planning with a supplied workspace model and file list. It does not test whether the Action gets the diff for the tree that CI checks out.
 
-The bug surfaced while trying lane-router on the author's own CI workflows. In the [checkout regression matrix](../test/action-pr-checkout.test.ts), `v0.1.1` skipped a required lane in 13 cells where the planned tree differed from the tested tree. The count includes both pull request events. The directory rename fixture has its own category because Git needs `merge.directoryRenames=true` to resolve that merge. The matrix also labels cases that check the new range rules.
+The bug surfaced while trying lane-router on the author's own CI workflows. In the [checkout regression matrix](../test/action-pr-checkout.test.ts), `v0.1.1` skips the API lane for a file the base branch moved into the API package. The matrix reproduces the skip on both pull request events. The directory rename fixture has its own category because Git needs `merge.directoryRenames=true` to resolve that merge. The matrix also labels cases that check the new range rules.
 
-The matrix checks exact lane selections and completeness on the default merge and PR head comparisons whose ranges can be verified. The [Action tests](../test/action.test.ts) also check the requested range and the file count check for the pull request head.
+The matrix uses depth-1 clones for default merge checkouts on both pull request events. It checks the exact lane list from the first-parent diff, including when the payload base differs, and requires `complete=true` with no annotation. It covers the payload-base fallback when the checkout has one parent, three parents, or a different second parent. A manifest change uses the first parent's model in a full checkout and gives fetch-depth advice when the parent object is missing. The [Action tests](../test/action.test.ts) also check requested ranges and the file count check for the pull request head.
 
 ## Soundness oracle
 

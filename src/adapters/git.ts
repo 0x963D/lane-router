@@ -18,6 +18,8 @@ const LINKS: ReadonlyMap<string, Refusal> = new Map([
 export interface GitRepo {
   /** The full SHA of the commit a ref names, or undefined when git does not know it. */
   resolve(ref: string): Promise<string | undefined>;
+  /** Ordered parent SHAs from the commit object, even at a shallow boundary. */
+  parentsOf(commit: string): Promise<readonly string[]>;
   /** The routed root at one commit. Nothing here reads the working tree or the index. */
   treeAt(commit: string): RepoTree;
   /**
@@ -52,6 +54,20 @@ export function gitRepo(cwd: string): GitRepo {
         return (await git(["rev-parse", "--verify", "--quiet", "--end-of-options", `${ref}^{commit}`])).trim();
       } catch {
         return undefined;
+      }
+    },
+    parentsOf: async (commit) => {
+      try {
+        // Revision walks hide the recorded parents of shallow commits.
+        const object = await git(["--no-replace-objects", "cat-file", "commit", commit]);
+        const [headers = ""] = object.split("\n\n", 1);
+        const parents = headers
+          .split("\n")
+          .filter((line) => line.startsWith("parent "))
+          .map((line) => line.slice(7));
+        return parents.every((parent) => /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(parent)) ? parents : [];
+      } catch {
+        return [];
       }
     },
     treeAt: (commit) => {
