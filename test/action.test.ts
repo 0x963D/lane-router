@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { jsonObject, runAction, type ActionEvent } from "./support/action.ts";
+import { jsonObject, pullRequestCheckout, runAction, type ActionEvent } from "./support/action.ts";
 import { compare, fakeGitHub } from "./support/fake-github.ts";
 import { fixtureCopy, fixtureDir, tempDir } from "./support/fixtures.ts";
 import { gitFixture } from "./support/git-fixture.ts";
@@ -90,55 +90,28 @@ describe("the files input", () => {
   });
 });
 
+function prCheckout(options: { at?: string } = {}) {
+  return pullRequestCheckout(gitFixture(ACME, tempDir(), options));
+}
+
 describe("the compare API", () => {
-  it("compares the pull request's base and head", async () => {
+  it("compares the default merge checkout and ignores the branch file count", async () => {
+    const { base, merge, runner } = prCheckout();
     const github = await fakeGitHub();
-    compare(github, BASE, HEAD, ["packages/ui/src/button.tsx"]);
-    const run = await runAction({ workspace: ACME, event: pullRequest(1), github });
-    expect(github.requests).toEqual([`/repos/acme/mono/compare/${BASE}...${HEAD}`]);
+    compare(github, base, merge, ["packages/ui/src/button.tsx"]);
+    const run = await runAction({ ...runner(2), github });
+    expect(github.requests).toEqual([`/repos/acme/mono/compare/${base}...${merge}`]);
     expect(parsed(run.outputs.lanes)).toEqual(["web", "e2e", "lint"]);
     expect(run.outputs.complete).toBe("true");
+    expect(run.annotations).toEqual([]);
   });
 
-  it("routes the tested destination when the base moved a file edited by the pull request", async () => {
-    const repo = gitFixture(ACME, tempDir());
-    const from = "packages/ui/src/moved.ts";
-    const to = "packages/api/src/moved.ts";
-    const original = "export const value = 1;\\n";
-    repo.write(from, original);
-    const fork = repo.commit("Add a file to edit");
-    repo.git("switch", "-c", "patch");
-    repo.write(from, "export const value = 2;\\n");
-    const head = repo.commit("Edit the file");
-    repo.git("switch", "main");
-    repo.move(from, to);
-    const base = repo.commit("Move the file into the API package");
-    repo.git("merge", "--no-ff", "--no-edit", "patch");
-    const merge = repo.git("rev-parse", "HEAD");
-    expect(repo.git("diff", "--name-only", base, merge)).toBe(to);
-
-    const github = await fakeGitHub();
-    compare(github, base, head, [from], { status: "diverged", mergeBase: fork });
-    compare(github, base, merge, [to]);
-    const event = {
-      name: "pull_request",
-      payload: { pull_request: { base: { sha: base }, head: { sha: head }, changed_files: 1 } },
-    };
-    const run = await runAction({ workspace: repo.dir, event, github, sha: merge });
-    expect(run.outputs.api).toBe("run");
-    expect(run.outputs.complete).toBe("true");
-    expect(github.requests).toEqual([`/repos/acme/mono/compare/${base}...${merge}`]);
-
+  it("fails closed when a PR head checkout's listing differs from changed_files", async () => {
+    const { repo, base, head, runner } = prCheckout();
     repo.git("switch", "--detach", head);
-    const otherCheckout = await runAction({ workspace: repo.dir, event, github, sha: merge });
-    expect(parsed(otherCheckout.outputs.lanes)).toEqual(ALL);
-    expect(otherCheckout.outputs.complete).toBe("false");
-  });
-
-  it("fails closed when the listing differs from the pull request's changed_files", async () => {
     const github = await fakeGitHub();
-    compare(github, BASE, HEAD, ["README.md", "docs/guide.md"]);
-    const run = await runAction({ workspace: ACME, event: pullRequest(3), github });
+    compare(github, base, head, ["README.md", "docs/guide.md"], { status: "diverged", mergeBase: repo.base });
+    const run = await runAction({ ...runner(3), github });
     expect(run.exitCode).toBe(0);
     expect(parsed(run.outputs.lanes)).toEqual(ALL);
     expect(run.outputs.complete).toBe("false");
@@ -146,14 +119,15 @@ describe("the compare API", () => {
   });
 
   it("fails closed when the listing reaches the 300-file cap", async () => {
+    const { base, merge, runner } = prCheckout();
     const github = await fakeGitHub();
     compare(
       github,
-      BASE,
-      HEAD,
+      base,
+      merge,
       Array.from({ length: 300 }, (_, index) => `docs/page-${String(index)}.md`),
     );
-    const run = await runAction({ workspace: ACME, event: pullRequest(300), github });
+    const run = await runAction({ ...runner(300), github });
     expect(run.exitCode).toBe(0);
     expect(parsed(run.outputs.lanes)).toEqual(ALL);
     expect(run.outputs.complete).toBe("false");
@@ -161,55 +135,96 @@ describe("the compare API", () => {
     expect(run.annotations[0]?.message).toContain("at most 300 files");
   });
 
-  it("skips the count check for a caller-supplied range", async () => {
+  it("skips the count check for an explicit PR head input and accepts a matching ref", async () => {
+    const { repo, base, head, runner } = prCheckout();
+    repo.git("switch", "patch");
     const github = await fakeGitHub();
-    compare(github, "c".repeat(40), HEAD, ["packages/ui/src/button.tsx"]);
-    const run = await runAction({
-      workspace: ACME,
-      inputs: { base: "c".repeat(40) },
-      event: pullRequest(9),
-      github,
-    });
+    compare(github, base, head, ["packages/ui/src/button.tsx"], { status: "diverged", mergeBase: repo.base });
+    const run = await runAction({ ...runner(9), inputs: { head: "patch" }, github });
+    expect(parsed(run.outputs.lanes)).toEqual(["web", "e2e", "lint"]);
     expect(run.outputs.complete).toBe("true");
+    expect(run.annotations).toEqual([]);
   });
 
   it("routes both paths of a rename", async () => {
+    const { base, merge, runner } = prCheckout();
     const github = await fakeGitHub();
-    compare(github, BASE, HEAD, [
+    compare(github, base, merge, [
       { filename: "packages/ui/src/user.ts", previous_filename: "packages/api/src/user.ts", status: "renamed" },
     ]);
-    const run = await runAction({ workspace: ACME, event: pullRequest(1), github });
+    const run = await runAction({ ...runner(1), github });
     expect(run.outputs.complete).toBe("true");
     expect(run.outputs.api).toBe("run");
   });
 
   it("accepts file statuses it does not model, such as copied", async () => {
+    const { base, merge, runner } = prCheckout();
     const github = await fakeGitHub();
-    compare(github, BASE, HEAD, [{ filename: "packages/ui/src/copy.tsx", status: "copied" }]);
-    const run = await runAction({ workspace: ACME, event: pullRequest(1), github });
+    compare(github, base, merge, [{ filename: "packages/ui/src/copy.tsx", status: "copied" }]);
+    const run = await runAction({ ...runner(1), github });
     expect(run.outputs.complete).toBe("true");
   });
 
-  it("routes a pull request whose base branch moved on, which the compare API reports as diverged", async () => {
+  it("routes the default range for a PR head checkout even when the base has diverged", async () => {
+    const { repo, base, head, runner } = prCheckout();
+    repo.git("switch", "--detach", head);
     const github = await fakeGitHub();
-    compare(github, BASE, HEAD, ["packages/ui/src/button.tsx"], { status: "diverged", mergeBase: MERGE_BASE });
-    const run = await runAction({ workspace: ACME, event: pullRequest(1), github });
+    compare(github, base, head, ["packages/ui/src/button.tsx"], { status: "diverged", mergeBase: repo.base });
+    const run = await runAction({ ...runner(1), github });
+    expect(github.requests).toEqual([`/repos/acme/mono/compare/${base}...${head}`]);
     expect(parsed(run.outputs.lanes)).toEqual(["web", "e2e", "lint"]);
     expect(run.outputs.complete).toBe("true");
+    expect(run.annotations).toEqual([]);
   });
 
   it("re-roots paths under a nested working-directory and fails closed on a path outside it", async () => {
-    const repo = gitFixture(ACME, tempDir(), { at: "mono" });
+    const { base, merge, runner } = prCheckout({ at: "mono" });
     const github = await fakeGitHub();
-    compare(github, BASE, HEAD, ["mono/packages/ui/src/button.tsx"]);
+    compare(github, base, merge, ["mono/packages/ui/src/button.tsx"]);
     const inputs = { "working-directory": "mono" };
-    const inside = await runAction({ workspace: repo.dir, inputs, event: pullRequest(1), github });
+    const inside = await runAction({ ...runner(1), inputs, github });
     expect(parsed(inside.outputs.lanes)).toEqual(["web", "e2e", "lint"]);
 
-    compare(github, BASE, HEAD, ["mono/packages/ui/src/button.tsx", "LICENSE"]);
-    const outside = await runAction({ workspace: repo.dir, inputs, event: pullRequest(2), github });
+    compare(github, base, merge, ["mono/packages/ui/src/button.tsx", "LICENSE"]);
+    const outside = await runAction({ ...runner(2), inputs, github });
     expect(parsed(outside.outputs.lanes)).toEqual(ALL);
     expect(outside.outputs.complete).toBe("false");
+  });
+
+  it("requires an explicit head for a checkout outside the PR", async () => {
+    const { repo, base, runner } = prCheckout();
+    repo.git("switch", "--detach", base);
+    const github = await fakeGitHub();
+    const run = await runAction({ ...runner(1), github });
+    expect(run.exitCode).toBe(0);
+    expect(parsed(run.outputs.lanes)).toEqual(ALL);
+    expect(run.outputs.complete).toBe("false");
+    expect(run.annotations[0]?.message).toContain("matches neither");
+    expect(github.requests).toEqual([]);
+  });
+
+  it.each(["", "README.md"])("rejects a mismatched head with files %j", async (files) => {
+    const { head, runner } = prCheckout();
+    const github = await fakeGitHub();
+    const run = await runAction({ ...runner(1), inputs: { head, files }, github });
+    expect(run.exitCode).toBe(0);
+    expect(parsed(run.outputs.lanes)).toEqual(ALL);
+    expect(run.outputs.complete).toBe("false");
+    expect(run.annotations[0]?.message).toContain("head input does not match");
+    expect(github.requests).toEqual([]);
+  });
+
+  it("keeps the event range on pull_request_target", async () => {
+    const github = await fakeGitHub();
+    compare(github, BASE, HEAD, ["packages/ui/src/button.tsx"], { status: "diverged", mergeBase: MERGE_BASE });
+    const run = await runAction({
+      workspace: ACME,
+      event: { ...pullRequest(1), name: "pull_request_target" },
+      github,
+    });
+    expect(github.requests).toEqual([`/repos/acme/mono/compare/${BASE}...${HEAD}`]);
+    expect(parsed(run.outputs.lanes)).toEqual(["web", "e2e", "lint"]);
+    expect(run.outputs.complete).toBe("true");
   });
 });
 
@@ -315,8 +330,9 @@ describe("a push", () => {
 describe("errors after the config is valid", () => {
   it("select every lane, annotate the error and let the step succeed when the API fails", async () => {
     const github = await fakeGitHub();
-    github.on(`/compare/${BASE}...${HEAD}`, { status: 500, body: { message: "Server Error" } });
-    const run = await runAction({ workspace: ACME, event: pullRequest(1), github });
+    const { base, merge, runner } = prCheckout();
+    github.on(`/compare/${base}...${merge}`, { status: 500, body: { message: "Server Error" } });
+    const run = await runAction({ ...runner(1), github });
     expect(run.exitCode).toBe(0);
     expect(parsed(run.outputs.lanes)).toEqual(ALL);
     expect(run.outputs.complete).toBe("false");
@@ -325,7 +341,8 @@ describe("errors after the config is valid", () => {
   });
 
   it("do the same when the API cannot be reached", async () => {
-    const run = await runAction({ workspace: ACME, event: pullRequest(1) });
+    const { runner } = prCheckout();
+    const run = await runAction(runner(1));
     expect(run.exitCode).toBe(0);
     expect(parsed(run.outputs.lanes)).toEqual(ALL);
     expect(run.annotations).toMatchObject([{ level: "error" }]);

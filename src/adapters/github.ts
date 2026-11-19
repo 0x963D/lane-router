@@ -91,13 +91,14 @@ export interface GitHubRepo {
    * The files changed from the merge base of `range.base` and `range.head`, which the list carries,
    * from the compare endpoint. Resolves incomplete when there is no base, when the listing reaches
    * the 300-file cap, or when it differs from `expectedCount`. In push mode it also resolves
-   * incomplete unless head extends base. Rejects on any HTTP or decoding failure.
+   * incomplete unless head extends base. When `requireBaseAncestor` is set, it rejects unless head
+   * extends base. Rejects on any HTTP or decoding failure.
    */
   compare(
     range: Range,
     options: {
       readonly mode: Mode;
-      readonly mergeCheckout?: boolean;
+      readonly requireBaseAncestor?: boolean;
       readonly expectedCount: number | null;
       readonly under: string;
     },
@@ -128,13 +129,14 @@ export function githubRepo(options: {
   };
 
   return {
-    compare: async (range, { mode, mergeCheckout, expectedCount, under }) => {
+    compare: async (range, { mode, requireBaseAncestor, expectedCount, under }) => {
       if (range.base === null) return incomplete({ kind: "no-base" });
       const path = `/compare/${encodeURIComponent(range.base)}...${encodeURIComponent(range.head)}`;
       const { status, mergeBase, files: listed } = await get(path, compareResponse);
       const files = changedFiles(listed, { under, mergeBase });
       const extendsBase = (status === "ahead" || status === "identical") && mergeBase === range.base;
-      if (mergeCheckout && !extendsBase) throw new Error("the pull request merge commit does not extend its base");
+      if (requireBaseAncestor && !extendsBase)
+        throw new Error("the pull request checkout does not extend its compare base");
       if (mode === "push" && !extendsBase) {
         return incomplete({ kind: "not-fast-forward", status, mergeBase }, files.paths);
       }

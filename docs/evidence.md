@@ -1,12 +1,20 @@
 # Routing evidence
 
-The figures on this page are for the `v0.1.1` release.
+The soundness, field replay and mutation figures on this page are for the `v0.1.1` release.
 
 lane-router promises to skip a CI lane only when the change cannot affect the inputs the lane declares. When it cannot make that decision safely, it runs the lane.
 
 - **Soundness oracle.** No false skip in 250,000 generated changes within the model of declared inputs. All 16 injected bugs produced a false skip.
 - **Field replay.** 4,800 plans across 24 real repositories, with no discovery mismatches or skips in fallback plans. The replay checks plans without executing test lanes.
 - **Mutation testing.** 96.57% of eligible decision-code mutations caused a test failure or timeout. The `v0.1.0` score was 77.26%. Each score covers its named files.
+
+## Pull request merge paths
+
+In `v0.1.1`, the default pull request checkout was a merge commit, but the Action used the pull request branch's changed paths. If the base branch moved a file that the pull request edited, the Action could skip the lane for the file's destination in the tested merge.
+
+The 250,000 generated changes did not find this bug. The oracle tests planning with a supplied workspace model and file list. It does not test whether the Action gets the diff for the tree that CI checks out.
+
+The bug surfaced while trying lane-router on the author's own CI workflows. The [checkout regression matrix](../test/action-pr-checkout.test.ts) uses real Git merges and diffs to check the merge, pull request head and other checkouts across input combinations. The [Action tests](../test/action.test.ts) also check the requested range and the file count check for the pull request head.
 
 ## Soundness oracle
 

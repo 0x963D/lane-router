@@ -16,7 +16,7 @@ inputs:
     description: The base commit. Defaults to the event's base.
     default: ""
   head:
-    description: The head commit. Defaults to the event's head.
+    description: The head commit. For pull_request comparisons, defaults to the checked-out merge commit or pull request head.
     default: ""
   files:
     description: Newline-separated changed paths, relative to working-directory and trusted as complete. Skips the compare API.

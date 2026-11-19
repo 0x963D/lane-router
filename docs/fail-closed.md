@@ -10,14 +10,17 @@ It also runs every lane when it cannot trust the list of changed files. Then `co
 - a routing config or package manifest change whose base model cannot be built, because there is no base commit, the commit was not fetched, its config or a manifest does not parse, a name in the base config does not resolve there, or reading it failed,
 - a compare listing of 300 or more files, which is the most the endpoint returns,
 - a pull request head whose compare listing differs from its `changed_files` count when routing the default branch diff,
-- a default pull request merge checkout that does not match `GITHUB_SHA` or does not extend the pull request base,
+- a `pull_request` comparison whose checkout matches neither the merge commit nor the PR head, with no explicit `head` input,
+- a `pull_request` whose explicit `head` input does not resolve to the checkout, or whose compare base fails the ancestry check,
 - a push with no `before` commit to compare against, such as the first push of a branch, whose `before` is all zeros,
 - a push whose head does not extend its base, such as a force push,
 - a compare status other than `ahead`, `identical`, `behind` or `diverged`,
 - a changed path outside `working-directory`,
 - any API error, git error or unexpected exception after the config has loaded.
 
-A push is routed from `before` to `after`, and the compare API lists the change from the merge base of the two. After a force push the merge base is not `before`, so the listing leaves out what the dropped commits changed. In push mode lane-router trusts the listing only when the compare API reports `ahead` or `identical` and the merge base is the base commit. That holds for a `base` input in push mode too. A `mode` input that contradicts its event fails the step, so a push cannot opt out of this rule. A pull request is exempt, because its base branch often moves on after it opens and its change is meant to start at the merge base.
+A push is routed from `before` to `after`, and the compare API lists the change from the merge base of the two. After a force push the merge base is not `before`, so the listing leaves out what the dropped commits changed. In push mode lane-router trusts the listing only when the compare API reports `ahead` or `identical` and the merge base is the base commit. That holds for a `base` input in push mode too. A `mode` input that contradicts its event fails the step, so a push cannot opt out of this rule.
+
+On `pull_request`, the same ancestry check applies to the merge checkout and to custom compare ranges. When the checkout is the event's PR head and the compare base is the event's base, the Action routes the branch diff from its merge base. See the [pull request input table](action.md#inputs).
 
 A shallow checkout, the `actions/checkout` default, has no base commit. A change to the routing config or a package manifest then runs every known head lane with `complete: false`. Check out with `fetch-depth: 0` to read the base config and graph. Other changes never need the base commit.
 
