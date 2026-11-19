@@ -41,6 +41,36 @@ jobs:
       - name: Check that dist matches the source
         run: git diff --exit-code -- dist
 
+  compare:
+    # The only check that calls the real compare endpoint, from the default shallow checkout of a
+    # pull request's test merge. This repository's own files sit outside the fixture workspace, so
+    # the expected plan fails closed on the first listed path. A pull request that changes only
+    # files inside the fixture needs a different expectation.
+    name: Compare the pull request merge
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - id: plan
+        uses: ./
+        with:
+          working-directory: test/fixtures/acme
+      - name: Expect the merge's first parent as base and a listing from the endpoint
+        env:
+          OUTPUTS: ${{ toJSON(steps.plan.outputs) }}
+          COMPLETE: ${{ steps.plan.outputs.complete }}
+          LANES: ${{ steps.plan.outputs.lanes }}
+          MATRIX: ${{ steps.plan.outputs.matrix }}
+          REASONS: ${{ steps.plan.outputs.reasons }}
+        run: |
+          printf '%s\n' "$OUTPUTS"
+          first_parent=$(git cat-file -p HEAD | sed -n 's/^parent //p' | head -n 1)
+          test -n "$first_parent"
+          test "$COMPLETE" = false
+          test "$LANES" = '["api","web","e2e","lint"]'
+          printf '%s' "$MATRIX" | jq -e --arg base "$first_parent" 'all(.include[]; .base == $base)'
+          printf '%s' "$REASONS" | jq -e 'all(.[]; test("is not a path inside the routed root$"))'
+
   dogfood:
     name: Dogfood
     runs-on: ubuntu-latest

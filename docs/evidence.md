@@ -18,6 +18,8 @@ The bug surfaced while trying lane-router on the author's own CI workflows. In t
 
 The matrix uses depth-1 clones for default merge checkouts on both pull request events. It checks the exact lane list from the first-parent diff, including when the payload base differs, and requires `complete=true` with no annotation. It covers the payload-base fallback when the checkout has one parent, three parents, or a different second parent. A manifest change uses the first parent's model in a full checkout and gives fetch-depth advice when the parent object is missing. The [Action tests](../test/action.test.ts) also check requested ranges and the file count check for the pull request head.
 
+The matrix answers compare requests from a local fixture. The `compare` job in [this repository's CI](../.github/workflows/ci.yml) calls the real endpoint on every pull request, from the default shallow checkout. It checks that the plan starts at the merge's first parent and that the endpoint returned a listing.
+
 ## Soundness oracle
 
 The oracle derives required runs from the generated scenario before passing manifests, config, and changed paths to lane-router. It computes reachability by scanning edges repeatedly and imports no production code. Any required lane that skips fails the run at the first such case and prints the counterexample.
