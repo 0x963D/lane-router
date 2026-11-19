@@ -1,6 +1,6 @@
 {
   "name": "lane-router",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "lane-router works out which CI test lanes a change can affect in a JavaScript monorepo, so a workflow can skip the rest.",
   "license": "MIT",
   "author": "Dan Doca",
