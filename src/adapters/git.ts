@@ -1,12 +1,22 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { changedFiles, incomplete, type ChangeSource } from "../core/change.ts";
+import { changedFiles, incomplete, type ChangedFiles, type Range } from "../core/change.ts";
+import type { Mode } from "../core/plan.ts";
 import { pathRefusal, type Refusal, type RepoTree, type TreeRead } from "../load/index.ts";
 
 const execFileAsync = promisify(execFile);
 
 /** Paths relative to the top of the repository whatever `diff.relative` says. */
-const DIFF = ["diff", "--name-only", "--no-renames", "--no-relative", "-z"] as const;
+const DIFF = [
+  "diff",
+  "--name-only",
+  "--no-renames",
+  "--no-relative",
+  "--no-ext-diff",
+  "--no-textconv",
+  "--ignore-submodules=none",
+  "-z",
+] as const;
 
 /** Entry modes whose content is not a file in this tree. A blob of mode 120000 holds a link target. */
 const LINKS: ReadonlyMap<string, Refusal> = new Map([
@@ -25,18 +35,27 @@ export interface GitRepo {
   /**
    * The files changed between the merge base of the range, which the list carries, and its head. With
    * rename detection off, a rename arrives as its deleted and its added path. Rejects when git fails,
-   * such as for unrelated histories.
+   * such as for unrelated histories. In push mode a head that does not extend base is incomplete.
+   * An offline diff only uses objects already in the checkout.
    */
-  readonly changes: ChangeSource;
+  readonly changes: (
+    range: Range,
+    options?: { readonly mode?: Mode; readonly offline?: boolean },
+  ) => Promise<ChangedFiles>;
   /** Where the routed root sits inside the repository, empty at the top level. */
   prefix(): Promise<string>;
 }
 
 /** `cwd` is the routed root. It may sit below the top of the repository. */
 export function gitRepo(cwd: string): GitRepo {
-  const runGit = async (args: readonly string[], input?: string): Promise<Buffer> => {
+  const runGit = async (args: readonly string[], input?: string, offline = false): Promise<Buffer> => {
     try {
-      const run = execFileAsync("git", args, { cwd, encoding: "buffer", maxBuffer: 256 * 1024 * 1024 });
+      const run = execFileAsync("git", ["--no-replace-objects", ...args], {
+        cwd,
+        env: offline ? { ...process.env, GIT_NO_LAZY_FETCH: "1" } : process.env,
+        encoding: "buffer",
+        maxBuffer: 256 * 1024 * 1024,
+      });
       run.child.stdin?.on("error", () => {});
       run.child.stdin?.end(input);
       const { stdout } = await run;
@@ -45,7 +64,8 @@ export function gitRepo(cwd: string): GitRepo {
       throw new Error(`git ${args.join(" ")} failed: ${stderrOf(error)}`, { cause: error });
     }
   };
-  const git = async (args: readonly string[]): Promise<string> => (await runGit(args)).toString("utf8");
+  const git = async (args: readonly string[], offline = false): Promise<string> =>
+    (await runGit(args, undefined, offline)).toString("utf8");
   const prefix = async (): Promise<string> => (await git(["rev-parse", "--show-prefix"])).trim();
 
   return {
@@ -59,7 +79,7 @@ export function gitRepo(cwd: string): GitRepo {
     parentsOf: async (commit) => {
       try {
         // Revision walks hide the recorded parents of shallow commits.
-        const object = await git(["--no-replace-objects", "cat-file", "commit", commit]);
+        const object = await git(["cat-file", "commit", commit]);
         const [headers = ""] = object.split("\n\n", 1);
         const parents = headers
           .split("\n")
@@ -106,10 +126,19 @@ export function gitRepo(cwd: string): GitRepo {
         },
       };
     },
-    changes: async (range) => {
+    changes: async (range, { mode = "pr", offline = false } = {}) => {
       if (range.base === null) return incomplete({ kind: "no-base" });
-      const mergeBase = (await git(["merge-base", range.base, range.head])).trim();
-      const output = await git([...DIFF, mergeBase, range.head]);
+      const mergeBase = (await git(["merge-base", range.base, range.head], offline)).trim();
+      if (mode === "push" && mergeBase !== range.base) {
+        return incomplete({
+          kind: "not-fast-forward",
+          status: mergeBase === range.head ? "behind" : "diverged",
+          mergeBase,
+        });
+      }
+      const output = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+        await runGit([...DIFF, mergeBase, range.head, "--"], undefined, offline),
+      );
       return changedFiles(
         split(output).map((path) => ({ path, previousPath: null })),
         { under: await prefix(), mergeBase },
@@ -144,6 +173,11 @@ function parseBlobs(output: Buffer, ids: readonly string[]): ReadonlyMap<string,
     const [found, type, rawSize] = output.toString("ascii", start, headerEnd).split(" ");
     const size = Number(rawSize);
     const end = headerEnd + 1 + size;
+    if (found === id && type === "missing") {
+      throw new Error(
+        `Git object ${id} is missing. Fetch the required objects or use a checkout without a partial-clone filter`,
+      );
+    }
     if (found !== id || type !== "blob" || !Number.isSafeInteger(size) || size < 0 || output[end] !== 10) {
       throw new Error(`git returned an invalid blob for ${id}`);
     }

@@ -1,12 +1,12 @@
 import { parseArgs } from "node:util";
 import { gitRepo } from "./adapters/git.ts";
-import { planLanes } from "./core/plan.ts";
+import { planLanes, type Mode } from "./core/plan.ts";
 import { baseGraphOf, formatProblems, loadModel } from "./load/index.ts";
 import { explainJson, explainText } from "./render.ts";
 import { err, messageOf, ok, type Result } from "./result.ts";
 
 /*
- * `lane-router explain` makes the decisions the Action would make in PR mode, for a local diff. It
+ * `lane-router explain` makes the decisions the Action would make for a local diff. It
  * reads the config and the workspace at `--head`, not from the working tree.
  */
 
@@ -22,10 +22,13 @@ export interface CliIo {
   readonly stderr: (text: string) => void;
 }
 
-export const USAGE = "usage: lane-router explain --base <ref> --head <ref> [--config <path>] [--cwd <dir>] [--json]";
+export const USAGE =
+  "usage: lane-router explain --base <ref> --head <ref> [--mode pr] [--config <path>] [--cwd <dir>] [--json]\n" +
+  "       lane-router explain --mode push --head <ref> [--base <ref>] [--config <path>] [--cwd <dir>] [--json]";
 
 interface Invocation {
-  readonly base: string;
+  readonly base: string | null;
+  readonly mode: Mode;
   readonly head: string;
   readonly config: string;
   readonly cwd: string | undefined;
@@ -42,11 +45,11 @@ export async function runCli(argv: readonly string[], io: CliIo): Promise<ExitCo
     await io.stdout(USAGE);
     return 0;
   }
-  const { config, json } = invocation.value;
+  const { base: baseRef, head: headRef, config, json, mode } = invocation.value;
   const repo = gitRepo(invocation.value.cwd ?? io.cwd);
-  const [base, head] = await Promise.all([repo.resolve(invocation.value.base), repo.resolve(invocation.value.head)]);
-  if (base === undefined || head === undefined) {
-    const unknown = base === undefined ? `--base ${invocation.value.base}` : `--head ${invocation.value.head}`;
+  const [base, head] = await Promise.all([baseRef === null ? null : repo.resolve(baseRef), repo.resolve(headRef)]);
+  if (head === undefined || (mode === "pr" && base === undefined)) {
+    const unknown = mode === "pr" && base === undefined ? `--base ${baseRef ?? ""}` : `--head ${headRef}`;
     io.stderr(`${unknown} does not name a commit in this repository\n${USAGE}`);
     return 2;
   }
@@ -58,9 +61,12 @@ export async function runCli(argv: readonly string[], io: CliIo): Promise<ExitCo
       return 1;
     }
     const plan = await planLanes(model.value, {
-      mode: "pr",
-      range: { base, head },
-      changes: repo.changes,
+      mode,
+      range: { base: base ?? baseRef, head },
+      changes: (range) => {
+        if (base === undefined) throw new Error(`cannot resolve the base ${baseRef ?? ""} in this checkout`);
+        return repo.changes(range, { mode });
+      },
       baseGraph: baseGraphOf(tree, config, repo),
     });
     if (json) {
@@ -83,6 +89,7 @@ function parse(argv: readonly string[]): Result<Invocation | "help", string> {
       allowPositionals: true,
       options: {
         base: { type: "string" },
+        mode: { type: "string", default: "pr" },
         head: { type: "string" },
         config: { type: "string", default: ".github/lanes.yml" },
         cwd: { type: "string" },
@@ -96,6 +103,12 @@ function parse(argv: readonly string[]): Result<Invocation | "help", string> {
   const { values, positionals } = parsed;
   if (values.help) return ok("help");
   if (positionals.length !== 1 || positionals[0] !== "explain") return err("the only command is explain");
-  if (values.base === undefined || values.head === undefined) return err("--base and --head are required");
-  return ok({ base: values.base, head: values.head, config: values.config, cwd: values.cwd, json: values.json });
+  const mode = values.mode;
+  if (mode !== "pr" && mode !== "push") return err("--mode must be pr or push");
+  if (mode === "pr" && (values.base === undefined || values.head === undefined)) {
+    return err("--base and --head are required");
+  }
+  if (values.head === undefined) return err("--head is required");
+  const base = mode === "push" && /^0+$/.test(values.base ?? "") ? null : (values.base ?? null);
+  return ok({ base, head: values.head, mode, config: values.config, cwd: values.cwd, json: values.json });
 }

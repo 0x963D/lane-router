@@ -1,6 +1,6 @@
 {
   "name": "lane-router",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "lane-router works out which CI test lanes a change can affect in a JavaScript monorepo, so a workflow can skip the rest.",
   "license": "MIT",
   "author": "Dan Doca",
@@ -19,6 +19,8 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:mutation": "node scripts/test-mutation.js",
+    "test:action-soundness": "node scripts/check-action-soundness.js",
+    "test:action-soundness:mutations": "node scripts/check-action-mutations.js",
     "test:soundness": "node scripts/check-soundness.ts",
     "test:soundness:mutations": "node scripts/check-soundness-mutations.js",
     "build": "node scripts/build.ts",

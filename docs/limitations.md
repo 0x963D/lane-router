@@ -5,10 +5,19 @@ These are not built:
 - Workspace discovery reads pnpm and npm declarations. Yarn and Bun also use the `workspaces` field. The [field replay](evidence.md#field-replay) checked manifest discovery in Babel, a Yarn workspace. Yarn and Bun installation and dependency resolution are outside that replay.
 - Dependencies come from manifests and configured edges. Imports in source files are not read.
 - `unmatched` accepts only `all`.
-- A compare listing of 300 or more files fails closed. Paging through a larger diff would let such a change skip lanes safely.
+- The compare endpoint lists at most 300 files. Large changes need enough local history to verify the full diff. A default PR head comparison can still run every lane if Git lists both paths of a rename and the resulting path count disagrees with the payload.
 - A depth-1 merge checkout has enough history for the first-parent compare. If a routing config or package manifest changes, use `fetch-depth: 0` to give the Action the base model too.
-- A `merge_group` event needs explicit `mode` and `base` inputs for a compare. Supply `head` if the checkout differs from `GITHUB_SHA`.
 - There is no Marketplace listing yet.
+
+## Local Git behavior
+
+| When this matters                                                                       | What lane-router does                                                                                                                                                     | What to do                                                                                          |
+| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Your local Git history uses replacement refs                                            | Reads the original objects when it resolves revisions, reads models, and diffs commits.                                                                                   | Check out the original commit or commit the intended tree as a regular revision before planning it. |
+| Your checkout ignores submodule changes                                                 | Includes changed gitlinks in local diffs even with an ignore setting. The superproject diff sees the pointer, and submodule contents are outside its model.               | Declare a path rule or package that covers the gitlink and all of its readers.                      |
+| A changed path in a local diff has invalid UTF-8                                        | Runs every known lane because it cannot safely assign the path.                                                                                                           | Rename tracked paths to valid UTF-8.                                                                |
+| A partial clone lacks objects needed to verify a capped compare listing                 | Tries capped-list recovery using only local objects. If Git cannot establish the diff, every known lane runs.                                                             | Fetch the required objects before planning, or use full history without a partial-clone filter.     |
+| A partial clone lacks a tree or blob needed by the CLI or by the Action's routing model | Allows Git's normal on-demand reads by object ID. If Git cannot read the model, the Action fails closed for a missing base model. The CLI requires a readable head model. | Make the promisor remote available or fetch the objects before planning.                            |
 
 ## Dependency boundaries
 

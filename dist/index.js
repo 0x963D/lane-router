@@ -29657,15 +29657,29 @@ function incomplete(cause, paths = []) {
 
 // src/adapters/git.ts
 var execFileAsync = promisify(execFile);
-var DIFF = ["diff", "--name-only", "--no-renames", "--no-relative", "-z"];
+var DIFF = [
+  "diff",
+  "--name-only",
+  "--no-renames",
+  "--no-relative",
+  "--no-ext-diff",
+  "--no-textconv",
+  "--ignore-submodules=none",
+  "-z"
+];
 var LINKS = /* @__PURE__ */ new Map([
   ["120000", "symbolic-link"],
   ["160000", "submodule"]
 ]);
 function gitRepo(cwd) {
-  const runGit = async (args, input) => {
+  const runGit = async (args, input, offline = false) => {
     try {
-      const run = execFileAsync("git", args, { cwd, encoding: "buffer", maxBuffer: 256 * 1024 * 1024 });
+      const run = execFileAsync("git", ["--no-replace-objects", ...args], {
+        cwd,
+        env: offline ? { ...process.env, GIT_NO_LAZY_FETCH: "1" } : process.env,
+        encoding: "buffer",
+        maxBuffer: 256 * 1024 * 1024
+      });
       run.child.stdin?.on("error", () => {
       });
       run.child.stdin?.end(input);
@@ -29675,7 +29689,7 @@ function gitRepo(cwd) {
       throw new Error(`git ${args.join(" ")} failed: ${stderrOf(error2)}`, { cause: error2 });
     }
   };
-  const git = async (args) => (await runGit(args)).toString("utf8");
+  const git = async (args, offline = false) => (await runGit(args, void 0, offline)).toString("utf8");
   const prefix = async () => (await git(["rev-parse", "--show-prefix"])).trim();
   return {
     resolve: async (ref) => {
@@ -29687,7 +29701,7 @@ function gitRepo(cwd) {
     },
     parentsOf: async (commit) => {
       try {
-        const object2 = await git(["--no-replace-objects", "cat-file", "commit", commit]);
+        const object2 = await git(["cat-file", "commit", commit]);
         const [headers = ""] = object2.split("\n\n", 1);
         const parents = headers.split("\n").filter((line) => line.startsWith("parent ")).map((line) => line.slice(7));
         return parents.every((parent) => /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(parent)) ? parents : [];
@@ -29726,10 +29740,19 @@ function gitRepo(cwd) {
         }
       };
     },
-    changes: async (range) => {
+    changes: async (range, { mode = "pr", offline = false } = {}) => {
       if (range.base === null) return incomplete({ kind: "no-base" });
-      const mergeBase = (await git(["merge-base", range.base, range.head])).trim();
-      const output = await git([...DIFF, mergeBase, range.head]);
+      const mergeBase = (await git(["merge-base", range.base, range.head], offline)).trim();
+      if (mode === "push" && mergeBase !== range.base) {
+        return incomplete({
+          kind: "not-fast-forward",
+          status: mergeBase === range.head ? "behind" : "diverged",
+          mergeBase
+        });
+      }
+      const output = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+        await runGit([...DIFF, mergeBase, range.head, "--"], void 0, offline)
+      );
       return changedFiles(
         split(output).map((path) => ({ path, previousPath: null })),
         { under: await prefix(), mergeBase }
@@ -29756,6 +29779,11 @@ function parseBlobs(output, ids) {
     const [found, type, rawSize] = output.toString("ascii", start, headerEnd).split(" ");
     const size = Number(rawSize);
     const end = headerEnd + 1 + size;
+    if (found === id && type === "missing") {
+      throw new Error(
+        `Git object ${id} is missing. Fetch the required objects or use a checkout without a partial-clone filter`
+      );
+    }
     if (found !== id || type !== "blob" || !Number.isSafeInteger(size) || size < 0 || output[end] !== 10) {
       throw new Error(`git returned an invalid blob for ${id}`);
     }
@@ -29797,10 +29825,22 @@ var pushEvent = object((field) => {
   if (!isValid(before) || !isValid(after)) return INVALID;
   return { kind: "push", before: before === void 0 || /^0+$/.test(before) ? null : before, after };
 }, IGNORE2);
+var mergeGroupEvent = object(
+  (field) => field(
+    "merge_group",
+    object((group) => {
+      const base = group("base_sha", nonEmptyString);
+      const head = group("head_sha", nonEmptyString);
+      return isValid(base) && isValid(head) ? { kind: "merge_group", base, head } : INVALID;
+    }, IGNORE2)
+  ),
+  IGNORE2
+);
 var EVENT_DECODERS = /* @__PURE__ */ new Map([
   ["pull_request", pullRequestEvent],
   ["pull_request_target", pullRequestEvent],
-  ["push", pushEvent]
+  ["push", pushEvent],
+  ["merge_group", mergeGroupEvent]
 ]);
 function readEvent(name, payload) {
   const decoder = EVENT_DECODERS.get(name);
@@ -29852,7 +29892,7 @@ function githubRepo(options) {
     return { kind: "listed", ...decoded.value };
   };
   return {
-    compare: async (range, { mode, requireBaseAncestor, expectedCount, resolveBase, under }) => {
+    compare: async (range, { mode, requireBaseAncestor, expectedCount, resolveBase, under, localChanges }) => {
       if (range.base === null) return incomplete({ kind: "no-base" });
       const checkAncestry = requireBaseAncestor || mode === "push";
       let base = range.base;
@@ -29867,8 +29907,8 @@ function githubRepo(options) {
       if (reply.kind === "not-found") throw reply.error;
       const { status, mergeBase, baseCommit, files: listed } = reply;
       const files = changedFiles(listed, { under, mergeBase });
+      const resolvedBase = fullSha(base) ? base : baseCommit;
       if (checkAncestry) {
-        const resolvedBase = fullSha(base) ? base : baseCommit;
         if (resolvedBase === void 0 || !fullSha(resolvedBase)) {
           throw new Error("the compare response did not resolve the base to a full SHA, so supply the full base SHA");
         }
@@ -29882,6 +29922,14 @@ function githubRepo(options) {
         }
       }
       if (listed.length >= COMPARE_LIMIT) {
+        if (listed.length === COMPARE_LIMIT && files.kind === "complete" && resolvedBase !== void 0 && fullSha(resolvedBase) && fullSha(range.head) && fullSha(mergeBase) && (expectedCount === null || expectedCount >= COMPARE_LIMIT) && new Set(listed.map(({ path }) => path)).size === listed.length) {
+          const local = await localChanges({ base: resolvedBase, head: range.head }).catch(() => void 0);
+          if (local?.kind === "incomplete" && local.cause.kind === "invalid-path") return local;
+          if (local?.kind === "complete" && local.mergeBase === mergeBase && local.paths.length >= COMPARE_LIMIT && (expectedCount === null || local.paths.length === expectedCount)) {
+            const available = new Set(local.paths);
+            if (files.paths.every((path) => available.has(path))) return local;
+          }
+        }
         return incomplete({ kind: "truncated", listed: listed.length, limit: COMPARE_LIMIT }, files.paths);
       }
       if (expectedCount !== null && listed.length !== expectedCount) {
@@ -30088,14 +30136,14 @@ function fileCount(count) {
 function describeCause(cause) {
   switch (cause.kind) {
     case "truncated":
-      return `the compare API lists at most ${fileCount(cause.limit)} and listed ${String(cause.listed)}`;
+      return `the compare API lists at most ${fileCount(cause.limit)} and listed ${String(cause.listed)}. Local Git could not verify the complete list. Use fetch-depth: 0 to make the revisions available`;
     case "count-mismatch":
       return `the compare API listed ${fileCount(cause.listed)} but the pull request changes ${String(cause.expected)}`;
     case "no-base":
       return "there is no base commit to compare against";
     case "not-fast-forward": {
       const reported = `status ${cause.status}, merge base ${shortRevision(cause.mergeBase)}`;
-      return `head does not extend base, so the compare API omits what the push dropped: ${reported}`;
+      return `head does not extend base, so a diff from the merge base omits what the push dropped: ${reported}`;
     }
     case "invalid-path":
       return `${cause.raw} is not a path inside the routed root`;
@@ -30261,7 +30309,7 @@ function toInvocation(inputs, event, env, context) {
   const eventText = event.kind === "other" ? `a ${event.name || "manual"} event` : `a ${event.kind} event`;
   const failures = [
     mode === void 0 && context.at("mode").fail(`is required for ${eventText}`),
-    inputs.mode !== void 0 && fromEvent !== void 0 && inputs.mode !== fromEvent.mode && context.at("mode").fail(`is ${inputs.mode}, but ${eventText} routes in ${fromEvent.mode} mode`),
+    inputs.mode !== void 0 && fromEvent !== void 0 && event.kind !== "merge_group" && inputs.mode !== fromEvent.mode && context.at("mode").fail(`is ${inputs.mode}, but ${eventText} routes in ${fromEvent.mode} mode`),
     inputs.files === "" && base === void 0 && context.at("base").fail(`is required for ${eventText} unless files is set`),
     inputs.files === "" && head === "" && context.at("head").fail(`is required for ${eventText} unless files is set`),
     inputs.files === "" && repository === "" && context.fail("GITHUB_REPOSITORY is not set, so the compare API cannot be called")
@@ -30273,6 +30321,7 @@ function toInvocation(inputs, event, env, context) {
     mode,
     range: { base: base ?? null, head },
     explicitHead,
+    requireBaseAncestor: event.kind === "merge_group" && mode === "pr",
     ...pullRequest === void 0 ? {} : { pullRequest },
     source: inputs.files === "" ? {
       kind: "compare",
@@ -30293,6 +30342,8 @@ function eventDefaults(event) {
       return { mode: "pr", base: event.base, head: event.head };
     case "push":
       return { mode: "push", base: event.before, head: event.after };
+    case "merge_group":
+      return { mode: "push", base: event.base, head: event.head };
     case "other":
       return void 0;
     default: {
@@ -30364,10 +30415,11 @@ async function requestFor(invocation, head) {
   }
   const changes = source.kind === "files" ? () => Promise.resolve(source.files) : async (requested) => github.compare(requested, {
     mode,
-    requireBaseAncestor: pullRequest !== void 0 && !branchDiff,
+    requireBaseAncestor: invocation.requireBaseAncestor || pullRequest !== void 0 && !branchDiff,
     expectedCount: branchDiff ? source.expectedCount : null,
     resolveBase: (ref) => repo.resolve(ref),
-    under: await under()
+    under: await under(),
+    localChanges: (range2) => repo.changes(range2, { offline: true })
   });
   return { mode, range, changes, baseGraph };
 }

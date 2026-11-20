@@ -259,9 +259,11 @@ describe("the compare head and checkout", () => {
       const event =
         name === "push"
           ? push(base, merge)
-          : name.startsWith("pull_request")
-            ? { ...options.event, name }
-            : { name, payload: {} };
+          : name === "merge_group"
+            ? { name, payload: { merge_group: { base_sha: base, head_sha: merge } } }
+            : name.startsWith("pull_request")
+              ? { ...options.event, name }
+              : { name, payload: {} };
       for (const files of ["", "README.md"]) {
         const run = await runAction({
           ...options,
@@ -288,7 +290,12 @@ describe("the compare head and checkout", () => {
       repo.git("switch", "--detach", head);
       const run = await runAction({
         ...runner(1),
-        event: name === "push" ? push(base, merge) : { name, payload: {} },
+        event:
+          name === "push"
+            ? push(base, merge)
+            : name === "merge_group"
+              ? { name, payload: { merge_group: { base_sha: base, head_sha: merge } } }
+              : { name, payload: {} },
         inputs: { mode: "push", base },
         github,
       });
@@ -359,7 +366,7 @@ describe("a push", () => {
     expect(parsed(run.outputs.lanes)).toEqual(ALL);
     expect(run.outputs.complete).toBe("false");
     expect(jsonObject(run.outputs.reasons).api).toBe(
-      "fail closed, head does not extend base, so the compare API omits what the push dropped: status diverged, merge base ccccccc",
+      "fail closed, head does not extend base, so a diff from the merge base omits what the push dropped: status diverged, merge base ccccccc",
     );
     expect(run.annotations.map(({ level }) => level)).toEqual(["warning"]);
   });

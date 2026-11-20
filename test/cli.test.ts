@@ -1,5 +1,7 @@
+import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { runCli } from "../src/cli.ts";
 import { cli } from "./support/cli.ts";
@@ -39,11 +41,11 @@ describe("lane-router explain", () => {
     });
   });
 
-  it("diffs the merge base of --base and --head against --head", async () => {
+  it("routes a divergent range in PR mode and runs all lanes in push mode", async () => {
     const repo = acmeRepo();
     repo.git("checkout", "--quiet", "-b", "feature");
     repo.write("packages/ui/src/button.tsx", 'export const Button = "large";\n');
-    repo.commit("Make the button large");
+    const feature = repo.commit("Make the button large");
     repo.git("checkout", "--quiet", "main");
     repo.write("packages/api/src/user.ts", 'export const user = "grace";\n');
     repo.commit("Rename the user");
@@ -51,6 +53,87 @@ describe("lane-router explain", () => {
     const { code, stdout } = await cli(["explain", "--base", "main", "--head", "feature", "--json"], repo.dir);
     expect(code).toBe(0);
     expect(JSON.parse(stdout)).toMatchObject(decisions({ api: "skip", web: "run", e2e: "run", lint: "run" }));
+    for (const [base, head, status] of [
+      ["main", "feature", "diverged"],
+      [feature, repo.base, "behind"],
+    ] as const) {
+      const push = await cli(["explain", "--mode", "push", "--base", base, "--head", head, "--json"], repo.dir);
+      expect(push.code).toBe(0);
+      expect(JSON.parse(push.stdout)).toMatchObject({
+        mode: "push",
+        complete: false,
+        incomplete: { kind: "not-fast-forward", status, mergeBase: repo.base },
+        ...decisions({ api: "run", web: "run", e2e: "run", lint: "run" }),
+      });
+    }
+  });
+
+  it("routes a fast-forward push and an identical push using the selected mode", async () => {
+    const repo = acmeRepo();
+    repo.write("packages/ui/src/button.tsx", "export const Button = 42;\n");
+    const head = repo.commit("Change the button");
+    const args = ["explain", "--mode", "push", "--head", head, "--json"];
+
+    const fastForward = await cli([...args, "--base", repo.base], repo.dir);
+    expect(fastForward.code).toBe(0);
+    expect(JSON.parse(fastForward.stdout)).toMatchObject({
+      mode: "push",
+      complete: true,
+      ...decisions({ api: "skip", web: "run", e2e: "run", lint: "run" }),
+    });
+
+    const identical = await cli([...args, "--base", head], repo.dir);
+    expect(identical.code).toBe(0);
+    expect(JSON.parse(identical.stdout)).toMatchObject({
+      mode: "push",
+      complete: true,
+      ...decisions({ api: "skip", web: "skip", e2e: "skip", lint: "skip" }),
+    });
+  });
+
+  it("runs every lane in push mode if the base is absent or unavailable", async () => {
+    const repo = acmeRepo();
+    for (const [options, kind] of [
+      [[], "no-base"],
+      [["--base", "0".repeat(40)], "no-base"],
+      [["--base=--unfetched"], "error"],
+    ] as const) {
+      const result = await cli(["explain", "--mode", "push", "--head", repo.base, "--json", ...options], repo.dir);
+      expect(result.code).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        mode: "push",
+        complete: false,
+        incomplete: { kind },
+        ...decisions({ api: "run", web: "run", e2e: "run", lint: "run" }),
+      });
+    }
+  });
+
+  it.each(["blob:none", "tree:0"])("reads the base manifest on demand with %s", async (filter) => {
+    const repo = acmeRepo();
+    const baseBlob = repo.git("rev-parse", repo.base + ":packages/ui/package.json");
+    repo.write("packages/ui/package.json", '{"name":"@acme/ui","description":"changed"}\n');
+    const head = repo.commit("Change the UI manifest");
+    repo.git("config", "uploadpack.allowFilter", "true");
+    repo.git("config", "uploadpack.allowAnySHA1InWant", "true");
+    const clone = tempDir();
+    execFileSync("git", ["clone", "--quiet", "--filter=" + filter, pathToFileURL(repo.dir).href, clone]);
+    const missing = () =>
+      execFileSync("git", ["cat-file", "--batch-check"], {
+        cwd: clone,
+        env: { ...process.env, GIT_NO_LAZY_FETCH: "1" },
+        input: baseBlob + "\n",
+        encoding: "utf8",
+      }).trim();
+    expect(missing()).toBe(baseBlob + " missing");
+
+    const result = await cli(["explain", "--base", repo.base, "--head", head, "--json"], clone);
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      complete: true,
+      ...decisions({ api: "skip", web: "run", e2e: "run", lint: "run" }),
+    });
+    expect(missing()).toMatch(new RegExp("^" + baseBlob + " blob "));
   });
 
   it("routes both paths of a rename", async () => {
@@ -62,6 +145,43 @@ describe("lane-router explain", () => {
     expect(JSON.parse(stdout)).toMatchObject({
       paths: [{ path: "packages/api/src/user.ts" }, { path: "packages/ui/src/user.ts" }],
       ...decisions({ api: "run", web: "run", e2e: "run", lint: "run" }),
+    });
+  });
+
+  it("routes changed gitlinks even when local Git ignores submodule changes", async () => {
+    const repo = acmeRepo();
+    const path = "packages/ui/vendor";
+    repo.git("update-index", "--add", "--cacheinfo", "160000," + repo.base + "," + path);
+    repo.git("commit", "--quiet", "-m", "Pin the dependency");
+    const before = repo.git("rev-parse", "HEAD");
+    repo.git("update-index", "--cacheinfo", "160000," + before + "," + path);
+    repo.git("commit", "--quiet", "-m", "Update the dependency");
+    repo.git("config", "diff.ignoreSubmodules", "all");
+    expect(repo.git("diff", "--name-only", before, "HEAD")).toBe("");
+
+    const { code, stdout } = await cli(["explain", "--base", before, "--head", "HEAD", "--json"], repo.dir);
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout)).toMatchObject({
+      complete: true,
+      paths: [{ path }],
+      ...decisions({ api: "skip", web: "run", e2e: "run", lint: "run" }),
+    });
+  });
+
+  it("reads the original commit when a local replacement points to a different tree", async () => {
+    const repo = acmeRepo();
+    repo.write("packages/ui/src/button.tsx", "export const Button = 42;\n");
+    const head = repo.commit("Change the button");
+    repo.git("switch", "--quiet", "-c", "replacement", repo.base);
+    repo.write("packages/api/src/user.ts", "export const user = 'other';\n");
+    repo.git("replace", head, repo.commit("Change the API"));
+
+    const { code, stdout } = await cli(["explain", "--base", repo.base, "--head", head, "--json"], repo.dir);
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout)).toMatchObject({
+      complete: true,
+      paths: [{ path: "packages/ui/src/button.tsx" }],
+      ...decisions({ api: "skip", web: "run", e2e: "run", lint: "run" }),
     });
   });
 
@@ -179,6 +299,8 @@ describe("lane-router explain", () => {
 
   it.each([
     ["--base is missing", ["explain", "--head", "main"]],
+    ["--head is missing in push mode", ["explain", "--mode", "push"]],
+    ["the mode is unknown", ["explain", "--base", "main", "--head", "main", "--mode", "merge"]],
     ["a flag is unknown", ["explain", "--base", "main", "--head", "main", "--bse", "x"]],
     ["there is no command", ["--base", "main", "--head", "main"]],
     ["a ref does not resolve", ["explain", "--base", "nope", "--head", "main"]],

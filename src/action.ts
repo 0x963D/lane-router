@@ -43,6 +43,7 @@ interface Invocation {
   readonly mode: Mode;
   readonly range: Range;
   readonly explicitHead: boolean;
+  readonly requireBaseAncestor: boolean;
   readonly pullRequest?: {
     readonly head: string;
     readonly eventSha: string | undefined;
@@ -159,6 +160,7 @@ function toInvocation(inputs: Inputs, event: GitHubEvent, env: NodeJS.ProcessEnv
     mode === undefined && context.at("mode").fail(`is required for ${eventText}`),
     inputs.mode !== undefined &&
       fromEvent !== undefined &&
+      event.kind !== "merge_group" &&
       inputs.mode !== fromEvent.mode &&
       context.at("mode").fail(`is ${inputs.mode}, but ${eventText} routes in ${fromEvent.mode} mode`),
     inputs.files === "" &&
@@ -177,6 +179,7 @@ function toInvocation(inputs: Inputs, event: GitHubEvent, env: NodeJS.ProcessEnv
     mode,
     range: { base: base ?? null, head },
     explicitHead,
+    requireBaseAncestor: event.kind === "merge_group" && mode === "pr",
     ...(pullRequest === undefined ? {} : { pullRequest }),
     source:
       inputs.files === ""
@@ -204,6 +207,8 @@ function eventDefaults(
       return { mode: "pr", base: event.base, head: event.head };
     case "push":
       return { mode: "push", base: event.before, head: event.after };
+    case "merge_group":
+      return { mode: "push", base: event.base, head: event.head };
     case "other":
       return undefined;
     default: {
@@ -287,10 +292,11 @@ async function requestFor(invocation: Invocation, head: RepoTree): Promise<PlanR
       : async (requested) =>
           github.compare(requested, {
             mode,
-            requireBaseAncestor: pullRequest !== undefined && !branchDiff,
+            requireBaseAncestor: invocation.requireBaseAncestor || (pullRequest !== undefined && !branchDiff),
             expectedCount: branchDiff ? source.expectedCount : null,
             resolveBase: (ref) => repo.resolve(ref),
             under: await under(),
+            localChanges: (range) => repo.changes(range, { offline: true }),
           });
   return { mode, range, changes, baseGraph };
 }

@@ -1,4 +1,4 @@
-import { changedFiles, incomplete, type ChangedFiles, type Range } from "../core/change.ts";
+import { changedFiles, incomplete, type ChangedFiles, type ChangeSource, type Range } from "../core/change.ts";
 import type { Mode } from "../core/plan.ts";
 import {
   array,
@@ -28,6 +28,7 @@ export type GitHubEvent =
   | { readonly kind: "pull_request"; readonly base: string; readonly head: string; readonly changedFiles: number }
   /** `before` is null for the first push of a branch, which GitHub sends as an all-zero SHA. */
   | { readonly kind: "push"; readonly before: string | null; readonly after: string }
+  | { readonly kind: "merge_group"; readonly base: string; readonly head: string }
   | { readonly kind: "other"; readonly name: string };
 
 const sha = (key: string): Decoder<string> => object((field) => field(key, nonEmptyString), IGNORE);
@@ -55,10 +56,24 @@ const pushEvent = object((field) => {
   return { kind: "push" as const, before: before === undefined || /^0+$/.test(before) ? null : before, after };
 }, IGNORE);
 
+const mergeGroupEvent = object(
+  (field) =>
+    field(
+      "merge_group",
+      object((group) => {
+        const base = group("base_sha", nonEmptyString);
+        const head = group("head_sha", nonEmptyString);
+        return isValid(base) && isValid(head) ? { kind: "merge_group" as const, base, head } : INVALID;
+      }, IGNORE),
+    ),
+  IGNORE,
+);
+
 const EVENT_DECODERS = new Map<string, Decoder<GitHubEvent>>([
   ["pull_request", pullRequestEvent],
   ["pull_request_target", pullRequestEvent],
   ["push", pushEvent],
+  ["merge_group", mergeGroupEvent],
 ]);
 
 export function readEvent(name: string, payload: unknown): Result<GitHubEvent, NonEmpty<string>> {
@@ -93,7 +108,7 @@ export interface GitHubRepo {
   /**
    * The files changed from the merge base of `range.base` and `range.head`, which the list carries,
    * from the compare endpoint. Resolves incomplete when there is no base, when the listing reaches
-   * the 300-file cap, or when it differs from `expectedCount`. In push mode it also resolves
+   * the 300-file cap without a verified local diff, or when it differs from `expectedCount`. In push mode it also resolves
    * incomplete unless head extends base. When `requireBaseAncestor` is set, it rejects unless head
    * extends base. Rejects on any HTTP or decoding failure.
    */
@@ -105,6 +120,7 @@ export interface GitHubRepo {
       readonly expectedCount: number | null;
       readonly resolveBase: (ref: string) => Promise<string | undefined>;
       readonly under: string;
+      readonly localChanges: ChangeSource;
     },
   ): Promise<ChangedFiles>;
 }
@@ -142,7 +158,7 @@ export function githubRepo(options: {
   };
 
   return {
-    compare: async (range, { mode, requireBaseAncestor, expectedCount, resolveBase, under }) => {
+    compare: async (range, { mode, requireBaseAncestor, expectedCount, resolveBase, under, localChanges }) => {
       if (range.base === null) return incomplete({ kind: "no-base" });
       const checkAncestry = requireBaseAncestor || mode === "push";
       let base = range.base;
@@ -157,8 +173,8 @@ export function githubRepo(options: {
       if (reply.kind === "not-found") throw reply.error;
       const { status, mergeBase, baseCommit, files: listed } = reply;
       const files = changedFiles(listed, { under, mergeBase });
+      const resolvedBase = fullSha(base) ? base : baseCommit;
       if (checkAncestry) {
-        const resolvedBase = fullSha(base) ? base : baseCommit;
         if (resolvedBase === undefined || !fullSha(resolvedBase)) {
           throw new Error("the compare response did not resolve the base to a full SHA, so supply the full base SHA");
         }
@@ -172,6 +188,28 @@ export function githubRepo(options: {
         }
       }
       if (listed.length >= COMPARE_LIMIT) {
+        if (
+          listed.length === COMPARE_LIMIT &&
+          files.kind === "complete" &&
+          resolvedBase !== undefined &&
+          fullSha(resolvedBase) &&
+          fullSha(range.head) &&
+          fullSha(mergeBase) &&
+          (expectedCount === null || expectedCount >= COMPARE_LIMIT) &&
+          new Set(listed.map(({ path }) => path)).size === listed.length
+        ) {
+          const local = await localChanges({ base: resolvedBase, head: range.head }).catch(() => undefined);
+          if (local?.kind === "incomplete" && local.cause.kind === "invalid-path") return local;
+          if (
+            local?.kind === "complete" &&
+            local.mergeBase === mergeBase &&
+            local.paths.length >= COMPARE_LIMIT &&
+            (expectedCount === null || local.paths.length === expectedCount)
+          ) {
+            const available = new Set(local.paths);
+            if (files.paths.every((path) => available.has(path))) return local;
+          }
+        }
         return incomplete({ kind: "truncated", listed: listed.length, limit: COMPARE_LIMIT }, files.paths);
       }
       if (expectedCount !== null && listed.length !== expectedCount) {

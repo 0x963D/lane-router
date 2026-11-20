@@ -10006,15 +10006,29 @@ function baseGraphOf(head, configPath, commits) {
 
 // src/adapters/git.ts
 var execFileAsync = promisify(execFile);
-var DIFF = ["diff", "--name-only", "--no-renames", "--no-relative", "-z"];
+var DIFF = [
+  "diff",
+  "--name-only",
+  "--no-renames",
+  "--no-relative",
+  "--no-ext-diff",
+  "--no-textconv",
+  "--ignore-submodules=none",
+  "-z"
+];
 var LINKS = /* @__PURE__ */ new Map([
   ["120000", "symbolic-link"],
   ["160000", "submodule"]
 ]);
 function gitRepo(cwd) {
-  const runGit = async (args, input) => {
+  const runGit = async (args, input, offline = false) => {
     try {
-      const run = execFileAsync("git", args, { cwd, encoding: "buffer", maxBuffer: 256 * 1024 * 1024 });
+      const run = execFileAsync("git", ["--no-replace-objects", ...args], {
+        cwd,
+        env: offline ? { ...process.env, GIT_NO_LAZY_FETCH: "1" } : process.env,
+        encoding: "buffer",
+        maxBuffer: 256 * 1024 * 1024
+      });
       run.child.stdin?.on("error", () => {
       });
       run.child.stdin?.end(input);
@@ -10024,7 +10038,7 @@ function gitRepo(cwd) {
       throw new Error(`git ${args.join(" ")} failed: ${stderrOf(error)}`, { cause: error });
     }
   };
-  const git = async (args) => (await runGit(args)).toString("utf8");
+  const git = async (args, offline = false) => (await runGit(args, void 0, offline)).toString("utf8");
   const prefix = async () => (await git(["rev-parse", "--show-prefix"])).trim();
   return {
     resolve: async (ref) => {
@@ -10036,7 +10050,7 @@ function gitRepo(cwd) {
     },
     parentsOf: async (commit) => {
       try {
-        const object2 = await git(["--no-replace-objects", "cat-file", "commit", commit]);
+        const object2 = await git(["cat-file", "commit", commit]);
         const [headers = ""] = object2.split("\n\n", 1);
         const parents = headers.split("\n").filter((line) => line.startsWith("parent ")).map((line) => line.slice(7));
         return parents.every((parent) => /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(parent)) ? parents : [];
@@ -10075,10 +10089,19 @@ function gitRepo(cwd) {
         }
       };
     },
-    changes: async (range) => {
+    changes: async (range, { mode = "pr", offline = false } = {}) => {
       if (range.base === null) return incomplete({ kind: "no-base" });
-      const mergeBase = (await git(["merge-base", range.base, range.head])).trim();
-      const output = await git([...DIFF, mergeBase, range.head]);
+      const mergeBase = (await git(["merge-base", range.base, range.head], offline)).trim();
+      if (mode === "push" && mergeBase !== range.base) {
+        return incomplete({
+          kind: "not-fast-forward",
+          status: mergeBase === range.head ? "behind" : "diverged",
+          mergeBase
+        });
+      }
+      const output = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+        await runGit([...DIFF, mergeBase, range.head, "--"], void 0, offline)
+      );
       return changedFiles(
         split(output).map((path) => ({ path, previousPath: null })),
         { under: await prefix(), mergeBase }
@@ -10105,6 +10128,11 @@ function parseBlobs(output, ids) {
     const [found, type, rawSize] = output.toString("ascii", start, headerEnd).split(" ");
     const size = Number(rawSize);
     const end = headerEnd + 1 + size;
+    if (found === id && type === "missing") {
+      throw new Error(
+        `Git object ${id} is missing. Fetch the required objects or use a checkout without a partial-clone filter`
+      );
+    }
     if (found !== id || type !== "blob" || !Number.isSafeInteger(size) || size < 0 || output[end] !== 10) {
       throw new Error(`git returned an invalid blob for ${id}`);
     }
@@ -10313,14 +10341,14 @@ function fileCount(count) {
 function describeCause(cause) {
   switch (cause.kind) {
     case "truncated":
-      return `the compare API lists at most ${fileCount(cause.limit)} and listed ${String(cause.listed)}`;
+      return `the compare API lists at most ${fileCount(cause.limit)} and listed ${String(cause.listed)}. Local Git could not verify the complete list. Use fetch-depth: 0 to make the revisions available`;
     case "count-mismatch":
       return `the compare API listed ${fileCount(cause.listed)} but the pull request changes ${String(cause.expected)}`;
     case "no-base":
       return "there is no base commit to compare against";
     case "not-fast-forward": {
       const reported = `status ${cause.status}, merge base ${shortRevision(cause.mergeBase)}`;
-      return `head does not extend base, so the compare API omits what the push dropped: ${reported}`;
+      return `head does not extend base, so a diff from the merge base omits what the push dropped: ${reported}`;
     }
     case "invalid-path":
       return `${cause.raw} is not a path inside the routed root`;
@@ -10494,7 +10522,7 @@ function* arrayProperty(key, items, toJson, suffix) {
 }
 
 // src/cli.ts
-var USAGE = "usage: lane-router explain --base <ref> --head <ref> [--config <path>] [--cwd <dir>] [--json]";
+var USAGE = "usage: lane-router explain --base <ref> --head <ref> [--mode pr] [--config <path>] [--cwd <dir>] [--json]\n       lane-router explain --mode push --head <ref> [--base <ref>] [--config <path>] [--cwd <dir>] [--json]";
 async function runCli(argv, io) {
   const invocation = parse(argv);
   if (!invocation.ok) {
@@ -10506,11 +10534,11 @@ ${USAGE}`);
     await io.stdout(USAGE);
     return 0;
   }
-  const { config, json } = invocation.value;
+  const { base: baseRef, head: headRef, config, json, mode } = invocation.value;
   const repo = gitRepo(invocation.value.cwd ?? io.cwd);
-  const [base, head] = await Promise.all([repo.resolve(invocation.value.base), repo.resolve(invocation.value.head)]);
-  if (base === void 0 || head === void 0) {
-    const unknown = base === void 0 ? `--base ${invocation.value.base}` : `--head ${invocation.value.head}`;
+  const [base, head] = await Promise.all([baseRef === null ? null : repo.resolve(baseRef), repo.resolve(headRef)]);
+  if (head === void 0 || mode === "pr" && base === void 0) {
+    const unknown = mode === "pr" && base === void 0 ? `--base ${baseRef ?? ""}` : `--head ${headRef}`;
     io.stderr(`${unknown} does not name a commit in this repository
 ${USAGE}`);
     return 2;
@@ -10523,9 +10551,12 @@ ${USAGE}`);
       return 1;
     }
     const plan = await planLanes(model.value, {
-      mode: "pr",
-      range: { base, head },
-      changes: repo.changes,
+      mode,
+      range: { base: base ?? baseRef, head },
+      changes: (range) => {
+        if (base === void 0) throw new Error(`cannot resolve the base ${baseRef ?? ""} in this checkout`);
+        return repo.changes(range, { mode });
+      },
       baseGraph: baseGraphOf(tree, config, repo)
     });
     if (json) {
@@ -10547,6 +10578,7 @@ function parse(argv) {
       allowPositionals: true,
       options: {
         base: { type: "string" },
+        mode: { type: "string", default: "pr" },
         head: { type: "string" },
         config: { type: "string", default: ".github/lanes.yml" },
         cwd: { type: "string" },
@@ -10560,8 +10592,14 @@ function parse(argv) {
   const { values, positionals } = parsed;
   if (values.help) return ok("help");
   if (positionals.length !== 1 || positionals[0] !== "explain") return err("the only command is explain");
-  if (values.base === void 0 || values.head === void 0) return err("--base and --head are required");
-  return ok({ base: values.base, head: values.head, config: values.config, cwd: values.cwd, json: values.json });
+  const mode = values.mode;
+  if (mode !== "pr" && mode !== "push") return err("--mode must be pr or push");
+  if (mode === "pr" && (values.base === void 0 || values.head === void 0)) {
+    return err("--base and --head are required");
+  }
+  if (values.head === void 0) return err("--head is required");
+  const base = mode === "push" && /^0+$/.test(values.base ?? "") ? null : values.base ?? null;
+  return ok({ base, head: values.head, mode, config: values.config, cwd: values.cwd, json: values.json });
 }
 
 // src/bin/cli.ts

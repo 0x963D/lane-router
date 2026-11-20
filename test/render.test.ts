@@ -83,12 +83,12 @@ describe("rendered wording", () => {
       "mode pr, base base, head head, 0 files listed, incomplete, not docs-only
 
       lane  decision  reason
-      api   run       fail closed, the compare API lists at most 300 files and listed 300
-      web   run       fail closed, the compare API lists at most 300 files and listed 300
-      e2e   run       fail closed, the compare API lists at most 300 files and listed 300
-      lint  run       fail closed, the compare API lists at most 300 files and listed 300
+      api   run       fail closed, the compare API lists at most 300 files and listed 300. Local Git could not verify the complete list. Use fetch-depth: 0 to make the revisions available
+      web   run       fail closed, the compare API lists at most 300 files and listed 300. Local Git could not verify the complete list. Use fetch-depth: 0 to make the revisions available
+      e2e   run       fail closed, the compare API lists at most 300 files and listed 300. Local Git could not verify the complete list. Use fetch-depth: 0 to make the revisions available
+      lint  run       fail closed, the compare API lists at most 300 files and listed 300. Local Git could not verify the complete list. Use fetch-depth: 0 to make the revisions available
 
-      fail closed, the compare API lists at most 300 files and listed 300."
+      fail closed, the compare API lists at most 300 files and listed 300. Local Git could not verify the complete list. Use fetch-depth: 0 to make the revisions available."
     `);
   });
 

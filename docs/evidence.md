@@ -1,12 +1,12 @@
 # Routing evidence
 
-The soundness, field replay and mutation figures on this page are for the `v0.1.1` release.
+The planner soundness and public field replay results are from `v0.1.1`. The Action results cover the range and file listing before planning, and are from the source and tests released as `v0.2.0`. They ran against local git and a local compare endpoint. A live comparison above 300 files and a hosted merge queue run have not been tried.
 
 lane-router promises to skip a CI lane only when the change cannot affect the inputs the lane declares. When it cannot make that decision safely, it runs the lane.
 
 - **Soundness oracle.** No false skip in 250,000 generated changes within the model of declared inputs. All 16 injected bugs produced a false skip.
 - **Field replay.** 4,800 plans across 24 real repositories, with no discovery mismatches or skips in fallback plans. The replay checks plans without executing test lanes.
-- **Mutation testing.** 96.57% of eligible decision-code mutations caused a test failure or timeout. The `v0.1.0` score was 77.26%. Each score covers its named files.
+- **Action soundness.** The built-Action suite checks that the compare range matches the tested Git tree and fails closed when that range cannot be verified.
 
 ## Pull request merge paths
 
@@ -19,6 +19,52 @@ The bug surfaced while [replaying lane-router on the author's own CI history](ow
 The matrix uses depth-1 clones for default merge checkouts on both pull request events. It checks the exact lane list from the first-parent diff, including when the payload base differs, and requires `complete=true` with no annotation. It covers the payload-base fallback when the checkout has one parent, three parents, or a different second parent. A manifest change uses the first parent's model in a full checkout and gives fetch-depth advice when the parent object is missing. The [Action tests](../test/action.test.ts) also check requested ranges and the file count check for the pull request head.
 
 The matrix answers compare requests from a local fixture. The `compare` job in [this repository's CI](../.github/workflows/ci.yml) calls the real endpoint on every pull request, from the default shallow checkout. It checks that the plan starts at the merge's first parent and that the endpoint returned a listing.
+
+## Action soundness
+
+The [Action oracle](../scripts/check-action-soundness.js) runs the built Action with a real checkout and a loopback compare endpoint. The [oracle rule](../scripts/action-oracle.js) reads the checkout's commit, its recorded parents, and the common ancestors of the event or supplied revisions. It selects the range for the tested tree, applies the event's ancestry and PR count requirements, and checks what the local clone can verify at the compare cap. It compares tree entries by object ID and mode. Package manifests and the routing config determine the lanes that must run.
+
+Each seed varies package roles, branch edits, advances to the base, merge shapes, checkout depth, working directory, event and inputs. The suite includes a default merge checkout at the cap, a criss-cross history with different merge-base choices, a capped rename whose old path requires a lane, and merge queue events. Cases with a verified range require the exact runs and skips. Cases with unverifiable changes require every known lane and an annotation. The four hand-written cases describe a corrupt listing, an unavailable endpoint, invalid JSON, and a missing file list.
+
+The default CI sample uses seed `20261120`. It passed 65 cases with 61 derived and 4 hand-written expectations. It included 20 shallow checkouts, 37 exact plans, 25 fail-closed plans, 3 rejected invocations and 81 skips. It found zero false skips. The 12-seed run passed 780 cases (732 derived, 48 hand-written) with 991 verified skips and zero false skips.
+
+Use Git 2.49 or later for `clone --revision`. An output directory stores one row per completed history. Reuse the seed and output directory with the same bundle to resume or extend a sample.
+
+```sh
+npm run build
+npm run test:action-soundness
+node scripts/check-action-soundness.js --seed 20261120 --histories 12 --output coverage/action-sample
+node scripts/check-action-mutations.js coverage/action-faults
+```
+
+The fault check runs every case from the default sample against the control and each of 20 faulty bundles. It needs the `v0.1.1` tag for the released bundle. Reuse its output directory to resume at the first unfinished case. The report gives a counterexample per fault, with requests, expected lanes and actual outputs. The local endpoint uses Git rename detection. Hosted comparison behavior and edits to a checkout after Git creates it are outside this sample.
+
+### Action seam mutation testing
+
+The campaign on the source and tests released as `v0.2.0` scored 76.05%. It assessed 1,044 eligible mutations. 782 failed a test, 12 timed out, 202 survived, and 48 had no coverage. The score includes test failures and timeouts. The campaign independently mutates these files and runs the Action and CLI against Git and HTTP protocol fixtures.
+
+- `src/action.ts`
+- `src/adapters/directory.ts`
+- `src/adapters/git.ts`
+- `src/adapters/github.ts`
+- `src/core/change.ts`
+
+4 survivors were judged equivalent for the supported entry points. The other survivors remain unclassified.
+
+- #67 in `src/action.ts:131` (ObjectLiteral) is equivalent because the input map is built from the declared keys before decoding.
+- #68 in `src/action.ts:131` (StringLiteral) is equivalent because the input map is built from the declared keys before decoding.
+- #1032 in `src/core/change.ts:69` (Regex) is equivalent because Git emits a single trailing slash for a nonempty prefix.
+- #1057 in `src/core/change.ts:80` (BooleanLiteral) is equivalent because the private type brand is never read at runtime.
+
+Run from the clean checkout containing this page and record its commit before starting. Pass the printed report path to the summary command to list each survivor by file and location. Reuse the output directory to resume.
+
+```sh
+git rev-parse HEAD
+mkdir -p coverage
+VITEST_MAX_WORKERS=1 NODE_OPTIONS=--max-old-space-size=640 node scripts/test-mutation.js --scope seam --workers 1 --output coverage/seam | tee coverage/seam-run.log
+report_path=$(sed -n 's/^Report path //p' coverage/seam-run.log)
+node scripts/mutation-report.js "$report_path" --details
+```
 
 ## Soundness oracle
 
@@ -91,32 +137,9 @@ A fallback counts once per plan. Its reason counts can overlap.
 
 </details>
 
-## Mutation testing
-
-Each mutation changes the source and reruns tests against it. The score counts failing tests and timeouts over all eligible mutations, including survivors and mutations with no coverage. Runtime errors are reported separately. Timeouts can vary between runs. A surviving mutation can indicate equivalent behavior or a missing assertion.
-
-| Scope and release               |  Score | Eligible | Killed by a failing test | Timeouts | Survived | No coverage | Runtime errors |
-| ------------------------------- | -----: | -------: | -----------------------: | -------: | -------: | ----------: | -------------: |
-| Decision code at `v0.1.0`       | 77.26% |      431 |             332 (77.03%) |        1 |       64 |          34 |              1 |
-| Decision code at `v0.1.1`       | 96.57% |      437 |             421 (96.34%) |        1 |       10 |           5 |              1 |
-| Workspace discovery at `v0.1.1` | 84.78% |      460 |             390 (84.78%) |        0 |       66 |           4 |              0 |
-
-The release comparison mutates `src/core/`. Workspace discovery is outside that comparison. A separate run mutates `src/load/workspace.ts`. Both scopes use the routing, invariant, rendering, and workspace tests from the version under test. No score is published for `src/` as a whole. The [package-manager link audit](limitations.md#dependency-boundaries) separately checks installed links against discovered edges.
-
-<details>
-<summary>What remained in the release campaigns</summary>
-
-In the decision-code campaign, the surviving mutations changed private type brands, an empty glob shortcut, already-validated graph lookups, an extra queue entry with no edges, or a lookup beyond the last possible package directory. The uncovered mutations were in exhaustive switch defaults and an absent graph entry. The timeout made a directory walk advance in the wrong direction. The runtime error removed the visited guard from a traversal of a cyclic graph.
-
-In workspace discovery, survivors include alternative dependency-specifier matches and validation branches. The suite exercises the catalog, local-link, override, and inventory cases added after the first survey. The remaining cases include gaps as well as equivalent changes.
-
-The report command below lists each mutation by file and location.
-
-</details>
-
 ## Reproduce
 
-Use Node 24.14.0, Git with `clone --revision`, and a configured Git commit identity for the replay overlays. The commands below use a POSIX-compatible shell, one mutation worker, and one repository at a time. Mutation and replay runs can resume from their saved output directories.
+For the historical planner and field results, use Node 24.14.0, Git 2.49 or later, and a configured Git commit identity for the replay overlays. The commands below use a POSIX-compatible shell, one mutation worker, and one repository at a time. Mutation and replay runs can resume from their saved output directories.
 
 ```sh
 git switch --detach v0.1.1
@@ -131,26 +154,4 @@ The large run's [saved output](evidence-soundness.json) includes the seed and ve
 npm run build
 NODE_OPTIONS=--max-old-space-size=768 node scripts/field-replay.js --root ../lane-router-field --output coverage/field-replay
 node scripts/field-summary.js coverage/field-replay/summary.json
-```
-
-Run the mutation campaigns from the release checkout. For each run, set `report_path` to its printed report path before invoking the summary command.
-
-```sh
-export VITEST_MAX_WORKERS=1
-export NODE_OPTIONS=--max-old-space-size=640
-npm run test:mutation -- --scope core --workers 1
-npm run test:mutation -- --scope core --file src/load/workspace.ts --workers 1
-node scripts/mutation-report.js "$report_path" --details
-```
-
-For the baseline, use source and tests from `v0.1.0` with the release's measurement runner and locked dependencies.
-
-```sh
-git worktree add --detach ../lane-router-before v0.1.0
-cp package.json package-lock.json stryker.config.json ../lane-router-before/
-cp scripts/test-mutation.js scripts/routing-test.config.ts scripts/mutation-report.js ../lane-router-before/scripts/
-cd ../lane-router-before
-npm ci
-npm run test:mutation -- --scope core --workers 1
-node scripts/mutation-report.js "$report_path" --details
 ```

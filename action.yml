@@ -25,7 +25,7 @@ inputs:
     description: The token for the compare API.
     default: ${{ github.token }}
   mode:
-    description: pr or push. Defaults from the event. Required for an event that implies no mode, and must match the event that implies one.
+    description: pr or push. Defaults from the event. On a pull request or push, an explicit mode must match the event. Merge groups default to push and accept either mode.
     default: ""
 
 outputs:
