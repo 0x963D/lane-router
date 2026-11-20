@@ -3,7 +3,7 @@ import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { appendFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath, URL } from "node:url";
 import { parseArgs } from "node:util";
@@ -22,6 +22,9 @@ const { values } = parseArgs({
     root: { type: "string" },
     output: { type: "string" },
     repo: { type: "string", multiple: true },
+    checkout: { type: "string" },
+    ref: { type: "string" },
+    config: { type: "string" },
     limit: { type: "string", default: String(REVISIONS) },
   },
 });
@@ -29,10 +32,15 @@ assert.ok(values.root, "pass --root <directory for shallow clones and replay res
 const root = resolve(values.root);
 const output = resolve(values.output ?? root);
 const limit = Number(values.limit);
-assert.ok(Number.isInteger(limit) && limit > 0 && limit <= REVISIONS, "invalid --limit");
-const dataset = JSON.parse(await readFile(DATASET, "utf8"));
-const selected = dataset.filter(({ repo }) => !values.repo || values.repo.includes(repo));
-assert.ok(selected.length > 0 && (!values.repo || selected.length === new Set(values.repo).size), "unknown repository");
+assert.ok(
+  Number.isSafeInteger(limit + 1) && limit > 0 && (values.checkout !== undefined || limit <= REVISIONS),
+  "invalid --limit",
+);
+assert.ok(
+  values.checkout !== undefined || (values.ref === undefined && values.config === undefined),
+  "--ref and --config require --checkout",
+);
+assert.ok(values.checkout === undefined || values.repo === undefined, "--checkout and --repo are exclusive");
 await mkdir(root, { recursive: true });
 await mkdir(output, { recursive: true });
 const fingerprint = createHash("sha256");
@@ -77,16 +85,54 @@ function run(command, args, { cwd, input, env, encoding = "utf8", timeout = 120_
   });
 }
 
-const gitEnvironment = { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_COUNT: "0" };
+const localCheckout = values.checkout !== undefined;
+const gitEnvironment = {
+  ...(localCheckout
+    ? {
+        ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^GIT_/i.test(name))),
+        GIT_NO_LAZY_FETCH: "1",
+      }
+    : process.env),
+  GIT_TERMINAL_PROMPT: "0",
+  GIT_CONFIG_COUNT: "0",
+};
 function git(cwd, args, options) {
-  return run("git", ["-c", "gc.auto=0", ...args], { cwd, env: gitEnvironment, ...options });
+  const flags = localCheckout ? ["--no-replace-objects"] : [];
+  return run("git", [...flags, "-c", "gc.auto=0", ...args], { cwd, env: gitEnvironment, ...options });
 }
 
 const project = fileURLToPath(new URL("../", import.meta.url));
-const [authorName, authorEmail] = await Promise.all(
-  ["user.name", "user.email"].map(async (key) => (await git(project, ["config", key])).trim()),
-);
+const [authorName, authorEmail] =
+  values.checkout === undefined
+    ? await Promise.all(["user.name", "user.email"].map(async (key) => (await git(project, ["config", key])).trim()))
+    : ["lane-router replay", "replay@example.invalid"];
 const identity = ["-c", `user.name=${authorName}`, "-c", `user.email=${authorEmail}`, "-c", "commit.gpgsign=false"];
+
+async function configuredInput(path) {
+  const checkout = resolve((await git(resolve(path), ["rev-parse", "--show-toplevel"])).trim());
+  const branch = values.ref ?? "HEAD";
+  const head = (await git(checkout, ["rev-parse", "--verify", "--end-of-options", `${branch}^{commit}`])).trim();
+  const config =
+    values.config === undefined
+      ? await git(checkout, ["show", `${head}:.github/lanes.yml`])
+      : await readFile(resolve(values.config), "utf8");
+  const configDigest = createHash("sha256").update(config).digest("hex");
+  return { source: { repo: basename(checkout), branch, head, checkout, configDigest }, config };
+}
+
+function replayStem({ repo, checkout, head }) {
+  if (checkout === undefined) return repo.replace("/", "--");
+  return (
+    "checkout-" +
+    createHash("sha256")
+      .update(checkout)
+      .update("\0")
+      .update(head)
+      .update("\0" + limit)
+      .digest("hex")
+      .slice(0, 16)
+  );
+}
 
 async function isClone(dir) {
   try {
@@ -97,19 +143,29 @@ async function isClone(dir) {
   }
 }
 
-async function clone({ repo, head }) {
-  const dir = join(root, repo.replace("/", "--"));
-  const url = `https://github.com/${repo}.git`;
+async function clone(source) {
+  const { repo, head, checkout } = source;
+  const dir = join(root, replayStem(source));
+  const url = checkout ?? `https://github.com/${repo}.git`;
   if (!(await isClone(dir))) {
+    const depth = checkout === undefined ? REVISIONS + 1 : limit + 1;
     await git(
       root,
-      ["clone", `--revision=${head}`, `--depth=${REVISIONS + 1}`, "--no-tags", "--no-checkout", url, dir],
-      {
-        timeout: 600_000,
-      },
+      [
+        "clone",
+        ...(checkout === undefined ? [] : ["--no-local"]),
+        `--revision=${head}`,
+        `--depth=${depth}`,
+        "--no-tags",
+        "--no-checkout",
+        url,
+        dir,
+      ],
+      { timeout: 600_000 },
     );
   }
-  assert.equal((await git(dir, ["remote", "get-url", "origin"])).trim(), url);
+  const origin = (await git(dir, ["remote", "get-url", "origin"])).trim();
+  assert.equal(checkout === undefined ? origin : resolve(origin), url);
   return dir;
 }
 
@@ -201,12 +257,25 @@ async function overlay(dir, rootEntries, configId, parent) {
   return (await git(dir, args)).trim();
 }
 
-async function decide(dir, base, head) {
+async function decide(dir, base, head, configured) {
   const child = spawn(
     process.execPath,
-    [CLI, "explain", "--base", base, "--head", head, "--config", CONFIG, "--json"],
+    [
+      CLI,
+      "explain",
+      "--mode",
+      configured ? "push" : "pr",
+      "--base",
+      base,
+      "--head",
+      head,
+      "--config",
+      CONFIG,
+      "--json",
+    ],
     {
       cwd: dir,
+      env: gitEnvironment,
       windowsHide: true,
       timeout: 120_000,
       stdio: ["ignore", "pipe", "pipe"],
@@ -222,17 +291,18 @@ async function decide(dir, base, head) {
   if (exit !== 0) return { error: stderr.trim() || "CLI did not exit successfully", exit, signal };
   try {
     if (parsed.status === "rejected") throw parsed.reason;
-    const { base: actualBase, head: actualHead, ...result } = parsed.value;
+    const { base: actualBase, head: actualHead, verdicts, ...result } = parsed.value;
     assert.equal(actualBase, base);
     assert.equal(actualHead, head);
-    return result;
+    return configured ? { ...result, verdicts } : result;
   } catch (error) {
     return { error: error.message, exit, signal };
   }
 }
 
-async function replay(repo) {
-  const stem = join(output, repo.repo.replace("/", "--"));
+async function replay(repo, routingConfig) {
+  const configured = routingConfig !== undefined;
+  const stem = join(output, replayStem(repo));
   const out = stem + ".jsonl";
   const resultFile = stem + ".result.json";
   const key = JSON.stringify({
@@ -252,7 +322,8 @@ async function replay(repo) {
     .trim()
     .split("\n")
     .reverse();
-  assert.equal(revs.length, limit + 1, `${repo.repo} needs at least ${limit + 1} first-parent commits`);
+  if (configured) assert.ok(revs.length > 1, "the checkout needs at least two first-parent commits");
+  else assert.equal(revs.length, limit + 1, `${repo.repo} needs at least ${limit + 1} first-parent commits`);
   const recorded = await readIfPresent(out);
   const completeLines = recorded.slice(0, recorded.lastIndexOf("\n") + 1);
   const [recordedKey, ...lines] = completeLines.trimEnd().split("\n");
@@ -267,9 +338,18 @@ async function replay(repo) {
   let base = resumed;
   for (const commit of revs.slice(rows.length === 0 ? 0 : rows.length + 1)) {
     const tree = await treeAt(dir, commit, readBlobs);
-    const workspace = await workspaceAt(tree);
-    const config = fieldConfig(workspace.packages);
-    const layoutError = await audit(tree, config, workspace.packages);
+    let config = routingConfig;
+    let metadata = {};
+    if (config === undefined) {
+      const workspace = await workspaceAt(tree);
+      config = fieldConfig(workspace.packages);
+      metadata = {
+        manager: workspace.manager,
+        packages: workspace.packages.length,
+        testLanes: workspace.packages.filter(({ test }) => test).length,
+        layoutError: await audit(tree, config, workspace.packages),
+      };
+    }
     let configId = configs.get(config);
     if (configId === undefined) {
       configId = (await git(dir, ["hash-object", "-w", "--stdin"], { input: config })).trim();
@@ -277,14 +357,11 @@ async function replay(repo) {
     }
     const head = await overlay(dir, tree.rootEntries, configId, base);
     if (base !== undefined) {
-      const decision = await decide(dir, base, head);
+      const decision = await decide(dir, base, head, configured);
       const row = {
         commit,
         overlay: head,
-        manager: workspace.manager,
-        packages: workspace.packages.length,
-        testLanes: workspace.packages.filter(({ test }) => test).length,
-        layoutError,
+        ...metadata,
         ...decision,
       };
       rows.push(row);
@@ -292,12 +369,12 @@ async function replay(repo) {
     }
     base = head;
   }
-  const result = summarize(repo, rows);
+  const result = summarize(repo, rows, configured);
   await saveJson(resultFile, { key, result });
   return result;
 }
 
-function summarize({ repo, branch, head }, rows) {
+function summarize({ repo, branch, head }, rows, configured) {
   const failures = rows.filter((row) => "error" in row);
   const completed = rows.filter((row) => "lanes" in row);
   const occurrences = completed.flatMap(({ fallbacks }) => fallbacks);
@@ -305,33 +382,50 @@ function summarize({ repo, branch, head }, rows) {
     [...new Set(occurrences)].sort().map((reason) => [reason, occurrences.filter((item) => item === reason).length]),
   );
   const tip = rows.at(-1);
+  const counts = new Map();
+  for (const row of completed) {
+    for (const { lane, decision } of row.verdicts ?? []) {
+      const laneCounts = counts.get(lane) ?? { run: 0, skip: 0 };
+      laneCounts[decision]++;
+      counts.set(lane, laneCounts);
+    }
+  }
+  const rejected = (row) => row.exit === 1 && (configured || row.layoutError !== null);
   return {
     repo,
     branch,
     head,
-    manager: tip.manager,
-    packages: tip.packages,
-    testLanes: tip.testLanes,
+    ...(configured
+      ? { laneCounts: Object.fromEntries(counts) }
+      : {
+          manager: tip.manager,
+          packages: tip.packages,
+          testLanes: tip.testLanes,
+          floorOnly: rows.every(({ testLanes }) => testLanes === 0),
+          discoveryMismatches: rows.filter(({ layoutError }) => layoutError !== null).length,
+        }),
     attempted: rows.length,
-    floorOnly: rows.every(({ testLanes }) => testLanes === 0),
-    discoveryMismatches: rows.filter(({ layoutError }) => layoutError !== null).length,
     decisions: completed.length,
     laneVerdicts: completed.reduce((sum, row) => sum + row.lanes, 0),
     skipped: completed.reduce((sum, row) => sum + row.skipped, 0),
     fallbacks: completed.filter(({ fallbacks }) => fallbacks.length > 0).length,
     reasons,
-    rejections: failures.filter(({ exit, layoutError }) => exit === 1 && layoutError !== null).length,
-    crashes: failures.filter(({ exit, layoutError }) => exit !== 1 || layoutError === null).length,
+    rejections: failures.filter(rejected).length,
+    crashes: failures.filter((row) => !rejected(row)).length,
   };
 }
 
+const configured = values.checkout === undefined ? undefined : await configuredInput(values.checkout);
+const dataset = configured === undefined ? JSON.parse(await readFile(DATASET, "utf8")) : [configured.source];
+const selected = dataset.filter(({ repo }) => !values.repo || values.repo.includes(repo));
+assert.ok(selected.length > 0 && (!values.repo || selected.length === new Set(values.repo).size), "unknown repository");
 const summary = [];
 for (const repo of selected) {
   let result;
   try {
-    result = await replay(repo);
+    result = await replay(repo, configured?.config);
   } catch (error) {
-    result = { ...repo, error: error.output || error.message };
+    result = { repo: repo.repo, branch: repo.branch, head: repo.head, error: error.output || error.message };
   }
   summary.push(result);
   process.stdout.write(JSON.stringify(result) + "\n");
@@ -340,5 +434,5 @@ await saveJson(join(output, "summary.json"), summary);
 if (summary.some((row) => !isClean(row))) process.exitCode = 1;
 
 function isClean(row) {
-  return !row.error && row.discoveryMismatches === 0 && row.crashes === 0 && row.rejections === 0;
+  return !row.error && (row.discoveryMismatches ?? 0) === 0 && row.crashes === 0 && row.rejections === 0;
 }

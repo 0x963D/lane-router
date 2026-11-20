@@ -28,6 +28,10 @@ describe("replay JSON reader", () => {
       ...header,
       lanes: 2,
       skipped: 0,
+      verdicts: [
+        { lane: "api", decision: "run" },
+        { lane: "web", decision: "run" },
+      ],
       bytes: Buffer.byteLength(text),
       fallbacks: ["built-in/lockfile", "unmatched"],
     });
@@ -37,14 +41,18 @@ describe("replay JSON reader", () => {
     const text = JSON.stringify({
       ...header,
       lanes: [
-        { decision: "run", because: Array.from({ length: 8_192 }, () => ({ detail: "x".repeat(512) })) },
-        { decision: "skip" },
+        { lane: "api", decision: "run", because: Array.from({ length: 8_192 }, () => ({ detail: "x".repeat(512) })) },
+        { decision: "skip", lane: "web" },
       ],
       paths: [],
     });
     expect(await readFieldPlan(splitBytes(text, 16_384))).toMatchObject({
       lanes: 2,
       skipped: 1,
+      verdicts: [
+        { lane: "api", decision: "run" },
+        { lane: "web", decision: "skip" },
+      ],
       bytes: Buffer.byteLength(text),
       fallbacks: [],
     });
@@ -55,7 +63,7 @@ describe("replay JSON reader", () => {
     const text = JSON.stringify({
       ...header,
       incomplete,
-      lanes: [{ decision: "run" }],
+      lanes: [{ lane: "api", decision: "run" }],
       paths: [{ placements: [{ kind: "unmatched" }] }],
     });
     expect(await readFieldPlan(splitBytes(text, 7))).toMatchObject({
@@ -67,7 +75,7 @@ describe("replay JSON reader", () => {
   it("rejects truncated output and any skip in a fail-closed plan", async () => {
     const text = JSON.stringify({
       ...header,
-      lanes: [{ decision: "skip" }],
+      lanes: [{ lane: "api", decision: "skip" }],
       paths: [{ placements: [{ kind: "unmatched" }] }],
     });
     await expect(readFieldPlan(splitBytes(text.slice(0, -1), 9))).rejects.toThrow();
