@@ -6,7 +6,16 @@ import { pathRefusal, type Refusal, type RepoTree, type TreeRead } from "../load
 const execFileAsync = promisify(execFile);
 
 /** Paths relative to the top of the repository whatever `diff.relative` says. */
-const DIFF = ["diff", "--name-only", "--no-renames", "--no-relative", "-z"] as const;
+const DIFF = [
+  "diff",
+  "--name-only",
+  "--no-renames",
+  "--no-relative",
+  "--no-ext-diff",
+  "--no-textconv",
+  "--ignore-submodules=none",
+  "-z",
+] as const;
 
 /** Entry modes whose content is not a file in this tree. A blob of mode 120000 holds a link target. */
 const LINKS: ReadonlyMap<string, Refusal> = new Map([
@@ -36,7 +45,12 @@ export interface GitRepo {
 export function gitRepo(cwd: string): GitRepo {
   const runGit = async (args: readonly string[], input?: string): Promise<Buffer> => {
     try {
-      const run = execFileAsync("git", args, { cwd, encoding: "buffer", maxBuffer: 256 * 1024 * 1024 });
+      const run = execFileAsync("git", ["--no-replace-objects", ...args], {
+        cwd,
+        env: { ...process.env, GIT_NO_LAZY_FETCH: "1" },
+        encoding: "buffer",
+        maxBuffer: 256 * 1024 * 1024,
+      });
       run.child.stdin?.on("error", () => {});
       run.child.stdin?.end(input);
       const { stdout } = await run;
@@ -59,7 +73,7 @@ export function gitRepo(cwd: string): GitRepo {
     parentsOf: async (commit) => {
       try {
         // Revision walks hide the recorded parents of shallow commits.
-        const object = await git(["--no-replace-objects", "cat-file", "commit", commit]);
+        const object = await git(["cat-file", "commit", commit]);
         const [headers = ""] = object.split("\n\n", 1);
         const parents = headers
           .split("\n")
@@ -109,7 +123,9 @@ export function gitRepo(cwd: string): GitRepo {
     changes: async (range) => {
       if (range.base === null) return incomplete({ kind: "no-base" });
       const mergeBase = (await git(["merge-base", range.base, range.head])).trim();
-      const output = await git([...DIFF, mergeBase, range.head]);
+      const output = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+        await runGit([...DIFF, mergeBase, range.head, "--"]),
+      );
       return changedFiles(
         split(output).map((path) => ({ path, previousPath: null })),
         { under: await prefix(), mergeBase },

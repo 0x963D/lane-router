@@ -71,6 +71,27 @@ const mutations = [
     "false",
   ],
   [
+    "use the API subset after verifying a larger local diff",
+    "push-capped",
+    "adapters/github.ts",
+    "if (files.paths.every((path) => available.has(path))) return local;",
+    "if (files.paths.every((path) => available.has(path))) return files;",
+  ],
+  [
+    "ignore disagreement between the API and the local list",
+    "push-capped-disagreement",
+    "adapters/github.ts",
+    "files.paths.every((path) => available.has(path))",
+    "true",
+  ],
+  [
+    "ignore a PR count when recovering a capped list",
+    "pr-capped-count-disagreement",
+    "adapters/github.ts",
+    "(expectedCount === null || local.paths.length === expectedCount)",
+    "true",
+  ],
+  [
     "drop the old name of a rename",
     "push-renames-and-deletes",
     "adapters/github.ts",

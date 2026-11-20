@@ -291,6 +291,7 @@ async function requestFor(invocation: Invocation, head: RepoTree): Promise<PlanR
             expectedCount: branchDiff ? source.expectedCount : null,
             resolveBase: (ref) => repo.resolve(ref),
             under: await under(),
+            localChanges: repo.changes,
           });
   return { mode, range, changes, baseGraph };
 }

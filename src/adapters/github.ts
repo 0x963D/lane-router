@@ -1,4 +1,4 @@
-import { changedFiles, incomplete, type ChangedFiles, type Range } from "../core/change.ts";
+import { changedFiles, incomplete, type ChangedFiles, type ChangeSource, type Range } from "../core/change.ts";
 import type { Mode } from "../core/plan.ts";
 import {
   array,
@@ -93,7 +93,7 @@ export interface GitHubRepo {
   /**
    * The files changed from the merge base of `range.base` and `range.head`, which the list carries,
    * from the compare endpoint. Resolves incomplete when there is no base, when the listing reaches
-   * the 300-file cap, or when it differs from `expectedCount`. In push mode it also resolves
+   * the 300-file cap without a verified local diff, or when it differs from `expectedCount`. In push mode it also resolves
    * incomplete unless head extends base. When `requireBaseAncestor` is set, it rejects unless head
    * extends base. Rejects on any HTTP or decoding failure.
    */
@@ -105,6 +105,7 @@ export interface GitHubRepo {
       readonly expectedCount: number | null;
       readonly resolveBase: (ref: string) => Promise<string | undefined>;
       readonly under: string;
+      readonly localChanges: ChangeSource;
     },
   ): Promise<ChangedFiles>;
 }
@@ -142,7 +143,7 @@ export function githubRepo(options: {
   };
 
   return {
-    compare: async (range, { mode, requireBaseAncestor, expectedCount, resolveBase, under }) => {
+    compare: async (range, { mode, requireBaseAncestor, expectedCount, resolveBase, under, localChanges }) => {
       if (range.base === null) return incomplete({ kind: "no-base" });
       const checkAncestry = requireBaseAncestor || mode === "push";
       let base = range.base;
@@ -157,8 +158,8 @@ export function githubRepo(options: {
       if (reply.kind === "not-found") throw reply.error;
       const { status, mergeBase, baseCommit, files: listed } = reply;
       const files = changedFiles(listed, { under, mergeBase });
+      const resolvedBase = fullSha(base) ? base : baseCommit;
       if (checkAncestry) {
-        const resolvedBase = fullSha(base) ? base : baseCommit;
         if (resolvedBase === undefined || !fullSha(resolvedBase)) {
           throw new Error("the compare response did not resolve the base to a full SHA, so supply the full base SHA");
         }
@@ -172,6 +173,28 @@ export function githubRepo(options: {
         }
       }
       if (listed.length >= COMPARE_LIMIT) {
+        if (
+          listed.length === COMPARE_LIMIT &&
+          files.kind === "complete" &&
+          resolvedBase !== undefined &&
+          fullSha(resolvedBase) &&
+          fullSha(range.head) &&
+          fullSha(mergeBase) &&
+          (expectedCount === null || expectedCount >= COMPARE_LIMIT) &&
+          new Set(listed.map(({ path }) => path)).size === listed.length
+        ) {
+          const local = await localChanges({ base: resolvedBase, head: range.head }).catch(() => undefined);
+          if (local?.kind === "incomplete" && local.cause.kind === "invalid-path") return local;
+          if (
+            local?.kind === "complete" &&
+            local.mergeBase === mergeBase &&
+            local.paths.length >= COMPARE_LIMIT &&
+            (expectedCount === null || local.paths.length === expectedCount)
+          ) {
+            const available = new Set(local.paths);
+            if (files.paths.every((path) => available.has(path))) return local;
+          }
+        }
         return incomplete({ kind: "truncated", listed: listed.length, limit: COMPARE_LIMIT }, files.paths);
       }
       if (expectedCount !== null && listed.length !== expectedCount) {

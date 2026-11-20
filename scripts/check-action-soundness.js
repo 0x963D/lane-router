@@ -174,6 +174,7 @@ function compareHandler(repo, fault, requests) {
       if (fault !== "missing-files") {
         const page = new URLSearchParams(query).get("page");
         body.files = Number(page) > 1 || fault === "short-list" ? [] : files.slice(0, fixture.listLimit);
+        if (fault === "wrong-file") body.files[0] = { filename: fixture.root + "/packages/bravo/missing.js" };
       }
       response.end(JSON.stringify(body));
     } catch {

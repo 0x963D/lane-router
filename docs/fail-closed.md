@@ -8,8 +8,8 @@ A wrong skip merges an untested break. lane-router runs every lane, and says why
 It also runs every lane when it cannot trust the list of changed files. Then `complete` is `false`, an annotation gives the cause, and the step succeeds so the lanes run. These are the cases:
 
 - a routing config or package manifest change whose base model cannot be built, because there is no base commit, the commit was not fetched, its config or a manifest does not parse, a name in the base config does not resolve there, or reading it failed,
-- a compare listing of 300 or more files, which is the most the endpoint returns,
-- a default pull request branch diff whose compare listing differs from its `changed_files` count,
+- a compare listing that reaches 300 files, unless local Git can verify the complete diff,
+- a default pull request branch diff whose verified listing differs from its `changed_files` count,
 - a `pull_request` comparison whose checkout matches neither the merge commit nor the PR head, with no explicit `head` input,
 - a `head` input that cannot resolve to the checkout on any event,
 - a comparison on a non-PR event whose checkout differs from the implicit event head,
@@ -24,6 +24,8 @@ It also runs every lane when it cannot trust the list of changed files. Then `co
 A push is routed from `before` to `after`, and the compare API lists the change from the merge base of the two. After a force push the merge base is not `before`, so the listing leaves out what the dropped commits changed. In push mode lane-router trusts the listing only when the compare API reports `ahead` or `identical` and the merge base is the base commit. That holds for a `base` input in push mode too. A `mode` input that contradicts its event fails the step, so a push cannot opt out of this rule.
 
 On either pull request event, a PR head checkout uses the diff from the merge base, even with a custom base. Routing the proposed change on the default `pull_request_target` base-tip checkout also uses the diff from the merge base. Other PR checkouts require the base to be an ancestor. With `base` omitted, a checkout with exactly two parents and the PR head as its second parent uses its first parent. If that shape cannot be verified, the ancestry check uses the payload base. See the [checkout and input tables](action.md#inputs).
+
+A capped listing can use local Git when both compare revisions are available. The local merge base must match the API response. Every listed path, including old rename paths, must appear in the local diff. When the PR count check applies, the complete path count must match the payload. A path outside the routed root still makes the plan incomplete, including when local Git finds it beyond the cap.
 
 A depth-1 checkout retains the parent SHAs in the commit object. The compare endpoint checks ancestry and lists the paths with those SHAs. If the routing config or a package manifest changed, the Action needs the local commit the diff starts from. A missing commit runs every known head lane with `complete=false` and reports how to set `fetch-depth`. Use `fetch-depth: 0` to read the base config and graph.
 

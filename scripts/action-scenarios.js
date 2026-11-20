@@ -113,14 +113,25 @@ export function history(dir, seed) {
   const configs = save("Rename a lane");
 
   branch("large", fork);
-  for (let index = 0; index < 300 + (seed % 7); index++) {
+  for (let index = 0; index < 299; index++) {
     write(ROOT + "/" + pkg("alpha", "bulk-" + index + ".js"), String(index));
   }
-  write(ROOT + "/" + pkg("delta", "omitted.js"), "beyond the compare cap\n");
+  write(ROOT + "/" + pkg("delta", "last.js"), "beyond a capped listing\n");
+  const exactCap = save("Reach the compare cap");
+  const largeCount = 301 + (seed % 7);
+  for (let index = 299; index < largeCount - 1; index++) {
+    write(ROOT + "/" + pkg("alpha", "bulk-" + index + ".js"), String(index));
+  }
   const large = save("Exceed the compare cap");
+  write("zz-outside.txt", "outside the workspace and beyond the compare cap\n");
+  const largeOutside = save("Edit a path outside the workspace after the cap");
+
+  branch("large-rename", large);
+  renameSync(join(repo, ROOT, rename), join(repo, ROOT, renamed));
+  const largeRename = save("Rename across packages after the compare cap");
 
   const checkouts = new Map();
-  let current = large;
+  let current;
   function checkout(head, shallow) {
     if (!shallow) {
       if (current !== head) run("switch", "--quiet", "--detach", head);
@@ -135,7 +146,25 @@ export function history(dir, seed) {
     return path;
   }
 
-  return { repo, checkout, fork, first, patch, merge, newer, custom, outside, renames, manifests, configs, large };
+  return {
+    repo,
+    checkout,
+    fork,
+    first,
+    patch,
+    merge,
+    newer,
+    custom,
+    outside,
+    renames,
+    manifests,
+    configs,
+    exactCap,
+    large,
+    largeCount,
+    largeOutside,
+    largeRename,
+  };
 }
 
 function rank(seed, name) {
@@ -247,7 +276,25 @@ export function cases(h) {
     }),
     push("push-config", h.configs, h.fork, h.configs, { diff: [h.fork, h.configs] }),
     push("push-outside-root", h.outside, h.first, h.outside, { closed: /not a path inside the routed root/ }),
-    push("push-capped", h.large, h.fork, h.large, { closed: /at most 300 files/ }),
+    push("push-exact-cap", h.exactCap, h.fork, h.exactCap, { diff: [h.fork, h.exactCap] }),
+    push("push-capped", h.large, h.fork, h.large, { diff: [h.fork, h.large] }),
+    push("push-capped-rename", h.largeRename, h.fork, h.largeRename, { diff: [h.fork, h.largeRename] }),
+    push("push-capped-outside", h.largeOutside, h.fork, h.largeOutside, {
+      closed: /not a path inside the routed root/,
+    }),
+    push("push-capped-disagreement", h.large, h.fork, h.large, {
+      closed: /at most 300 files/,
+      fault: "wrong-file",
+    }),
+    pr("pr-capped", h.large, h.newer, {
+      payload: { pull_request: { base: { sha: h.newer }, head: { sha: h.large }, changed_files: h.largeCount } },
+      diff: [h.fork, h.large],
+      matrixBase: h.newer,
+    }),
+    pr("pr-capped-count-disagreement", h.large, h.newer, {
+      payload: { pull_request: { base: { sha: h.newer }, head: { sha: h.large }, changed_files: h.largeCount - 1 } },
+      closed: /at most 300 files/,
+    }),
     push("push-capped-shallow", h.large, h.fork, h.large, { closed: /at most 300 files/, shallow: true }),
     push("push-compare-error", h.custom, h.first, h.custom, { closed: /returned 503/, fault: "unavailable" }),
     push("push-invalid-json", h.custom, h.first, h.custom, { closed: /not valid JSON/, fault: "invalid-json" }),

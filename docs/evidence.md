@@ -37,6 +37,8 @@ npm run test:action-soundness:mutations
 
 The fault check needs the `v0.1.1` tag to run that release's committed Action bundle. It also builds one bundle per injected source change. A counterexample includes the seed, compare requests, expected lanes and observed outputs.
 
+After capped compare recovery, seed `20261120` passed 48 cases with 53 skips. The new cases cover a 300-file diff, overflow, renames, missing history, a disagreeing API listing and a path outside the routed root beyond the cap. Three additional injected faults exercise the local listing and count checks. Run `npm run test:action-soundness` and `npm run test:action-soundness:mutations` after building.
+
 The automated Action seam campaign mutates `src/action.ts`, the GitHub, Git and directory adapters, and the path list boundary in `src/core/change.ts`. The campaign runs the Action and CLI against fast protocol fixtures. The built-Action oracle above runs separately with real Git and HTTP. The first run scored 61.15% (541 killed by tests, 10 timeouts, 242 survivors, 108 uncovered). After adding tests for supplied paths, nested roots and error handling, the run scored 68.81% (609 killed by tests, 11 timeouts, 222 survivors, 59 uncovered). Both runs assessed 901 eligible mutations. The scores include timeouts and the workers differed between runs.
 
 ```sh

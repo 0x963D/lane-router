@@ -10006,7 +10006,16 @@ function baseGraphOf(head, configPath, commits) {
 
 // src/adapters/git.ts
 var execFileAsync = promisify(execFile);
-var DIFF = ["diff", "--name-only", "--no-renames", "--no-relative", "-z"];
+var DIFF = [
+  "diff",
+  "--name-only",
+  "--no-renames",
+  "--no-relative",
+  "--no-ext-diff",
+  "--no-textconv",
+  "--ignore-submodules=none",
+  "-z"
+];
 var LINKS = /* @__PURE__ */ new Map([
   ["120000", "symbolic-link"],
   ["160000", "submodule"]
@@ -10014,7 +10023,12 @@ var LINKS = /* @__PURE__ */ new Map([
 function gitRepo(cwd) {
   const runGit = async (args, input) => {
     try {
-      const run = execFileAsync("git", args, { cwd, encoding: "buffer", maxBuffer: 256 * 1024 * 1024 });
+      const run = execFileAsync("git", ["--no-replace-objects", ...args], {
+        cwd,
+        env: { ...process.env, GIT_NO_LAZY_FETCH: "1" },
+        encoding: "buffer",
+        maxBuffer: 256 * 1024 * 1024
+      });
       run.child.stdin?.on("error", () => {
       });
       run.child.stdin?.end(input);
@@ -10036,7 +10050,7 @@ function gitRepo(cwd) {
     },
     parentsOf: async (commit) => {
       try {
-        const object2 = await git(["--no-replace-objects", "cat-file", "commit", commit]);
+        const object2 = await git(["cat-file", "commit", commit]);
         const [headers = ""] = object2.split("\n\n", 1);
         const parents = headers.split("\n").filter((line) => line.startsWith("parent ")).map((line) => line.slice(7));
         return parents.every((parent) => /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(parent)) ? parents : [];
@@ -10078,7 +10092,9 @@ function gitRepo(cwd) {
     changes: async (range) => {
       if (range.base === null) return incomplete({ kind: "no-base" });
       const mergeBase = (await git(["merge-base", range.base, range.head])).trim();
-      const output = await git([...DIFF, mergeBase, range.head]);
+      const output = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+        await runGit([...DIFF, mergeBase, range.head, "--"])
+      );
       return changedFiles(
         split(output).map((path) => ({ path, previousPath: null })),
         { under: await prefix(), mergeBase }

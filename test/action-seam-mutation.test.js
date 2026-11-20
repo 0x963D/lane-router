@@ -25,7 +25,8 @@ vi.mock("node:child_process", async (original) => {
         end(input) {
           try {
             expect(command).toBe("git");
-            const result = git(input, ...args);
+            expect(args[0]).toBe("--no-replace-objects");
+            const result = git(input, ...args.slice(1));
             if (result === undefined)
               throw Object.assign(new Error("unavailable Git object"), { stderr: Buffer.from("missing object") });
             resolve({ stdout: Buffer.from(result) });
@@ -69,7 +70,8 @@ function fixtureGitOutput(input, ...args) {
       "local~2^{commit}": base,
     }[args.at(-1)];
   }
-  if (args[0] === "--no-replace-objects") return "tree f\nparent " + base + "\nparent " + incoming + "\n\nmessage\n";
+  if (args[0] === "cat-file" && args[1] === "commit")
+    return "tree f\nparent " + base + "\nparent " + incoming + "\n\nmessage\n";
   if (args[0] === "merge-base") return base + "\n";
   if (args[0] === "diff") return ui + "\0";
   if (args[0] === "ls-tree") return tree;
@@ -119,7 +121,9 @@ describe("Action inputs and compare responses", () => {
 
   it("falls back to the payload base for a one-parent checkout", async () => {
     git.mockImplementation((input, ...args) =>
-      args[0] === "--no-replace-objects" ? "tree f\nparent " + stale + "\n\n" : fixtureGitOutput(input, ...args),
+      args[0] === "cat-file" && args[1] === "commit"
+        ? "tree f\nparent " + stale + "\n\n"
+        : fixtureGitOutput(input, ...args),
     );
     request.mockResolvedValue(Response.json({ ...listed, merge_base_commit: { sha: stale } }));
     expectLanes(await action({ event: pr }), selected, true);

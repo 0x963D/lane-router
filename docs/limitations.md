@@ -5,7 +5,7 @@ These are not built:
 - Workspace discovery reads pnpm and npm declarations. Yarn and Bun also use the `workspaces` field. The [field replay](evidence.md#field-replay) checked manifest discovery in Babel, a Yarn workspace. Yarn and Bun installation and dependency resolution are outside that replay.
 - Dependencies come from manifests and configured edges. Imports in source files are not read.
 - `unmatched` accepts only `all`.
-- A compare listing of 300 or more files fails closed. Paging through a larger diff would let such a change skip lanes safely.
+- The compare endpoint lists at most 300 files. Large changes need enough local history to verify the full diff. A default PR head comparison can still run every lane if Git lists both paths of a rename and the resulting path count disagrees with the payload.
 - A depth-1 merge checkout has enough history for the first-parent compare. If a routing config or package manifest changes, use `fetch-depth: 0` to give the Action the base model too.
 - A `merge_group` event needs explicit `mode` and `base` inputs for a compare. Supply `head` if the checkout differs from `GITHUB_SHA`.
 - There is no Marketplace listing yet.
