@@ -11,7 +11,15 @@ const shared: BuildOptions = {
   logLevel: "warning",
 };
 
-await Promise.all([
-  build({ ...shared, entryPoints: ["src/bin/action.ts"], outfile: "dist/index.js" }),
-  build({ ...shared, entryPoints: ["src/bin/cli.ts"], outfile: "dist/cli.js" }),
-]);
+export const actionBundleOptions: BuildOptions = {
+  ...shared,
+  entryPoints: ["src/bin/action.ts"],
+  outfile: "dist/index.js",
+};
+
+if (import.meta.main) {
+  await Promise.all([
+    build(actionBundleOptions),
+    build({ ...shared, entryPoints: ["src/bin/cli.ts"], outfile: "dist/cli.js" }),
+  ]);
+}

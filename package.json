@@ -19,6 +19,8 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:mutation": "node scripts/test-mutation.js",
+    "test:action-soundness": "node scripts/check-action-soundness.js",
+    "test:action-soundness:mutations": "node scripts/check-action-mutations.js",
     "test:soundness": "node scripts/check-soundness.ts",
     "test:soundness:mutations": "node scripts/check-soundness-mutations.js",
     "build": "node scripts/build.ts",

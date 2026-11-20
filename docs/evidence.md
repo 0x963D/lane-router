@@ -1,6 +1,6 @@
 # Routing evidence
 
-The soundness, field replay and mutation figures on this page are for the `v0.1.1` release.
+The planner soundness, field replay and release mutation figures on this page are for `v0.1.1`. The Action checks cover the range and file listing before planning.
 
 lane-router promises to skip a CI lane only when the change cannot affect the inputs the lane declares. When it cannot make that decision safely, it runs the lane.
 
@@ -19,6 +19,30 @@ The bug surfaced while [replaying lane-router on the author's own CI history](ow
 The matrix uses depth-1 clones for default merge checkouts on both pull request events. It checks the exact lane list from the first-parent diff, including when the payload base differs, and requires `complete=true` with no annotation. It covers the payload-base fallback when the checkout has one parent, three parents, or a different second parent. A manifest change uses the first parent's model in a full checkout and gives fetch-depth advice when the parent object is missing. The [Action tests](../test/action.test.ts) also check requested ranges and the file count check for the pull request head.
 
 The matrix answers compare requests from a local fixture. The `compare` job in [this repository's CI](../.github/workflows/ci.yml) calls the real endpoint on every pull request, from the default shallow checkout. It checks that the plan starts at the merge's first parent and that the endpoint returned a listing.
+
+## Action soundness
+
+The [Action oracle](../scripts/check-action-soundness.js) runs the built Action in a fresh process with a real checkout. Its loopback compare endpoint resolves requested commits and lists the merge-base diff with Git rename detection. The oracle independently compares blob IDs and modes from both tree inventories and reads package dependencies and lane names from the fixture's committed manifests and config.
+
+Each seed changes the package roles, file names and size of a capped diff. Its cases include base-branch moves, cross-package renames, deletes, config and dependency changes, stale and newer payloads, full and depth-1 checkouts, and all combinations of base, head and supplied files. Fail-closed cases require every known lane and a reason. The cases with a verifiable range require the exact lane set, including skips. The suite does not model GitHub's internal rename heuristics, other package managers, or edits to a checkout after Git creates it.
+
+At seed `20261120`, the release baseline passed 42 cases with no false skips. It produced 23 exact plans, 17 fail-closed plans and two usage errors. The exact plans included 50 skips. The 12-history sample starting at seed `20261120` passed 504 cases with 276 exact plans, 204 fail-closed plans, 24 usage errors and 600 skips. The CI sample runs one history. Use an output directory to save one row per completed seed. Reuse the seed and output directory with the same bundle and a larger history count to extend the run.
+
+```sh
+npm run build
+npm run test:action-soundness
+node scripts/check-action-soundness.js --seed 20261120 --histories 12 --output coverage/action-sample
+npm run test:action-soundness:mutations
+```
+
+The fault check needs the `v0.1.1` tag to run that release's committed Action bundle. It also builds one bundle per injected source change. A counterexample includes the seed, compare requests, expected lanes and observed outputs.
+
+The automated Action seam campaign mutates `src/action.ts`, the GitHub, Git and directory adapters, and the path list boundary in `src/core/change.ts`. The campaign runs the Action and CLI against fast protocol fixtures. The built-Action oracle above runs separately with real Git and HTTP. The first run scored 61.15% (541 killed by tests, 10 timeouts, 242 survivors, 108 uncovered). After adding tests for supplied paths, nested roots and error handling, the run scored 68.81% (609 killed by tests, 11 timeouts, 222 survivors, 59 uncovered). Both runs assessed 901 eligible mutations. The scores include timeouts and the workers differed between runs.
+
+```sh
+VITEST_MAX_WORKERS=1 NODE_OPTIONS=--max-old-space-size=640 node scripts/test-mutation.js --scope seam --workers 2
+node scripts/mutation-report.js "$report_path" --details
+```
 
 ## Soundness oracle
 

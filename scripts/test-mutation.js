@@ -15,8 +15,9 @@ const { values } = parseArgs({
   },
 });
 const core = values.scope === "core";
-const routingTests = "scripts/routing-test.config.ts";
-assert.ok(core || values.scope === "src", "pass --scope src or --scope core");
+const seam = values.scope === "seam";
+const testConfig = core ? "scripts/routing-test.config.ts" : seam ? "scripts/seam-test.config.ts" : undefined;
+assert.ok(core || seam || values.scope === "src", "pass --scope src, core or seam");
 const concurrency = Number(values.workers);
 assert.ok(Number.isInteger(concurrency) && concurrency >= 1 && concurrency <= 4, "pass one to four workers");
 if (values.file !== undefined) {
@@ -35,7 +36,7 @@ for (const path of [
 ]) {
   hash.update(readFileSync(path));
 }
-if (core) hash.update(readFileSync(routingTests));
+if (testConfig !== undefined) hash.update(readFileSync(testConfig));
 for (const dir of ["src", "test"]) {
   for (const entry of readdirSync(dir, { recursive: true, withFileTypes: true })
     .filter((entry) => entry.isFile())
@@ -55,10 +56,15 @@ if (!existsSync(jsonReport)) {
   const attempt = mkdtempSync(join(output, `attempt-${Date.now()}-`));
   const attemptReport = join(attempt, "report.json");
   process.env.LANE_ROUTER_ACTION_TEST_PROCESS = "in-process";
+  const scopes = {
+    core: ["src/core/**/*.ts"],
+    seam: ["src/action.ts", "src/adapters/{github,git,directory}.ts", "src/core/change.ts"],
+    src: ["src/**/*.ts"],
+  };
   await new Stryker({
     concurrency,
-    mutate: [values.file ?? (core ? "src/core/**/*.ts" : "src/**/*.ts")],
-    ...(core ? { vitest: { related: false, configFile: routingTests } } : {}),
+    mutate: values.file === undefined ? scopes[values.scope] : [values.file],
+    ...(testConfig === undefined ? {} : { vitest: { related: false, configFile: testConfig } }),
     incremental: true,
     incrementalFile,
     symlinkNodeModules: false,

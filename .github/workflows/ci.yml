@@ -38,6 +38,7 @@ jobs:
       - run: npm test
       - run: npm run test:soundness:mutations
       - run: npm run build
+      - run: npm run test:action-soundness
       - name: Check that dist matches the source
         run: git diff --exit-code -- dist
 
