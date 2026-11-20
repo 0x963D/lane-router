@@ -366,7 +366,7 @@ describe("a push", () => {
     expect(parsed(run.outputs.lanes)).toEqual(ALL);
     expect(run.outputs.complete).toBe("false");
     expect(jsonObject(run.outputs.reasons).api).toBe(
-      "fail closed, head does not extend base, so the compare API omits what the push dropped: status diverged, merge base ccccccc",
+      "fail closed, head does not extend base, so a diff from the merge base omits what the push dropped: status diverged, merge base ccccccc",
     );
     expect(run.annotations.map(({ level }) => level)).toEqual(["warning"]);
   });

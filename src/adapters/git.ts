@@ -44,11 +44,11 @@ export interface GitRepo {
 
 /** `cwd` is the routed root. It may sit below the top of the repository. */
 export function gitRepo(cwd: string): GitRepo {
-  const runGit = async (args: readonly string[], input?: string): Promise<Buffer> => {
+  const runGit = async (args: readonly string[], input?: string, fetchMissing = false): Promise<Buffer> => {
     try {
       const run = execFileAsync("git", ["--no-replace-objects", ...args], {
         cwd,
-        env: { ...process.env, GIT_NO_LAZY_FETCH: "1" },
+        env: fetchMissing ? process.env : { ...process.env, GIT_NO_LAZY_FETCH: "1" },
         encoding: "buffer",
         maxBuffer: 256 * 1024 * 1024,
       });
@@ -88,7 +88,9 @@ export function gitRepo(cwd: string): GitRepo {
     treeAt: (commit) => {
       let listing: Promise<ReadonlyMap<string, TreeEntry>> | undefined;
       const entries = (): Promise<ReadonlyMap<string, TreeEntry>> =>
-        (listing ??= git(["ls-tree", "-r", "-z", commit]).then(parseEntries));
+        (listing ??= runGit(["ls-tree", "-r", "-z", commit], undefined, true).then((output) =>
+          parseEntries(output.toString("utf8")),
+        ));
       const pending: { id: string; resolve: (text: string) => void; reject: (error: unknown) => void }[] = [];
       const readBlob = (id: string): Promise<string> =>
         new Promise((resolve, reject) => {
@@ -98,7 +100,7 @@ export function gitRepo(cwd: string): GitRepo {
           queueMicrotask(() => {
             const batch = pending.splice(0);
             const ids = batch.map(({ id }) => id);
-            void runGit(["cat-file", "--batch"], ids.join("\n") + "\n")
+            void runGit(["cat-file", "--batch"], ids.join("\n") + "\n", true)
               .then((output) => {
                 const blobs = parseBlobs(output, ids);
                 for (const { id, resolve } of batch) resolve(blobs.get(id) ?? "");
@@ -168,6 +170,11 @@ function parseBlobs(output: Buffer, ids: readonly string[]): ReadonlyMap<string,
     const [found, type, rawSize] = output.toString("ascii", start, headerEnd).split(" ");
     const size = Number(rawSize);
     const end = headerEnd + 1 + size;
+    if (found === id && type === "missing") {
+      throw new Error(
+        `Git object ${id} is missing. Fetch the required objects or use a checkout without a partial-clone filter`,
+      );
+    }
     if (found !== id || type !== "blob" || !Number.isSafeInteger(size) || size < 0 || output[end] !== 10) {
       throw new Error(`git returned an invalid blob for ${id}`);
     }

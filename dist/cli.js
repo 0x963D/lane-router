@@ -10021,11 +10021,11 @@ var LINKS = /* @__PURE__ */ new Map([
   ["160000", "submodule"]
 ]);
 function gitRepo(cwd) {
-  const runGit = async (args, input) => {
+  const runGit = async (args, input, fetchMissing = false) => {
     try {
       const run = execFileAsync("git", ["--no-replace-objects", ...args], {
         cwd,
-        env: { ...process.env, GIT_NO_LAZY_FETCH: "1" },
+        env: fetchMissing ? process.env : { ...process.env, GIT_NO_LAZY_FETCH: "1" },
         encoding: "buffer",
         maxBuffer: 256 * 1024 * 1024
       });
@@ -10060,7 +10060,9 @@ function gitRepo(cwd) {
     },
     treeAt: (commit) => {
       let listing;
-      const entries2 = () => listing ??= git(["ls-tree", "-r", "-z", commit]).then(parseEntries);
+      const entries2 = () => listing ??= runGit(["ls-tree", "-r", "-z", commit], void 0, true).then(
+        (output) => parseEntries(output.toString("utf8"))
+      );
       const pending = [];
       const readBlob = (id) => new Promise((resolve, reject) => {
         pending.push({ id, resolve, reject });
@@ -10068,7 +10070,7 @@ function gitRepo(cwd) {
         queueMicrotask(() => {
           const batch = pending.splice(0);
           const ids = batch.map(({ id: id2 }) => id2);
-          void runGit(["cat-file", "--batch"], ids.join("\n") + "\n").then((output) => {
+          void runGit(["cat-file", "--batch"], ids.join("\n") + "\n", true).then((output) => {
             const blobs = parseBlobs(output, ids);
             for (const { id: id2, resolve: resolve2 } of batch) resolve2(blobs.get(id2) ?? "");
           }).catch((error) => {
@@ -10128,6 +10130,11 @@ function parseBlobs(output, ids) {
     const [found, type, rawSize] = output.toString("ascii", start, headerEnd).split(" ");
     const size = Number(rawSize);
     const end = headerEnd + 1 + size;
+    if (found === id && type === "missing") {
+      throw new Error(
+        `Git object ${id} is missing. Fetch the required objects or use a checkout without a partial-clone filter`
+      );
+    }
     if (found !== id || type !== "blob" || !Number.isSafeInteger(size) || size < 0 || output[end] !== 10) {
       throw new Error(`git returned an invalid blob for ${id}`);
     }
@@ -10336,14 +10343,14 @@ function fileCount(count) {
 function describeCause(cause) {
   switch (cause.kind) {
     case "truncated":
-      return `the compare API lists at most ${fileCount(cause.limit)} and listed ${String(cause.listed)}`;
+      return `the compare API lists at most ${fileCount(cause.limit)} and listed ${String(cause.listed)}. Local Git could not verify the complete list. Use fetch-depth: 0 to make the revisions available`;
     case "count-mismatch":
       return `the compare API listed ${fileCount(cause.listed)} but the pull request changes ${String(cause.expected)}`;
     case "no-base":
       return "there is no base commit to compare against";
     case "not-fast-forward": {
       const reported = `status ${cause.status}, merge base ${shortRevision(cause.mergeBase)}`;
-      return `head does not extend base, so the compare API omits what the push dropped: ${reported}`;
+      return `head does not extend base, so a diff from the merge base omits what the push dropped: ${reported}`;
     }
     case "invalid-path":
       return `${cause.raw} is not a path inside the routed root`;

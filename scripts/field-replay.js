@@ -12,6 +12,7 @@ import { loadModel, formatProblems } from "../src/load/index.ts";
 import { fieldConfig, workspaceAt } from "./field-workspaces.js";
 
 const CONFIG = ".lane-router-field.json";
+const DEFAULT_CONFIG = ".github/lanes.yml";
 const CLI = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
 const DATASET = new URL("./field-repositories.json", import.meta.url);
 const REVISIONS = 200;
@@ -108,14 +109,31 @@ const [authorName, authorEmail] =
     : ["lane-router replay", "replay@example.invalid"];
 const identity = ["-c", `user.name=${authorName}`, "-c", `user.email=${authorEmail}`, "-c", "commit.gpgsign=false"];
 
+async function readRoutingConfig(checkout, head) {
+  if (values.config !== undefined) {
+    try {
+      return await readFile(resolve(values.config), "utf8");
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      process.stderr.write(
+        `Missing routing config ${JSON.stringify(values.config)}. Set --config to an existing file.\n`,
+      );
+      return undefined;
+    }
+  }
+  if ((await git(checkout, ["ls-tree", head, "--", DEFAULT_CONFIG])).trim() !== "") {
+    return git(checkout, ["show", `${head}:${DEFAULT_CONFIG}`]);
+  }
+  process.stderr.write(`Missing routing config ${DEFAULT_CONFIG} at ${head.slice(0, 12)}. Supply --config <path>.\n`);
+  return undefined;
+}
+
 async function configuredInput(path) {
   const checkout = resolve((await git(resolve(path), ["rev-parse", "--show-toplevel"])).trim());
   const branch = values.ref ?? "HEAD";
   const head = (await git(checkout, ["rev-parse", "--verify", "--end-of-options", `${branch}^{commit}`])).trim();
-  const config =
-    values.config === undefined
-      ? await git(checkout, ["show", `${head}:.github/lanes.yml`])
-      : await readFile(resolve(values.config), "utf8");
+  const config = await readRoutingConfig(checkout, head);
+  if (config === undefined) process.exit(1);
   const configDigest = createHash("sha256").update(config).digest("hex");
   return { source: { repo: basename(checkout), branch, head, checkout, configDigest }, config };
 }

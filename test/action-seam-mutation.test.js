@@ -3,6 +3,8 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { githubRepo } from "../src/adapters/github.ts";
+import { changedFiles, incomplete } from "../src/core/change.ts";
 import { runCli } from "../src/cli.ts";
 import { runAction } from "./support/action.ts";
 import { fixtureDir } from "./support/fixtures.ts";
@@ -275,6 +277,205 @@ describe("Action inputs and compare responses", () => {
     expect(result.annotations[0].message).toContain("routes in push mode");
     expect(result.outputs).toEqual({});
     expect(request).not.toHaveBeenCalled();
+  });
+});
+
+const capped = Array.from({ length: 300 }, (_, index) => "packages/ui/src/bulk-" + index + ".tsx");
+const cappedReply = { ...listed, files: capped.map((filename) => ({ filename })) };
+const apiPath = "packages/api/src/user.ts";
+
+function localDiff(paths, mergeBase = base) {
+  git.mockImplementation((input, ...args) => {
+    if (args[0] === "merge-base") return mergeBase + "\n";
+    if (args[0] === "diff") return paths === undefined ? undefined : paths.join("\0") + "\0";
+    return fixtureGitOutput(input, ...args);
+  });
+}
+
+function branchPr(count) {
+  return {
+    event: {
+      name: "pull_request",
+      payload: { pull_request: { base: { sha: base }, head: { sha: head }, changed_files: count } },
+    },
+  };
+}
+
+describe("capped compare recovery", () => {
+  it("recovers exactly 300 paths and verifies the PR count at the limit", async () => {
+    request.mockResolvedValue(Response.json(cappedReply));
+    localDiff(capped);
+    expectLanes(await action(branchPr(300)), selected, true);
+    expect(git.mock.calls.find(([, command]) => command === "diff").slice(-3)).toEqual([base, head, "--"]);
+  });
+
+  it("routes a change that the capped listing omitted", async () => {
+    request.mockResolvedValue(Response.json(cappedReply));
+    localDiff([...capped, apiPath]);
+    const result = await action();
+    expectLanes(result, all, true);
+    expect(result.summary).toContain("301 files");
+    expect(JSON.parse(result.outputs.reasons).api).toContain(apiPath);
+  });
+
+  it("verifies a PR count above the cap", async () => {
+    request.mockResolvedValue(Response.json(cappedReply));
+    localDiff([...capped, apiPath]);
+    expectLanes(await action(branchPr(301)), all, true);
+  });
+
+  it.each([
+    { label: "different merge bases", paths: capped, localBase: stale },
+    { label: "too few local paths", paths: capped.slice(1) },
+    { label: "a remote path missing from an otherwise large local diff", paths: [...capped.slice(1), apiPath] },
+    {
+      label: "an old rename path missing from the local diff",
+      reply: {
+        ...cappedReply,
+        files: [{ filename: capped[0], previous_filename: apiPath }, ...cappedReply.files.slice(1)],
+      },
+      paths: capped,
+    },
+    { label: "a PR count below the cap", options: branchPr(299), paths: capped },
+    { label: "a different PR count above the cap", options: branchPr(301), paths: capped },
+    { label: "an unavailable local diff" },
+    { label: "invalid UTF-8 in the local diff", paths: [] },
+    {
+      label: "a repeated API path",
+      reply: {
+        ...cappedReply,
+        files: [...cappedReply.files.slice(1), cappedReply.files[1]],
+      },
+      paths: capped,
+    },
+    {
+      label: "an oversized API response",
+      reply: {
+        ...cappedReply,
+        files: [...cappedReply.files, { filename: apiPath }],
+      },
+      paths: [...capped, apiPath],
+    },
+    {
+      label: "an invalid API path",
+      reply: {
+        ...cappedReply,
+        files: [...cappedReply.files.slice(1), { filename: "../outside.js" }],
+      },
+      paths: capped,
+    },
+    {
+      label: "an unresolved API merge base",
+      options: branchPr(300),
+      reply: {
+        ...cappedReply,
+        merge_base_commit: { sha: "unresolved" },
+      },
+      paths: capped,
+    },
+  ])("fails closed on $label", async ({ reply, paths, localBase, options }) => {
+    request.mockResolvedValue(Response.json(reply ?? cappedReply));
+    localDiff(paths, localBase);
+    if (paths?.length === 0)
+      git.mockImplementation((input, ...args) =>
+        args[0] === "diff" ? Buffer.from([0xff, 0]) : fixtureGitOutput(input, ...args),
+      );
+    const result = await action(options ?? (localBase === undefined ? {} : branchPr(300)));
+    expectLanes(result, all, false);
+    expect(result.annotations[0].message).toContain("Local Git could not verify the complete list");
+  });
+
+  it("reports the offending path when only the local diff lists it", async () => {
+    request.mockResolvedValue(Response.json(cappedReply));
+    localDiff([...capped, "../outside.js"]);
+    const result = await action();
+    expectLanes(result, all, false);
+    expect(result.annotations[0].message).toContain("../outside.js is not a path inside the routed root");
+  });
+
+  it.each([
+    { range: { base: "base-ref", head }, baseCommit: undefined },
+    { range: { base: "base-ref", head }, baseCommit: { sha: "base-ref" } },
+    { range: { base, head: "head-ref" }, baseCommit: { sha: base } },
+    { range: { base, head }, baseCommit: { sha: base }, local: incomplete({ kind: "no-base" }) },
+  ])(
+    "refuses to certify non-immutable revisions or an incomplete local list (%j)",
+    async ({ range, baseCommit, local }) => {
+      request.mockResolvedValue(Response.json({ ...cappedReply, base_commit: baseCommit }));
+      const localChanges = vi.fn(
+        async () =>
+          local ??
+          changedFiles(
+            capped.map((path) => ({ path, previousPath: null })),
+            { mergeBase: base },
+          ),
+      );
+      const repo = githubRepo({ apiUrl: "http://127.0.0.1", repository: "fixture/workspace", token: "" });
+      await expect(
+        repo.compare(range, {
+          mode: "pr",
+          under: "",
+          requireBaseAncestor: false,
+          expectedCount: null,
+          resolveBase: async () => undefined,
+          localChanges,
+        }),
+      ).resolves.toMatchObject({ kind: "incomplete", cause: { kind: "truncated" } });
+      expect(localChanges).toHaveBeenCalledTimes(local === undefined ? 0 : 1);
+    },
+  );
+});
+
+describe("event and checkout refusals", () => {
+  it("rejects a merge group with a missing base even when input revisions exist", async () => {
+    const result = await action({
+      event: { name: "merge_group", payload: { merge_group: { head_sha: head } } },
+      inputs: { base, head, mode: "push", files: ui },
+    });
+    expect(result.annotations[0].message).toContain("merge_group.base_sha");
+    expect(result.exitCode).toBe(1);
+    expect(result.outputs).toEqual({});
+  });
+
+  it("does not permit an explicit PR mode to weaken merge group ancestry", async () => {
+    request.mockResolvedValue(Response.json({ ...listed, status: "diverged", merge_base_commit: { sha: stale } }));
+    const result = await action({
+      event: { name: "merge_group", payload: { merge_group: { base_sha: base, head_sha: head } } },
+      inputs: { mode: "pr" },
+    });
+    expectLanes(result, all, false);
+    expect(result.annotations[0].message).toContain("does not extend its compare base");
+  });
+
+  it("requires an explicit PR base to resolve instead of falling back to a local ref it cannot read", async () => {
+    request.mockResolvedValue(new Response(null, { status: 404 }));
+    const result = await action({ ...branchPr(1), inputs: { base: "unavailable" } });
+    expectLanes(result, all, false);
+    expect(result.annotations[0].message).toContain("returned 404");
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports when Git cannot resolve the checkout", async () => {
+    git.mockReset();
+    const result = await action();
+    expectLanes(result, all, false);
+    expect(request).not.toHaveBeenCalled();
+    expect(result.annotations[0].message).toContain("cannot resolve HEAD");
+  });
+
+  it("lists unavailable base blobs as missing objects", async () => {
+    git.mockImplementation((input, ...args) =>
+      args[0] === "cat-file" && args[1] === "--batch"
+        ? input
+            .trim()
+            .split("\n")
+            .map((id) => id + " missing\n")
+            .join("")
+        : fixtureGitOutput(input, ...args),
+    );
+    const result = await action({ inputs: { base, files: "packages/ui/package.json" } });
+    expectLanes(result, all, false);
+    expect(result.annotations[0].message).toMatch(/Git object .* is missing.*partial-clone filter/);
   });
 });
 

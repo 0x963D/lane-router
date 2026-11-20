@@ -1,5 +1,7 @@
+import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { runCli } from "../src/cli.ts";
 import { cli } from "./support/cli.ts";
@@ -105,6 +107,33 @@ describe("lane-router explain", () => {
         ...decisions({ api: "run", web: "run", e2e: "run", lint: "run" }),
       });
     }
+  });
+
+  it("reads the base manifest on demand from a blobless clone", async () => {
+    const repo = acmeRepo();
+    const baseBlob = repo.git("rev-parse", repo.base + ":packages/ui/package.json");
+    repo.write("packages/ui/package.json", '{"name":"@acme/ui","description":"changed"}\n');
+    const head = repo.commit("Change the UI manifest");
+    repo.git("config", "uploadpack.allowFilter", "true");
+    repo.git("config", "uploadpack.allowAnySHA1InWant", "true");
+    const clone = tempDir();
+    execFileSync("git", ["clone", "--quiet", "--filter=blob:none", pathToFileURL(repo.dir).href, clone]);
+    const missing = () =>
+      execFileSync("git", ["cat-file", "--batch-check"], {
+        cwd: clone,
+        env: { ...process.env, GIT_NO_LAZY_FETCH: "1" },
+        input: baseBlob + "\n",
+        encoding: "utf8",
+      }).trim();
+    expect(missing()).toBe(baseBlob + " missing");
+
+    const result = await cli(["explain", "--base", repo.base, "--head", head, "--json"], clone);
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      complete: true,
+      ...decisions({ api: "skip", web: "run", e2e: "run", lint: "run" }),
+    });
+    expect(missing()).toMatch(new RegExp("^" + baseBlob + " blob "));
   });
 
   it("routes both paths of a rename", async () => {

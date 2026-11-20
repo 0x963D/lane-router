@@ -40,3 +40,29 @@ it("replays first-parent changes with the checkout's routing config", async () =
   expect(source.git("rev-parse", "HEAD")).toBe(head);
   expect(source.git("status", "--porcelain")).toBe("");
 });
+
+it.each([{ config: [] }, { config: ["--config", "missing.yml"] }])(
+  "explains a missing config with one line ($config)",
+  async ({ config }) => {
+    const source = gitFixture(fixtureDir("acme"), tempDir());
+    source.remove(".github/lanes.yml");
+    source.commit("Remove the routing config");
+    const result = promisify(execFile)(process.execPath, [
+      replay,
+      "--checkout",
+      source.dir,
+      "--root",
+      tempDir(),
+      ...config,
+    ]);
+    await expect(result).rejects.toHaveProperty("code", 1);
+    const expected =
+      config.length === 0
+        ? /^Missing routing config \.github\/lanes\.yml at [a-f0-9]{12}\. Supply --config <path>\.\r?\n$/
+        : /^Missing routing config "missing\.yml"\. Set --config to an existing file\.\r?\n$/;
+    await expect(result.catch((error: unknown) => error)).resolves.toHaveProperty(
+      "stderr",
+      expect.stringMatching(expected),
+    );
+  },
+);
