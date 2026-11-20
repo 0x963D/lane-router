@@ -1,6 +1,6 @@
 # Run locally
 
-The CLI makes the decisions the Action would make in PR mode for a local diff. It reads the config and the workspace at `--head`, not from the working tree.
+The CLI makes the decisions the Action would make for a local diff. PR mode is the default. It reads the config and the workspace at `--head`, not from the working tree.
 
 ```sh
 npm ci
@@ -9,8 +9,17 @@ node dist/cli.js explain --base origin/main --head HEAD
 ```
 
 ```
-lane-router explain --base <ref> --head <ref> [--config <path>] [--cwd <dir>] [--json]
+lane-router explain --base <ref> --head <ref> [--mode pr] [--config <path>] [--cwd <dir>] [--json]
+lane-router explain --mode push --head <ref> [--base <ref>] [--config <path>] [--cwd <dir>] [--json]
 ```
+
+Use `--mode push` to reproduce a push plan. Supply the event's `before` and `after` commits.
+
+```sh
+node dist/cli.js explain --mode push --base <before> --head <after> --json
+```
+
+Push mode needs an ancestor base to route a change. A force push, rewind, unavailable base, or history that Git cannot verify selects every lane and prints the cause. For a new branch, omit `--base` or pass the all-zero SHA. The CLI prints an incomplete plan with every lane selected. The head must name a commit with a readable workspace and config.
 
 The CLI exits with 0 when it printed a plan, fail-closed plans included. It exits with 1 when the config or the workspace does not load, and with 2 on a usage error. `--json` prints the plan as a JSON document.
 

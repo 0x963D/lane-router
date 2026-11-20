@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { changedFiles, incomplete, type ChangeSource } from "../core/change.ts";
+import { changedFiles, incomplete, type ChangedFiles, type Range } from "../core/change.ts";
+import type { Mode } from "../core/plan.ts";
 import { pathRefusal, type Refusal, type RepoTree, type TreeRead } from "../load/index.ts";
 
 const execFileAsync = promisify(execFile);
@@ -34,9 +35,9 @@ export interface GitRepo {
   /**
    * The files changed between the merge base of the range, which the list carries, and its head. With
    * rename detection off, a rename arrives as its deleted and its added path. Rejects when git fails,
-   * such as for unrelated histories.
+   * such as for unrelated histories. In push mode a head that does not extend base is incomplete.
    */
-  readonly changes: ChangeSource;
+  readonly changes: (range: Range, mode?: Mode) => Promise<ChangedFiles>;
   /** Where the routed root sits inside the repository, empty at the top level. */
   prefix(): Promise<string>;
 }
@@ -120,9 +121,16 @@ export function gitRepo(cwd: string): GitRepo {
         },
       };
     },
-    changes: async (range) => {
+    changes: async (range, mode = "pr") => {
       if (range.base === null) return incomplete({ kind: "no-base" });
       const mergeBase = (await git(["merge-base", range.base, range.head])).trim();
+      if (mode === "push" && mergeBase !== range.base) {
+        return incomplete({
+          kind: "not-fast-forward",
+          status: mergeBase === range.head ? "behind" : "diverged",
+          mergeBase,
+        });
+      }
       const output = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
         await runGit([...DIFF, mergeBase, range.head, "--"]),
       );

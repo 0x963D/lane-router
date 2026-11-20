@@ -29740,9 +29740,16 @@ function gitRepo(cwd) {
         }
       };
     },
-    changes: async (range) => {
+    changes: async (range, mode = "pr") => {
       if (range.base === null) return incomplete({ kind: "no-base" });
       const mergeBase = (await git(["merge-base", range.base, range.head])).trim();
+      if (mode === "push" && mergeBase !== range.base) {
+        return incomplete({
+          kind: "not-fast-forward",
+          status: mergeBase === range.head ? "behind" : "diverged",
+          mergeBase
+        });
+      }
       const output = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
         await runGit([...DIFF, mergeBase, range.head, "--"])
       );

@@ -45,7 +45,7 @@ So a change is judged against two graphs. The head graph is the workspace the ch
 
 lane-router reads the base config and workspace when the routing config or a package manifest other than the root one changes. Each config resolves against its own workspace and supplies that graph's lane packages and extra edges. Changes to `pnpm-workspace.yaml` and the root `package.json` already select every lane. Other changes need no base commit, so a shallow checkout routes them precisely.
 
-The base commit is the merge base the compare API reports for the event's range. The CLI uses the merge base of `--base` and `--head`. With the `files` input it is the `base` input, when one is given. lane-router reads the base graph from git in `working-directory`'s repository.
+The base commit is the merge base the compare API reports for the event's range. The CLI uses the merge base of `--base` and `--head` in PR mode. In push mode that commit must equal `--base`. With the `files` input it is the `base` input, when one is given. lane-router reads the base graph from git in `working-directory`'s repository.
 
 ### The lane set
 

@@ -10089,9 +10089,16 @@ function gitRepo(cwd) {
         }
       };
     },
-    changes: async (range) => {
+    changes: async (range, mode = "pr") => {
       if (range.base === null) return incomplete({ kind: "no-base" });
       const mergeBase = (await git(["merge-base", range.base, range.head])).trim();
+      if (mode === "push" && mergeBase !== range.base) {
+        return incomplete({
+          kind: "not-fast-forward",
+          status: mergeBase === range.head ? "behind" : "diverged",
+          mergeBase
+        });
+      }
       const output = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
         await runGit([...DIFF, mergeBase, range.head, "--"])
       );
@@ -10510,7 +10517,7 @@ function* arrayProperty(key, items, toJson, suffix) {
 }
 
 // src/cli.ts
-var USAGE = "usage: lane-router explain --base <ref> --head <ref> [--config <path>] [--cwd <dir>] [--json]";
+var USAGE = "usage: lane-router explain --base <ref> --head <ref> [--mode pr] [--config <path>] [--cwd <dir>] [--json]\n       lane-router explain --mode push --head <ref> [--base <ref>] [--config <path>] [--cwd <dir>] [--json]";
 async function runCli(argv, io) {
   const invocation = parse(argv);
   if (!invocation.ok) {
@@ -10522,11 +10529,11 @@ ${USAGE}`);
     await io.stdout(USAGE);
     return 0;
   }
-  const { config, json } = invocation.value;
+  const { base: baseRef, head: headRef, config, json, mode } = invocation.value;
   const repo = gitRepo(invocation.value.cwd ?? io.cwd);
-  const [base, head] = await Promise.all([repo.resolve(invocation.value.base), repo.resolve(invocation.value.head)]);
-  if (base === void 0 || head === void 0) {
-    const unknown = base === void 0 ? `--base ${invocation.value.base}` : `--head ${invocation.value.head}`;
+  const [base, head] = await Promise.all([baseRef === null ? null : repo.resolve(baseRef), repo.resolve(headRef)]);
+  if (head === void 0 || mode === "pr" && base === void 0) {
+    const unknown = mode === "pr" && base === void 0 ? `--base ${baseRef ?? ""}` : `--head ${headRef}`;
     io.stderr(`${unknown} does not name a commit in this repository
 ${USAGE}`);
     return 2;
@@ -10539,9 +10546,12 @@ ${USAGE}`);
       return 1;
     }
     const plan = await planLanes(model.value, {
-      mode: "pr",
-      range: { base, head },
-      changes: repo.changes,
+      mode,
+      range: { base: base ?? baseRef, head },
+      changes: (range) => {
+        if (base === void 0) throw new Error(`cannot resolve the base ${baseRef ?? ""} in this checkout`);
+        return repo.changes(range, mode);
+      },
       baseGraph: baseGraphOf(tree, config, repo)
     });
     if (json) {
@@ -10563,6 +10573,7 @@ function parse(argv) {
       allowPositionals: true,
       options: {
         base: { type: "string" },
+        mode: { type: "string", default: "pr" },
         head: { type: "string" },
         config: { type: "string", default: ".github/lanes.yml" },
         cwd: { type: "string" },
@@ -10576,8 +10587,14 @@ function parse(argv) {
   const { values, positionals } = parsed;
   if (values.help) return ok("help");
   if (positionals.length !== 1 || positionals[0] !== "explain") return err("the only command is explain");
-  if (values.base === void 0 || values.head === void 0) return err("--base and --head are required");
-  return ok({ base: values.base, head: values.head, config: values.config, cwd: values.cwd, json: values.json });
+  const mode = values.mode;
+  if (mode !== "pr" && mode !== "push") return err("--mode must be pr or push");
+  if (mode === "pr" && (values.base === void 0 || values.head === void 0)) {
+    return err("--base and --head are required");
+  }
+  if (values.head === void 0) return err("--head is required");
+  const base = mode === "push" && /^0+$/.test(values.base ?? "") ? null : values.base ?? null;
+  return ok({ base, head: values.head, mode, config: values.config, cwd: values.cwd, json: values.json });
 }
 
 // src/bin/cli.ts
