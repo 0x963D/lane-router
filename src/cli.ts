@@ -65,7 +65,7 @@ export async function runCli(argv: readonly string[], io: CliIo): Promise<ExitCo
       range: { base: base ?? baseRef, head },
       changes: (range) => {
         if (base === undefined) throw new Error(`cannot resolve the base ${baseRef ?? ""} in this checkout`);
-        return repo.changes(range, mode);
+        return repo.changes(range, { mode });
       },
       baseGraph: baseGraphOf(tree, config, repo),
     });

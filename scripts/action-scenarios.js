@@ -9,12 +9,15 @@ const ROOT = "workspace";
 const CONFIG = ".github/lanes.yml";
 const LANES = ["alpha", "bravo", "charlie", "delta"];
 const EMPTY_SHA = "0".repeat(40);
+export function isolatedGit(cwd) {
+  return { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: join(cwd, ".git", "no-global") };
+}
 const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_/i.test(key)));
 
 export function git(cwd, args, extraEnv = {}) {
   return execFileSync("git", ["-c", "core.autocrlf=false", "-c", "core.hooksPath=.git/no-hooks", ...args], {
     cwd,
-    env: { ...gitEnv, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: ".git/no-global", ...extraEnv },
+    env: { ...gitEnv, ...isolatedGit(cwd), ...extraEnv },
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
     stdio: ["ignore", "pipe", "pipe"],
@@ -35,7 +38,7 @@ export function history(dir, seed) {
   let tick = 0;
   function commit(...args) {
     const stamp = new Date(Date.UTC(2020, 0, 1, 0, 0, tick++)).toISOString();
-    git(repo, args, {
+    const output = git(repo, args, {
       GIT_AUTHOR_NAME: "fixture",
       GIT_AUTHOR_EMAIL: "fixture@example.invalid",
       GIT_COMMITTER_NAME: "fixture",
@@ -43,7 +46,7 @@ export function history(dir, seed) {
       GIT_AUTHOR_DATE: stamp,
       GIT_COMMITTER_DATE: stamp,
     });
-    return run("rev-parse", "HEAD");
+    return args[0] === "commit-tree" ? output.trim() : run("rev-parse", "HEAD");
   }
   function save(message) {
     run("add", "--all");
@@ -63,6 +66,10 @@ export function history(dir, seed) {
   const [from, to, reader, other] = [...LANES].sort((a, b) => Buffer.compare(rank(seed, a), rank(seed, b)));
   const move = pkg(from, "move " + seed + ".js");
   const moved = pkg(to, "move " + seed + ".js");
+  const spare = ["bravo", "charlie"].filter((lane) => lane !== reader);
+  const capSource = spare[seed % spare.length];
+  const capRename = pkg(capSource, "capped-rename.js");
+  const capRenamed = pkg("delta", "capped-renamed.js");
   const rename = pkg(from, "rename.js");
   const renamed = pkg(to, "renamed.js");
   const deleted = pkg(reader, "delete.js");
@@ -75,22 +82,32 @@ export function history(dir, seed) {
   write(ROOT + "/" + move, "const moved = 1;\n");
   write(ROOT + "/" + rename, "const renamed = 1;\n");
   write(ROOT + "/" + deleted, "const deleted = 1;\n");
+  write(ROOT + "/" + capRename, "const cappedRename = 37;\n");
   const fork = save("Initial workspace");
 
   branch("patch", fork);
   write(ROOT + "/" + move, "const moved = 2;\n");
-  const patch = save("Edit the file on the PR branch");
+  let patch = save("Edit the file on the PR branch");
+  if (seed % 3 === 0) {
+    write(ROOT + "/" + pkg(to, "pr-follow-up.js"), "follow-up\n");
+    patch = save("Add another PR change");
+  }
 
   run("switch", "--quiet", "main");
   renameSync(join(repo, ROOT, move), join(repo, ROOT, moved));
   manifest(reader);
-  const first = save("Move the file and remove a dependency on base");
+  let first = save("Move the file and remove a dependency on base");
+  if (seed % 4 > 1) {
+    write(ROOT + "/" + pkg(reader, "pre-merge.js"), "before merge\n");
+    first = save("Advance the base before testing the merge");
+  }
   const merge = commit("merge", "--quiet", "--no-ff", "--no-edit", "patch");
 
   branch("newer-base", first);
   write(ROOT + "/" + pkg(other, "advance.js"), "advance\n");
   config([...LANES.slice(0, -1), "foxtrot"]);
-  const newer = save("Advance base past the tested merge");
+  let newer = save("Advance base past the tested merge");
+  if (seed % 5 > 1) newer = save("Advance the payload base again");
 
   branch("custom", first);
   write(ROOT + "/" + customPath, "custom\n");
@@ -127,28 +144,94 @@ export function history(dir, seed) {
   const largeOutside = save("Edit a path outside the workspace after the cap");
 
   branch("large-rename", large);
-  renameSync(join(repo, ROOT, rename), join(repo, ROOT, renamed));
+  renameSync(join(repo, ROOT, capRename), join(repo, ROOT, capRenamed));
   const largeRename = save("Rename across packages after the compare cap");
+
+  branch("large-merge", first);
+  const largeMerge = commit("merge", "--quiet", "--no-ff", "--no-edit", large);
+
+  branch("queue", seed % 2 ? custom : first);
+  const queueBase = run("rev-parse", "HEAD");
+  const queueHead = commit("merge", "--quiet", "--no-ff", "--no-edit", patch);
+
+  branch("other-pr-parent", fork);
+  write(ROOT + "/" + pkg(other, "other-parent.js"), "another PR\n");
+  const otherParent = save("Give the test merge a different second parent");
+  branch("different-merge", first);
+  const differentMerge = commit("merge", "--quiet", "--no-ff", "--no-edit", otherParent);
+  const octopus = commit(
+    "commit-tree",
+    differentMerge + "^{tree}",
+    "-p",
+    first,
+    "-p",
+    patch,
+    "-p",
+    otherParent,
+    "-m",
+    "Record three parents",
+  );
+  // commit-tree reports its new object without moving the branch.
+  branch("octopus", octopus);
+
+  const [leftLane, rightLane] = ["bravo", "charlie", "delta"].filter((lane) => lane !== reader);
+  branch("cross-left", fork);
+  write(ROOT + "/" + pkg(leftLane, "cross-left.js"), "left\n");
+  const left = save("Change the left merge base");
+  branch("cross-right", fork);
+  write(ROOT + "/" + pkg(rightLane, "cross-right.js"), "right\n");
+  const right = save("Change the right merge base");
+  const crossBase = commit("merge", "--quiet", "--no-ff", "--no-edit", left);
+  branch("cross-head", left);
+  commit("merge", "--quiet", "--no-ff", "--no-edit", right);
+  for (let index = 0; index < largeCount; index++) {
+    write(ROOT + "/" + pkg("alpha", "cross-bulk-" + index + ".js"), String(index));
+  }
+  const crossHead = save("Exceed the cap after the reversed merge");
+  const localCross = run("merge-base", crossBase, crossHead);
+  const remoteCross = mergeBases(repo, crossBase, crossHead).find((base) => base !== localCross);
+
+  branch("at-root", fork);
+  for (const entry of ["packages", ".github", "package.json"]) renameSync(join(repo, ROOT, entry), join(repo, entry));
+  const rootBase = save("Route from the default working directory");
+  write(pkg(other, "root-edit.js"), "root edit\n");
+  const rootHead = save("Change a package at the repository root");
 
   const checkouts = new Map();
   let current;
-  function checkout(head, shallow) {
-    if (!shallow) {
+  function checkout(head, depth) {
+    if (depth === undefined) {
       if (current !== head) run("switch", "--quiet", "--detach", head);
       current = head;
       return repo;
     }
-    const existing = checkouts.get(head);
-    if (existing !== undefined) return existing;
+    const key = head + ":" + depth;
+    if (checkouts.has(key)) return checkouts.get(key);
     const path = join(dir, "shallow-" + checkouts.size);
-    run("clone", "--quiet", "--depth=1", "--revision=" + head, pathToFileURL(repo).href, path);
-    checkouts.set(head, path);
+    run("clone", "--quiet", "--depth=" + depth, "--revision=" + head, pathToFileURL(repo).href, path);
+    checkouts.set(key, path);
     return path;
+  }
+
+  const counts = new Map();
+  function prCount(base, head) {
+    const key = base + ":" + head;
+    if (!counts.has(key)) {
+      const [common] = mergeBases(repo, base, head);
+      counts.set(
+        key,
+        git(repo, ["diff", "--name-only", "--find-renames", "-z", common, head, "--"]).split("\0").filter(Boolean)
+          .length,
+      );
+    }
+    return counts.get(key);
   }
 
   return {
     repo,
     checkout,
+    prCount,
+    seed,
     fork,
     first,
     patch,
@@ -164,7 +247,26 @@ export function history(dir, seed) {
     largeCount,
     largeOutside,
     largeRename,
+    largeMerge,
+    queueBase,
+    queueHead,
+    differentMerge,
+    octopus,
+    crossBase,
+    crossHead,
+    remoteCross,
+    rootBase,
+    rootHead,
   };
+}
+
+export function mergeBases(repo, base, head, { local = false } = {}) {
+  try {
+    return git(repo, ["merge-base", "--all", base, head]).trim().split("\n").filter(Boolean).sort();
+  } catch (error) {
+    if (error.status === 1 || local) return [];
+    throw error;
+  }
 }
 
 function rank(seed, name) {
@@ -178,13 +280,13 @@ function rank(seed, name) {
 }
 
 export function cases(h) {
-  const pr = (name, checkout, base, options = {}) => ({
+  const pr = (name, checkout, base, { head = h.patch, changedFiles = h.prCount(base, head), ...rest } = {}) => ({
     name,
     checkout,
     event: "pull_request",
-    payload: { pull_request: { base: { sha: base }, head: { sha: h.patch }, changed_files: 1 } },
+    payload: { pull_request: { base: { sha: base }, head: { sha: head }, changed_files: changedFiles } },
     eventSha: h.merge,
-    ...options,
+    ...rest,
   });
   const push = (name, checkout, before, after, options = {}) => ({
     name,
@@ -200,7 +302,6 @@ export function cases(h) {
     event: "merge_group",
     payload: { action: "checks_requested", merge_group: { base_sha: base, head_sha: head } },
     eventSha: h.patch,
-    expectedMode: options.inputs?.mode ?? "push",
     ...options,
   });
   const manual = (checkout, name, options) => ({
@@ -211,144 +312,106 @@ export function cases(h) {
     eventSha: h.custom,
     ...options,
   });
+
+  const depth = (h.seed % 2) + 1;
+  const alternateBase = h.seed % 2 ? h.fork : h.newer;
+  const atRoot = h.seed % 3 !== 1;
+  const generated = [
+    pr("seeded-merge-shape", h.seed % 2 ? h.octopus : h.differentMerge, alternateBase, {
+      depth,
+      inputs: { head: "HEAD" },
+    }),
+    (h.seed % 3 === 0 ? group : push)("seeded-event-and-inputs", h.custom, alternateBase, h.custom, {
+      depth,
+      inputs: h.seed % 3 === 1 ? {} : { base: h.first, head: "HEAD" },
+    }),
+    (h.seed % 2 ? group : push)(
+      "seeded-root-and-depth",
+      atRoot ? h.rootHead : h.custom,
+      atRoot ? h.rootBase : h.first,
+      atRoot ? h.rootHead : h.custom,
+      { depth, root: atRoot ? "." : ROOT },
+    ),
+  ];
+
   return [
-    pr("merge-stale-base", h.merge, h.fork, { diff: [h.first, h.merge], shallow: true }),
-    pr("merge-newer-base", h.merge, h.newer, { diff: [h.first, h.merge] }),
-    pr("merge-explicit-head", h.merge, h.newer, { diff: [h.first, h.merge], inputs: { head: "HEAD" } }),
-    pr("merge-explicit-base", h.merge, h.fork, { diff: [h.fork, h.merge], inputs: { base: h.fork } }),
-    pr("pr-head", h.patch, h.newer, { diff: [h.fork, h.patch], matrixBase: h.newer, shallow: true }),
-    pr("pr-target-head", h.patch, h.newer, {
+    pr("merge-stale-base", h.merge, h.fork, { depth: 1 }),
+    pr("merge-newer-base", h.merge, h.newer),
+    pr("merge-explicit-head", h.merge, h.newer, { depth, inputs: { head: "HEAD" } }),
+    pr("merge-explicit-base", h.merge, h.fork, { inputs: { base: h.fork } }),
+    pr("pr-head", h.patch, h.newer, { depth: 1 }),
+    pr("pr-target-head", h.patch, h.newer, { event: "pull_request_target", eventSha: h.newer, depth }),
+    pr("target-merge", h.merge, h.newer, { event: "pull_request_target", eventSha: h.newer }),
+    pr("target-base-tip", h.newer, h.newer, { event: "pull_request_target", eventSha: h.newer, depth: 1 }),
+    pr("target-tip-explicit-head", h.newer, h.newer, {
       event: "pull_request_target",
       eventSha: h.newer,
-      diff: [h.fork, h.patch],
-      matrixBase: h.newer,
-    }),
-    pr("target-merge", h.merge, h.newer, {
-      event: "pull_request_target",
-      eventSha: h.newer,
-      diff: [h.first, h.merge],
-    }),
-    pr("target-base-tip", h.newer, h.newer, {
-      event: "pull_request_target",
-      eventSha: h.newer,
-      diff: [h.fork, h.patch],
-      matrixBase: h.newer,
-    }),
-    pr("pr-wrong-checkout", h.custom, h.first, { closed: /matches neither/ }),
-    pr("pr-custom-head", h.custom, h.first, { diff: [h.first, h.custom], inputs: { head: "HEAD" } }),
-    pr("pr-custom-nonancestor", h.custom, h.newer, {
-      inputs: { head: "HEAD" },
-      closed: /does not extend its compare base/,
-    }),
-    pr("pr-count-mismatch", h.patch, h.newer, { closed: /pull request changes 1/, fault: "short-list" }),
-    pr("pr-explicit-bypasses-count", h.patch, h.newer, {
-      inputs: { base: h.patch },
-      diff: [h.patch, h.patch],
-    }),
-    pr("pr-base-graph-from-diff", h.configs, h.newer, {
-      payload: { pull_request: { base: { sha: h.newer }, head: { sha: h.configs }, changed_files: 1 } },
-      diff: [h.fork, h.configs],
-      matrixBase: h.newer,
-    }),
-    push("push-forward", h.custom, h.first, h.custom, { diff: [h.first, h.custom] }),
-    push("push-short-base", h.custom, h.first, h.custom, {
-      diff: [h.first, h.custom],
-      matrixBase: h.first.slice(0, 10),
-      inputs: { base: h.first.slice(0, 10) },
-    }),
-    push("push-local-base", h.custom, h.first, h.custom, {
-      diff: [h.first, h.custom],
-      matrixBase: "custom^^",
-      inputs: { base: "custom^^" },
-    }),
-    push("push-wrong-checkout", h.custom, h.first, h.merge, { closed: /does not match the event.*head/ }),
-    push("push-explicit-checkout", h.custom, h.first, h.merge, {
-      diff: [h.first, h.custom],
       inputs: { head: "HEAD" },
     }),
-    push("push-explicit-wrong-head", h.custom, h.first, h.custom, {
-      inputs: { head: h.merge },
-      closed: /head input does not match/,
+    pr("pr-wrong-checkout", h.custom, h.first),
+    pr("pr-custom-head", h.custom, h.first, { depth, inputs: { head: "HEAD" } }),
+    pr("pr-custom-nonancestor", h.custom, h.newer, { inputs: { head: "HEAD" } }),
+    pr("pr-count-mismatch", h.patch, h.newer, { changedFiles: h.prCount(h.newer, h.patch) + 1 }),
+    pr("pr-explicit-bypasses-count", h.patch, h.newer, { inputs: { base: h.patch }, changedFiles: 99 }),
+    pr("pr-base-graph-from-diff", h.configs, h.newer, { head: h.configs }),
+    push("push-forward", h.custom, h.first, h.custom, { depth: 1 }),
+    push("push-short-base", h.custom, h.first, h.custom, { inputs: { base: h.first.slice(0, 10) } }),
+    push("push-local-base", h.custom, h.first, h.custom, { inputs: { base: "custom^^" } }),
+    push("push-wrong-checkout", h.custom, h.first, h.merge),
+    push("push-explicit-checkout", h.custom, h.first, h.merge, { inputs: { head: "HEAD" } }),
+    push("push-explicit-wrong-head", h.custom, h.first, h.custom, { inputs: { head: h.merge } }),
+    push("push-force", h.custom, h.newer, h.custom, { depth: 1 }),
+    push("push-rewind", h.first, h.custom, h.first),
+    push("push-new-branch", h.custom, EMPTY_SHA, h.custom),
+    push("push-new-branch-base", h.custom, EMPTY_SHA, h.custom, { inputs: { base: h.first, head: "HEAD" } }),
+    push("push-wrong-mode", h.custom, h.first, h.custom, { inputs: { mode: "pr" } }),
+    push("push-renames-and-deletes", h.renames, h.fork, h.renames),
+    push("push-manifest-shallow", h.manifests, h.fork, h.manifests, { depth: 1 }),
+    push("push-manifest-depth-two", h.manifests, h.fork, h.manifests, { depth: 2 }),
+    push("push-config", h.configs, h.fork, h.configs),
+    push("push-outside-root", h.outside, h.first, h.outside),
+    push("push-root-default", h.rootHead, h.rootBase, h.rootHead, { root: "." }),
+    push("push-exact-cap", h.exactCap, h.fork, h.exactCap),
+    push("push-capped", h.large, h.fork, h.large),
+    push("push-capped-rename", h.largeRename, h.fork, h.largeRename),
+    push("push-capped-outside", h.largeOutside, h.fork, h.largeOutside),
+    push("push-capped-disagreement", h.large, h.fork, h.large, { fault: "wrong-file", manualExpectation: "wrongList" }),
+    pr("pr-capped", h.large, h.newer, { head: h.large }),
+    pr("pr-capped-count-disagreement", h.large, h.newer, { head: h.large, changedFiles: h.largeCount - 1 }),
+    pr("pr-default-merge-capped", h.largeMerge, h.fork, { head: h.large, eventSha: h.largeMerge }),
+    pr("pr-default-merge-capped-shallow", h.largeMerge, h.fork, { head: h.large, eventSha: h.largeMerge, depth: 1 }),
+    pr("pr-default-merge-capped-depth-two", h.largeMerge, h.fork, { head: h.large, eventSha: h.largeMerge, depth: 2 }),
+    pr("pr-capped-criss-cross", h.crossHead, h.crossBase, { head: h.crossHead, remoteMergeBase: h.remoteCross }),
+    push("push-capped-shallow", h.large, h.fork, h.large, { depth }),
+    push("push-compare-error", h.custom, h.first, h.custom, { fault: "unavailable", manualExpectation: "unavailable" }),
+    push("push-invalid-json", h.custom, h.first, h.custom, { fault: "invalid-json", manualExpectation: "invalidJson" }),
+    push("push-invalid-list", h.custom, h.first, h.custom, {
+      fault: "missing-files",
+      manualExpectation: "missingFiles",
     }),
-    push("push-force", h.custom, h.newer, h.custom, { closed: /head does not extend base/ }),
-    push("push-rewind", h.first, h.custom, h.first, { closed: /head does not extend base/ }),
-    push("push-new-branch", h.custom, EMPTY_SHA, h.custom, { closed: /no base commit/ }),
-    push("push-new-branch-base", h.custom, EMPTY_SHA, h.custom, {
-      inputs: { base: h.first, head: "HEAD" },
-      diff: [h.first, h.custom],
+    group("merge-group-default", h.queueHead, h.queueBase, h.queueHead, { depth: 1 }),
+    group("merge-group-wrong-checkout", h.outside, h.queueBase, h.queueHead),
+    group("merge-group-custom-head", h.custom, h.first, h.queueHead, { inputs: { head: "HEAD" }, depth }),
+    group("merge-group-nonancestor", h.queueHead, h.newer, h.queueHead, { depth: 1 }),
+    group("merge-group-explicit-pr", h.queueHead, h.queueBase, h.queueHead, {
+      inputs: { mode: "pr", base: h.queueBase, head: "HEAD" },
+      depth,
     }),
-    push("push-wrong-mode", h.custom, h.first, h.custom, { inputs: { mode: "pr" }, failed: /routes in push mode/ }),
-    push("push-renames-and-deletes", h.renames, h.fork, h.renames, { diff: [h.fork, h.renames] }),
-    push("push-manifest-shallow", h.manifests, h.fork, h.manifests, {
-      closed: /base routing model|base workspace|base commit/,
-      shallow: true,
+    group("merge-group-explicit-pr-nonancestor", h.queueHead, h.newer, h.queueHead, { inputs: { mode: "pr" } }),
+    group("merge-group-missing-head", h.queueHead, h.queueBase, h.queueHead, {
+      payload: { merge_group: { base_sha: h.queueBase } },
     }),
-    push("push-config", h.configs, h.fork, h.configs, { diff: [h.fork, h.configs] }),
-    push("push-outside-root", h.outside, h.first, h.outside, { closed: /not a path inside the routed root/ }),
-    push("push-exact-cap", h.exactCap, h.fork, h.exactCap, { diff: [h.fork, h.exactCap] }),
-    push("push-capped", h.large, h.fork, h.large, { diff: [h.fork, h.large] }),
-    push("push-capped-rename", h.largeRename, h.fork, h.largeRename, { diff: [h.fork, h.largeRename] }),
-    push("push-capped-outside", h.largeOutside, h.fork, h.largeOutside, {
-      closed: /not a path inside the routed root/,
-    }),
-    push("push-capped-disagreement", h.large, h.fork, h.large, {
-      closed: /at most 300 files/,
-      fault: "wrong-file",
-    }),
-    pr("pr-capped", h.large, h.newer, {
-      payload: { pull_request: { base: { sha: h.newer }, head: { sha: h.large }, changed_files: h.largeCount } },
-      diff: [h.fork, h.large],
-      matrixBase: h.newer,
-    }),
-    pr("pr-capped-count-disagreement", h.large, h.newer, {
-      payload: { pull_request: { base: { sha: h.newer }, head: { sha: h.large }, changed_files: h.largeCount - 1 } },
-      closed: /at most 300 files/,
-    }),
-    push("push-capped-shallow", h.large, h.fork, h.large, { closed: /at most 300 files/, shallow: true }),
-    push("push-compare-error", h.custom, h.first, h.custom, { closed: /returned 503/, fault: "unavailable" }),
-    push("push-invalid-json", h.custom, h.first, h.custom, { closed: /not valid JSON/, fault: "invalid-json" }),
-    push("push-invalid-list", h.custom, h.first, h.custom, { closed: /cannot read/, fault: "missing-files" }),
-    group("merge-group-default", h.merge, h.first, h.merge, { diff: [h.first, h.merge], shallow: true }),
-    group("merge-group-wrong-checkout", h.custom, h.first, h.merge, {
-      closed: /does not match the event.*head/,
-      noRequest: true,
-    }),
-    group("merge-group-custom-head", h.custom, h.first, h.merge, {
-      diff: [h.first, h.custom],
-      inputs: { head: "HEAD" },
-    }),
-    group("merge-group-nonancestor", h.merge, h.newer, h.merge, { closed: /head does not extend base/ }),
-    group("merge-group-explicit-pr", h.merge, h.first, h.merge, {
-      inputs: { mode: "pr", base: h.first, head: "HEAD" },
-      diff: [h.first, h.merge],
-    }),
-    group("merge-group-explicit-pr-nonancestor", h.merge, h.newer, h.merge, {
-      inputs: { mode: "pr" },
-      closed: /does not extend its compare base/,
-    }),
-    group("merge-group-missing-head", h.merge, h.first, h.merge, {
-      payload: { merge_group: { base_sha: h.first } },
-      failed: /merge_group.head_sha/,
-    }),
-    manual(h.custom, "manual-default-head", { inputs: { mode: "pr", base: h.first }, diff: [h.first, h.custom] }),
-    manual(h.custom, "manual-missing-mode", { inputs: { base: h.first }, failed: /mode input is required/ }),
-    manual(h.custom, "manual-push", {
-      inputs: { mode: "push", base: h.newer, head: "HEAD" },
-      closed: /head does not extend base/,
-    }),
+    manual(h.custom, "manual-default-head", { inputs: { mode: "pr", base: h.first } }),
+    manual(h.custom, "manual-missing-mode", { inputs: { base: h.first } }),
+    manual(h.custom, "manual-push", { inputs: { mode: "push", base: h.newer, head: "HEAD" } }),
     ...[{}, { base: h.fork }, { head: "HEAD" }, { base: h.fork, head: "HEAD" }].map((inputs, index) =>
-      push("supplied-files-" + index, h.renames, h.fork, h.renames, {
-        inputs,
-        diff: [h.fork, h.renames],
-        supplied: true,
-      }),
+      push("supplied-files-" + index, h.renames, h.fork, h.renames, { inputs, supplied: true }),
     ),
     push("supplied-files-wrong-head", h.renames, h.fork, h.renames, {
       inputs: { files: "outside-the-test.js", head: h.fork },
-      closed: /head input does not match/,
-      noRequest: true,
     }),
-  ];
+    ...generated,
+  ].map((scenario) => ({ root: ROOT, ...scenario }));
 }
 
-export const fixture = { root: ROOT, config: CONFIG, listLimit: 300 };
+export const fixture = { config: CONFIG, listLimit: 300, remoteRef: /^[\w/.-]+$/ };

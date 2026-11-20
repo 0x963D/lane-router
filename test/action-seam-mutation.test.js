@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, symlinkSync } from "node:fs";
 import { join, relative } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -7,14 +7,14 @@ import { githubRepo } from "../src/adapters/github.ts";
 import { changedFiles, incomplete } from "../src/core/change.ts";
 import { runCli } from "../src/cli.ts";
 import { runAction } from "./support/action.ts";
-import { fixtureDir } from "./support/fixtures.ts";
+import { fixtureCopy, fixtureDir, tempDir } from "./support/fixtures.ts";
 
-const { git } = vi.hoisted(() => ({ git: vi.fn() }));
+const { git, offlineGit } = vi.hoisted(() => ({ git: vi.fn(), offlineGit: vi.fn() }));
 vi.mock("node:child_process", async (original) => {
   const execFile = () => {
     throw new Error("unexpected subprocess");
   };
-  execFile[promisify.custom] = (command, args) => {
+  execFile[promisify.custom] = (command, args, options) => {
     let resolve;
     let reject;
     const execution = new Promise((done, fail) => {
@@ -28,6 +28,8 @@ vi.mock("node:child_process", async (original) => {
           try {
             expect(command).toBe("git");
             expect(args[0]).toBe("--no-replace-objects");
+            expect(options.encoding).toBe("buffer");
+            if (options.env?.GIT_NO_LAZY_FETCH === "1") offlineGit(args[1]);
             const result = git(input, ...args.slice(1));
             if (result === undefined)
               throw Object.assign(new Error("unavailable Git object"), { stderr: Buffer.from("missing object") });
@@ -99,6 +101,7 @@ const listed = {
 };
 
 beforeEach(() => {
+  offlineGit.mockClear();
   request.mockReset().mockImplementation(() => Promise.resolve(Response.json(listed)));
   vi.stubGlobal("fetch", request);
   git.mockReset().mockImplementation(fixtureGitOutput);
@@ -287,7 +290,7 @@ const apiPath = "packages/api/src/user.ts";
 function localDiff(paths, mergeBase = base) {
   git.mockImplementation((input, ...args) => {
     if (args[0] === "merge-base") return mergeBase + "\n";
-    if (args[0] === "diff") return paths === undefined ? undefined : paths.join("\0") + "\0";
+    if (args[0] === "diff") return Array.isArray(paths) ? paths.join("\0") + "\0" : paths;
     return fixtureGitOutput(input, ...args);
   });
 }
@@ -303,10 +306,12 @@ function branchPr(count) {
 
 describe("capped compare recovery", () => {
   it("recovers exactly 300 paths and verifies the PR count at the limit", async () => {
+    vi.stubEnv("GIT_NO_LAZY_FETCH", undefined);
     request.mockResolvedValue(Response.json(cappedReply));
     localDiff(capped);
     expectLanes(await action(branchPr(300)), selected, true);
     expect(git.mock.calls.find(([, command]) => command === "diff").slice(-3)).toEqual([base, head, "--"]);
+    expect(offlineGit.mock.calls).toEqual([["merge-base"], ["diff"]]);
   });
 
   it("routes a change that the capped listing omitted", async () => {
@@ -339,7 +344,10 @@ describe("capped compare recovery", () => {
     { label: "a PR count below the cap", options: branchPr(299), paths: capped },
     { label: "a different PR count above the cap", options: branchPr(301), paths: capped },
     { label: "an unavailable local diff" },
-    { label: "invalid UTF-8 in the local diff", paths: [] },
+    {
+      label: "invalid UTF-8 in the local diff",
+      paths: Buffer.concat([Buffer.from(capped.join("\0") + "\0packages/ui/src/"), Buffer.from([0xff, 0])]),
+    },
     {
       label: "a repeated API path",
       reply: {
@@ -376,10 +384,6 @@ describe("capped compare recovery", () => {
   ])("fails closed on $label", async ({ reply, paths, localBase, options }) => {
     request.mockResolvedValue(Response.json(reply ?? cappedReply));
     localDiff(paths, localBase);
-    if (paths?.length === 0)
-      git.mockImplementation((input, ...args) =>
-        args[0] === "diff" ? Buffer.from([0xff, 0]) : fixtureGitOutput(input, ...args),
-      );
     const result = await action(options ?? (localBase === undefined ? {} : branchPr(300)));
     expectLanes(result, all, false);
     expect(result.annotations[0].message).toContain("Local Git could not verify the complete list");
@@ -479,7 +483,105 @@ describe("event and checkout refusals", () => {
   });
 });
 
+describe("directory model boundaries", () => {
+  it("refuses a config accessed through a linked parent outside the workspace", async () => {
+    const workspace = tempDir();
+    const outside = fixtureCopy("acme");
+    symlinkSync(outside, join(workspace, "foreign"), "junction");
+    const result = await action({ workspace, inputs: { config: "foreign/" + config, files: ui } });
+    expect(result.exitCode).toBe(1);
+    expect(result.annotations[0].message).toContain("resolves outside the repository root");
+    expect(result.outputs).toEqual({});
+  });
+});
+
 describe("CLI Git protocol", () => {
+  it.each([
+    ["wrong object ID", () => "wrong blob 0\n\n"],
+    ["non-blob object", (id) => id + " tree 0\n\n"],
+    ["missing size", (id) => id + " blob\n\n"],
+    ["negative size", (id) => id + " blob -1\n\n"],
+    ["truncated blob", (id) => id + " blob 100\ntext\n"],
+  ])("refuses a malformed Git blob batch with %s", async (_label, frame) => {
+    git.mockImplementation((input, ...args) =>
+      args[0] === "cat-file" && args[1] === "--batch"
+        ? frame(input.trim().split("\n")[0])
+        : fixtureGitOutput(input, ...args),
+    );
+    const stderr = [];
+    const result = await runCli(["explain", "--base", base, "--head", head, "--json"], {
+      cwd: workspace,
+      stdout: () => {
+        throw new Error("invalid model produced a plan");
+      },
+      stderr: (message) => stderr.push(message),
+    });
+    expect(result).toBe(1);
+    expect(stderr.join("\n")).toContain("git returned an invalid blob");
+  });
+
+  it.each([
+    ["behind", head],
+    ["diverged", stale],
+  ])("reports an unverifiable push as %s without diffing the dropped history", async (status, mergeBase) => {
+    localDiff(undefined, mergeBase);
+    let json = "";
+    expect(
+      await runCli(["explain", "--mode", "push", "--base", base, "--head", head, "--json"], {
+        cwd: workspace,
+        stdout: (text) => {
+          json += text;
+        },
+        stderr: (message) => {
+          throw new Error(message);
+        },
+      }),
+    ).toBe(0);
+    expect(JSON.parse(json)).toMatchObject({
+      complete: false,
+      incomplete: { kind: "not-fast-forward", status, mergeBase },
+      lanes: all.map((lane) => ({ lane, decision: "run" })),
+    });
+    expect(git.mock.calls.some(([, command]) => command === "diff")).toBe(false);
+  });
+
+  it("plans a verified fast-forward push through a local diff", async () => {
+    let json = "";
+    expect(
+      await runCli(["explain", "--mode", "push", "--base", base, "--head", head, "--json"], {
+        cwd: workspace,
+        stdout: (text) => {
+          json += text;
+        },
+        stderr: (message) => {
+          throw new Error(message);
+        },
+      }),
+    ).toBe(0);
+    expect(JSON.parse(json)).toMatchObject({
+      complete: true,
+      mode: "push",
+      lanes: all.map((lane) => ({ lane, decision: selected.includes(lane) ? "run" : "skip" })),
+    });
+  });
+
+  it("keeps distinct Git paths sorted for display", async () => {
+    localDiff([ui, apiPath, ui]);
+    let json = "";
+    expect(
+      await runCli(["explain", "--base", base, "--head", head, "--json"], {
+        cwd: workspace,
+        stdout: (text) => {
+          json += text;
+        },
+        stderr: (message) => {
+          throw new Error(message);
+        },
+      }),
+    ).toBe(0);
+    expect(JSON.parse(json).paths.map(({ path }) => path)).toEqual([apiPath, ui]);
+  });
+
   it("reads the tree and raw diff through Git without opening the working files", async () => {
     let json = "";
     const result = await runCli(["explain", "--base", base, "--head", head, "--config", config, "--json"], {

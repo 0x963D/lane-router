@@ -10021,11 +10021,11 @@ var LINKS = /* @__PURE__ */ new Map([
   ["160000", "submodule"]
 ]);
 function gitRepo(cwd) {
-  const runGit = async (args, input, fetchMissing = false) => {
+  const runGit = async (args, input, offline = false) => {
     try {
       const run = execFileAsync("git", ["--no-replace-objects", ...args], {
         cwd,
-        env: fetchMissing ? process.env : { ...process.env, GIT_NO_LAZY_FETCH: "1" },
+        env: offline ? { ...process.env, GIT_NO_LAZY_FETCH: "1" } : process.env,
         encoding: "buffer",
         maxBuffer: 256 * 1024 * 1024
       });
@@ -10038,7 +10038,7 @@ function gitRepo(cwd) {
       throw new Error(`git ${args.join(" ")} failed: ${stderrOf(error)}`, { cause: error });
     }
   };
-  const git = async (args) => (await runGit(args)).toString("utf8");
+  const git = async (args, offline = false) => (await runGit(args, void 0, offline)).toString("utf8");
   const prefix = async () => (await git(["rev-parse", "--show-prefix"])).trim();
   return {
     resolve: async (ref) => {
@@ -10060,9 +10060,7 @@ function gitRepo(cwd) {
     },
     treeAt: (commit) => {
       let listing;
-      const entries2 = () => listing ??= runGit(["ls-tree", "-r", "-z", commit], void 0, true).then(
-        (output) => parseEntries(output.toString("utf8"))
-      );
+      const entries2 = () => listing ??= git(["ls-tree", "-r", "-z", commit]).then(parseEntries);
       const pending = [];
       const readBlob = (id) => new Promise((resolve, reject) => {
         pending.push({ id, resolve, reject });
@@ -10070,7 +10068,7 @@ function gitRepo(cwd) {
         queueMicrotask(() => {
           const batch = pending.splice(0);
           const ids = batch.map(({ id: id2 }) => id2);
-          void runGit(["cat-file", "--batch"], ids.join("\n") + "\n", true).then((output) => {
+          void runGit(["cat-file", "--batch"], ids.join("\n") + "\n").then((output) => {
             const blobs = parseBlobs(output, ids);
             for (const { id: id2, resolve: resolve2 } of batch) resolve2(blobs.get(id2) ?? "");
           }).catch((error) => {
@@ -10091,9 +10089,9 @@ function gitRepo(cwd) {
         }
       };
     },
-    changes: async (range, mode = "pr") => {
+    changes: async (range, { mode = "pr", offline = false } = {}) => {
       if (range.base === null) return incomplete({ kind: "no-base" });
-      const mergeBase = (await git(["merge-base", range.base, range.head])).trim();
+      const mergeBase = (await git(["merge-base", range.base, range.head], offline)).trim();
       if (mode === "push" && mergeBase !== range.base) {
         return incomplete({
           kind: "not-fast-forward",
@@ -10102,7 +10100,7 @@ function gitRepo(cwd) {
         });
       }
       const output = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
-        await runGit([...DIFF, mergeBase, range.head, "--"])
+        await runGit([...DIFF, mergeBase, range.head, "--"], void 0, offline)
       );
       return changedFiles(
         split(output).map((path) => ({ path, previousPath: null })),
@@ -10557,7 +10555,7 @@ ${USAGE}`);
       range: { base: base ?? baseRef, head },
       changes: (range) => {
         if (base === void 0) throw new Error(`cannot resolve the base ${baseRef ?? ""} in this checkout`);
-        return repo.changes(range, mode);
+        return repo.changes(range, { mode });
       },
       baseGraph: baseGraphOf(tree, config, repo)
     });

@@ -109,7 +109,7 @@ describe("lane-router explain", () => {
     }
   });
 
-  it("reads the base manifest on demand from a blobless clone", async () => {
+  it.each(["blob:none", "tree:0"])("reads the base manifest on demand with %s", async (filter) => {
     const repo = acmeRepo();
     const baseBlob = repo.git("rev-parse", repo.base + ":packages/ui/package.json");
     repo.write("packages/ui/package.json", '{"name":"@acme/ui","description":"changed"}\n');
@@ -117,7 +117,7 @@ describe("lane-router explain", () => {
     repo.git("config", "uploadpack.allowFilter", "true");
     repo.git("config", "uploadpack.allowAnySHA1InWant", "true");
     const clone = tempDir();
-    execFileSync("git", ["clone", "--quiet", "--filter=blob:none", pathToFileURL(repo.dir).href, clone]);
+    execFileSync("git", ["clone", "--quiet", "--filter=" + filter, pathToFileURL(repo.dir).href, clone]);
     const missing = () =>
       execFileSync("git", ["cat-file", "--batch-check"], {
         cwd: clone,
@@ -145,6 +145,43 @@ describe("lane-router explain", () => {
     expect(JSON.parse(stdout)).toMatchObject({
       paths: [{ path: "packages/api/src/user.ts" }, { path: "packages/ui/src/user.ts" }],
       ...decisions({ api: "run", web: "run", e2e: "run", lint: "run" }),
+    });
+  });
+
+  it("routes changed gitlinks even when local Git ignores submodule changes", async () => {
+    const repo = acmeRepo();
+    const path = "packages/ui/vendor";
+    repo.git("update-index", "--add", "--cacheinfo", "160000," + repo.base + "," + path);
+    repo.git("commit", "--quiet", "-m", "Pin the dependency");
+    const before = repo.git("rev-parse", "HEAD");
+    repo.git("update-index", "--cacheinfo", "160000," + before + "," + path);
+    repo.git("commit", "--quiet", "-m", "Update the dependency");
+    repo.git("config", "diff.ignoreSubmodules", "all");
+    expect(repo.git("diff", "--name-only", before, "HEAD")).toBe("");
+
+    const { code, stdout } = await cli(["explain", "--base", before, "--head", "HEAD", "--json"], repo.dir);
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout)).toMatchObject({
+      complete: true,
+      paths: [{ path }],
+      ...decisions({ api: "skip", web: "run", e2e: "run", lint: "run" }),
+    });
+  });
+
+  it("reads the original commit when a local replacement points to a different tree", async () => {
+    const repo = acmeRepo();
+    repo.write("packages/ui/src/button.tsx", "export const Button = 42;\n");
+    const head = repo.commit("Change the button");
+    repo.git("switch", "--quiet", "-c", "replacement", repo.base);
+    repo.write("packages/api/src/user.ts", "export const user = 'other';\n");
+    repo.git("replace", head, repo.commit("Change the API"));
+
+    const { code, stdout } = await cli(["explain", "--base", repo.base, "--head", head, "--json"], repo.dir);
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout)).toMatchObject({
+      complete: true,
+      paths: [{ path: "packages/ui/src/button.tsx" }],
+      ...decisions({ api: "skip", web: "run", e2e: "run", lint: "run" }),
     });
   });
 

@@ -36,19 +36,23 @@ export interface GitRepo {
    * The files changed between the merge base of the range, which the list carries, and its head. With
    * rename detection off, a rename arrives as its deleted and its added path. Rejects when git fails,
    * such as for unrelated histories. In push mode a head that does not extend base is incomplete.
+   * An offline diff only uses objects already in the checkout.
    */
-  readonly changes: (range: Range, mode?: Mode) => Promise<ChangedFiles>;
+  readonly changes: (
+    range: Range,
+    options?: { readonly mode?: Mode; readonly offline?: boolean },
+  ) => Promise<ChangedFiles>;
   /** Where the routed root sits inside the repository, empty at the top level. */
   prefix(): Promise<string>;
 }
 
 /** `cwd` is the routed root. It may sit below the top of the repository. */
 export function gitRepo(cwd: string): GitRepo {
-  const runGit = async (args: readonly string[], input?: string, fetchMissing = false): Promise<Buffer> => {
+  const runGit = async (args: readonly string[], input?: string, offline = false): Promise<Buffer> => {
     try {
       const run = execFileAsync("git", ["--no-replace-objects", ...args], {
         cwd,
-        env: fetchMissing ? process.env : { ...process.env, GIT_NO_LAZY_FETCH: "1" },
+        env: offline ? { ...process.env, GIT_NO_LAZY_FETCH: "1" } : process.env,
         encoding: "buffer",
         maxBuffer: 256 * 1024 * 1024,
       });
@@ -60,7 +64,8 @@ export function gitRepo(cwd: string): GitRepo {
       throw new Error(`git ${args.join(" ")} failed: ${stderrOf(error)}`, { cause: error });
     }
   };
-  const git = async (args: readonly string[]): Promise<string> => (await runGit(args)).toString("utf8");
+  const git = async (args: readonly string[], offline = false): Promise<string> =>
+    (await runGit(args, undefined, offline)).toString("utf8");
   const prefix = async (): Promise<string> => (await git(["rev-parse", "--show-prefix"])).trim();
 
   return {
@@ -88,9 +93,7 @@ export function gitRepo(cwd: string): GitRepo {
     treeAt: (commit) => {
       let listing: Promise<ReadonlyMap<string, TreeEntry>> | undefined;
       const entries = (): Promise<ReadonlyMap<string, TreeEntry>> =>
-        (listing ??= runGit(["ls-tree", "-r", "-z", commit], undefined, true).then((output) =>
-          parseEntries(output.toString("utf8")),
-        ));
+        (listing ??= git(["ls-tree", "-r", "-z", commit]).then(parseEntries));
       const pending: { id: string; resolve: (text: string) => void; reject: (error: unknown) => void }[] = [];
       const readBlob = (id: string): Promise<string> =>
         new Promise((resolve, reject) => {
@@ -100,7 +103,7 @@ export function gitRepo(cwd: string): GitRepo {
           queueMicrotask(() => {
             const batch = pending.splice(0);
             const ids = batch.map(({ id }) => id);
-            void runGit(["cat-file", "--batch"], ids.join("\n") + "\n", true)
+            void runGit(["cat-file", "--batch"], ids.join("\n") + "\n")
               .then((output) => {
                 const blobs = parseBlobs(output, ids);
                 for (const { id, resolve } of batch) resolve(blobs.get(id) ?? "");
@@ -123,9 +126,9 @@ export function gitRepo(cwd: string): GitRepo {
         },
       };
     },
-    changes: async (range, mode = "pr") => {
+    changes: async (range, { mode = "pr", offline = false } = {}) => {
       if (range.base === null) return incomplete({ kind: "no-base" });
-      const mergeBase = (await git(["merge-base", range.base, range.head])).trim();
+      const mergeBase = (await git(["merge-base", range.base, range.head], offline)).trim();
       if (mode === "push" && mergeBase !== range.base) {
         return incomplete({
           kind: "not-fast-forward",
@@ -134,7 +137,7 @@ export function gitRepo(cwd: string): GitRepo {
         });
       }
       const output = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
-        await runGit([...DIFF, mergeBase, range.head, "--"]),
+        await runGit([...DIFF, mergeBase, range.head, "--"], undefined, offline),
       );
       return changedFiles(
         split(output).map((path) => ({ path, previousPath: null })),

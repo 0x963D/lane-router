@@ -9,6 +9,16 @@ These are not built:
 - A depth-1 merge checkout has enough history for the first-parent compare. If a routing config or package manifest changes, use `fetch-depth: 0` to give the Action the base model too.
 - There is no Marketplace listing yet.
 
+## Local Git behavior
+
+| When this matters                                                                       | What lane-router does                                                                                                                                                     | What to do                                                                                          |
+| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Your local Git history uses replacement refs                                            | Reads the original objects when it resolves revisions, reads models, and diffs commits.                                                                                   | Check out the original commit or commit the intended tree as a regular revision before planning it. |
+| Your checkout ignores submodule changes                                                 | Includes changed gitlinks in local diffs even with an ignore setting. The superproject diff sees the pointer, and submodule contents are outside its model.               | Declare a path rule or package that covers the gitlink and all of its readers.                      |
+| A changed path in a local diff has invalid UTF-8                                        | Runs every known lane because it cannot safely assign the path.                                                                                                           | Rename tracked paths to valid UTF-8.                                                                |
+| A partial clone lacks objects needed to verify a capped compare listing                 | Tries capped-list recovery using only local objects. If Git cannot establish the diff, every known lane runs.                                                             | Fetch the required objects before planning, or use full history without a partial-clone filter.     |
+| A partial clone lacks a tree or blob needed by the CLI or by the Action's routing model | Allows Git's normal on-demand reads by object ID. If Git cannot read the model, the Action fails closed for a missing base model. The CLI requires a readable head model. | Make the promisor remote available or fetch the objects before planning.                            |
+
 ## Dependency boundaries
 
 The loader reads workspace manifests, pnpm catalogs, overrides in the workspace YAML and both root manifest locations, and configured edges. It does not run a package manager or inspect installed packages when routing.

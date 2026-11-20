@@ -19,7 +19,7 @@ Use `--mode push` to reproduce a push plan. Supply the event's `before` and `aft
 node dist/cli.js explain --mode push --base <before> --head <after> --json
 ```
 
-Push mode needs an ancestor base to route a change. A force push, rewind, unavailable base, or history that Git cannot verify selects every lane and prints the cause. For a new branch, omit `--base` or pass the all-zero SHA. The CLI prints an incomplete plan with every lane selected. The head must name a commit with a readable workspace and config.
+Push mode needs an ancestor base to route a change. A force push, rewind, unavailable base, or history that Git cannot verify selects every lane and prints the cause. For a new branch, omit `--base` or pass the all-zero SHA. The CLI prints an incomplete plan with every lane selected. The head must name a commit with a readable workspace and config. See [local Git behavior](limitations.md#local-git-behavior) for partial clones, replacement refs and gitlinks.
 
 The CLI exits with 0 when it printed a plan, fail-closed plans included. It exits with 1 when the config or the workspace does not load, and with 2 on a usage error. `--json` prints the plan as a JSON document.
 
@@ -33,9 +33,9 @@ node scripts/field-replay.js --checkout ../my-monorepo --root coverage/my-replay
 node scripts/field-summary.js coverage/my-replay/summary.json
 ```
 
-The default tip is `HEAD`. Set `--ref` to choose a branch or pin a commit. The default config is `.github/lanes.yml` from that tip. Use `--config` for a file on disk, with a path relative to the directory where you run the command. Use `--limit` to set the maximum number of changes, 200 by default. The replay uses the first-parent ranges available in the source checkout. Reuse the same inputs and output directory to resume an interrupted replay.
+The default tip is `HEAD`. Set `--ref` to choose a branch or pin a commit. The default config is `.github/lanes.yml` from that tip. If the tip has no `.github/lanes.yml`, supply `--config <path>`. Resolve a relative path from the directory where you run the command. Use `--limit` to set the maximum number of changes, 200 by default. The replay uses the first-parent ranges available in the source checkout. Reuse the same inputs and output directory to resume an interrupted replay.
 
-Run the example below from the lane-router checkout. It replays 12 first-parent changes from Relay CRM with the routing config in this repository. Git needs the `clone --revision` option.
+Run the example below from the lane-router checkout. It replays 12 first-parent changes from Relay CRM with the routing config in this repository. Use Git 2.49 or later for `clone --revision`.
 
 ```sh
 git clone --no-checkout --depth 13 --revision 036eec84effc491534f48b8ec6647e0a02557dff https://github.com/0x963D/relay-crm.git ../relay-crm-replay

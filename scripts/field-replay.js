@@ -133,7 +133,7 @@ async function configuredInput(path) {
   const branch = values.ref ?? "HEAD";
   const head = (await git(checkout, ["rev-parse", "--verify", "--end-of-options", `${branch}^{commit}`])).trim();
   const config = await readRoutingConfig(checkout, head);
-  if (config === undefined) process.exit(1);
+  if (config === undefined) return undefined;
   const configDigest = createHash("sha256").update(config).digest("hex");
   return { source: { repo: basename(checkout), branch, head, checkout, configDigest }, config };
 }
@@ -434,22 +434,29 @@ function summarize({ repo, branch, head }, rows, configured) {
 }
 
 const configured = values.checkout === undefined ? undefined : await configuredInput(values.checkout);
-const dataset = configured === undefined ? JSON.parse(await readFile(DATASET, "utf8")) : [configured.source];
-const selected = dataset.filter(({ repo }) => !values.repo || values.repo.includes(repo));
-assert.ok(selected.length > 0 && (!values.repo || selected.length === new Set(values.repo).size), "unknown repository");
-const summary = [];
-for (const repo of selected) {
-  let result;
-  try {
-    result = await replay(repo, configured?.config);
-  } catch (error) {
-    result = { repo: repo.repo, branch: repo.branch, head: repo.head, error: error.output || error.message };
+if (localCheckout && configured === undefined) {
+  process.exitCode = 1;
+} else {
+  const dataset = configured === undefined ? JSON.parse(await readFile(DATASET, "utf8")) : [configured.source];
+  const selected = dataset.filter(({ repo }) => !values.repo || values.repo.includes(repo));
+  assert.ok(
+    selected.length > 0 && (!values.repo || selected.length === new Set(values.repo).size),
+    "unknown repository",
+  );
+  const summary = [];
+  for (const repo of selected) {
+    let result;
+    try {
+      result = await replay(repo, configured?.config);
+    } catch (error) {
+      result = { repo: repo.repo, branch: repo.branch, head: repo.head, error: error.output || error.message };
+    }
+    summary.push(result);
+    process.stdout.write(JSON.stringify(result) + "\n");
   }
-  summary.push(result);
-  process.stdout.write(JSON.stringify(result) + "\n");
+  await saveJson(join(output, "summary.json"), summary);
+  if (summary.some((row) => !isClean(row))) process.exitCode = 1;
 }
-await saveJson(join(output, "summary.json"), summary);
-if (summary.some((row) => !isClean(row))) process.exitCode = 1;
 
 function isClean(row) {
   return !row.error && (row.discoveryMismatches ?? 0) === 0 && row.crashes === 0 && row.rejections === 0;
