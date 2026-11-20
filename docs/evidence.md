@@ -1,6 +1,6 @@
 # Routing evidence
 
-The planner soundness and public field replay results are from `v0.1.1`. The Action results cover the range and file listing before planning in this revision.
+The planner soundness and public field replay results are from `v0.1.1`. The Action results cover the range and file listing before planning, and are from the source and tests released as `v0.2.0`. They ran against local git and a local compare endpoint. A live comparison above 300 files and a hosted merge queue run have not been tried.
 
 lane-router promises to skip a CI lane only when the change cannot affect the inputs the lane declares. When it cannot make that decision safely, it runs the lane.
 
@@ -41,7 +41,7 @@ The fault check runs every case from the default sample against the control and 
 
 ### Action seam mutation testing
 
-The campaign on the source and tests in this revision scored 76.05%. It assessed 1,044 eligible mutations. 782 failed a test, 12 timed out, 202 survived, and 48 had no coverage. The score includes test failures and timeouts. The campaign independently mutates these files and runs the Action and CLI against Git and HTTP protocol fixtures.
+The campaign on the source and tests released as `v0.2.0` scored 76.05%. It assessed 1,044 eligible mutations. 782 failed a test, 12 timed out, 202 survived, and 48 had no coverage. The score includes test failures and timeouts. The campaign independently mutates these files and runs the Action and CLI against Git and HTTP protocol fixtures.
 
 - `src/action.ts`
 - `src/adapters/directory.ts`
