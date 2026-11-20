@@ -28,6 +28,7 @@ export type GitHubEvent =
   | { readonly kind: "pull_request"; readonly base: string; readonly head: string; readonly changedFiles: number }
   /** `before` is null for the first push of a branch, which GitHub sends as an all-zero SHA. */
   | { readonly kind: "push"; readonly before: string | null; readonly after: string }
+  | { readonly kind: "merge_group"; readonly base: string; readonly head: string }
   | { readonly kind: "other"; readonly name: string };
 
 const sha = (key: string): Decoder<string> => object((field) => field(key, nonEmptyString), IGNORE);
@@ -55,10 +56,24 @@ const pushEvent = object((field) => {
   return { kind: "push" as const, before: before === undefined || /^0+$/.test(before) ? null : before, after };
 }, IGNORE);
 
+const mergeGroupEvent = object(
+  (field) =>
+    field(
+      "merge_group",
+      object((group) => {
+        const base = group("base_sha", nonEmptyString);
+        const head = group("head_sha", nonEmptyString);
+        return isValid(base) && isValid(head) ? { kind: "merge_group" as const, base, head } : INVALID;
+      }, IGNORE),
+    ),
+  IGNORE,
+);
+
 const EVENT_DECODERS = new Map<string, Decoder<GitHubEvent>>([
   ["pull_request", pullRequestEvent],
   ["pull_request_target", pullRequestEvent],
   ["push", pushEvent],
+  ["merge_group", mergeGroupEvent],
 ]);
 
 export function readEvent(name: string, payload: unknown): Result<GitHubEvent, NonEmpty<string>> {

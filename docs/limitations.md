@@ -7,7 +7,6 @@ These are not built:
 - `unmatched` accepts only `all`.
 - The compare endpoint lists at most 300 files. Large changes need enough local history to verify the full diff. A default PR head comparison can still run every lane if Git lists both paths of a rename and the resulting path count disagrees with the payload.
 - A depth-1 merge checkout has enough history for the first-parent compare. If a routing config or package manifest changes, use `fetch-depth: 0` to give the Action the base model too.
-- A `merge_group` event needs explicit `mode` and `base` inputs for a compare. Supply `head` if the checkout differs from `GITHUB_SHA`.
 - There is no Marketplace listing yet.
 
 ## Dependency boundaries

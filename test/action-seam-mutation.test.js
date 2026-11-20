@@ -141,6 +141,16 @@ describe("Action inputs and compare responses", () => {
     expectLanes(await action({ event, inputs: { head: "HEAD" } }), selected, true);
   });
 
+  it("routes the group payload independently of the runner SHA", async () => {
+    const result = await action({
+      event: { name: "merge_group", payload: { merge_group: { base_sha: base, head_sha: head } } },
+      sha: incoming,
+    });
+    expectLanes(result, selected, true);
+    expect(result.summary).toContain("mode push");
+    expect(request.mock.calls[0][0]).toContain(base + "..." + head);
+  });
+
   it("keeps the proposed change when the target workflow checks out the base tip", async () => {
     expectLanes(await action({ event: { ...pr, name: "pull_request_target" } }), selected, true);
     expect(request.mock.calls[0][0]).toContain(stale + "..." + incoming);

@@ -194,6 +194,15 @@ export function cases(h) {
     eventSha: after,
     ...options,
   });
+  const group = (name, checkout, base, head, options = {}) => ({
+    name,
+    checkout,
+    event: "merge_group",
+    payload: { action: "checks_requested", merge_group: { base_sha: base, head_sha: head } },
+    eventSha: h.patch,
+    expectedMode: options.inputs?.mode ?? "push",
+    ...options,
+  });
   const manual = (checkout, name, options) => ({
     name,
     checkout,
@@ -299,6 +308,28 @@ export function cases(h) {
     push("push-compare-error", h.custom, h.first, h.custom, { closed: /returned 503/, fault: "unavailable" }),
     push("push-invalid-json", h.custom, h.first, h.custom, { closed: /not valid JSON/, fault: "invalid-json" }),
     push("push-invalid-list", h.custom, h.first, h.custom, { closed: /cannot read/, fault: "missing-files" }),
+    group("merge-group-default", h.merge, h.first, h.merge, { diff: [h.first, h.merge], shallow: true }),
+    group("merge-group-wrong-checkout", h.custom, h.first, h.merge, {
+      closed: /does not match the event.*head/,
+      noRequest: true,
+    }),
+    group("merge-group-custom-head", h.custom, h.first, h.merge, {
+      diff: [h.first, h.custom],
+      inputs: { head: "HEAD" },
+    }),
+    group("merge-group-nonancestor", h.merge, h.newer, h.merge, { closed: /head does not extend base/ }),
+    group("merge-group-explicit-pr", h.merge, h.first, h.merge, {
+      inputs: { mode: "pr", base: h.first, head: "HEAD" },
+      diff: [h.first, h.merge],
+    }),
+    group("merge-group-explicit-pr-nonancestor", h.merge, h.newer, h.merge, {
+      inputs: { mode: "pr" },
+      closed: /does not extend its compare base/,
+    }),
+    group("merge-group-missing-head", h.merge, h.first, h.merge, {
+      payload: { merge_group: { base_sha: h.first } },
+      failed: /merge_group.head_sha/,
+    }),
     manual(h.custom, "manual-default-head", { inputs: { mode: "pr", base: h.first }, diff: [h.first, h.custom] }),
     manual(h.custom, "manual-missing-mode", { inputs: { base: h.first }, failed: /mode input is required/ }),
     manual(h.custom, "manual-push", {

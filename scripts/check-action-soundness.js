@@ -301,6 +301,7 @@ function checkResult(scenario, actual, expected, requests) {
   }
   assert.equal(actual.code, 0, "valid inputs must publish a plan");
   const { outputs } = actual;
+  if (scenario.expectedMode) assert.ok(actual.summary.includes("mode " + scenario.expectedMode));
   for (const lane of expected.run) assert.equal(outputs[lane], "run", lane + " skipped a required lane");
   for (const lane of expected.lanes) assert.equal(outputs[lane], expected.run.includes(lane) ? "run" : "skip", lane);
   assert.deepEqual(JSON.parse(outputs.lanes), expected.run);

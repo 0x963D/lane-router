@@ -29813,10 +29813,22 @@ var pushEvent = object((field) => {
   if (!isValid(before) || !isValid(after)) return INVALID;
   return { kind: "push", before: before === void 0 || /^0+$/.test(before) ? null : before, after };
 }, IGNORE2);
+var mergeGroupEvent = object(
+  (field) => field(
+    "merge_group",
+    object((group) => {
+      const base = group("base_sha", nonEmptyString);
+      const head = group("head_sha", nonEmptyString);
+      return isValid(base) && isValid(head) ? { kind: "merge_group", base, head } : INVALID;
+    }, IGNORE2)
+  ),
+  IGNORE2
+);
 var EVENT_DECODERS = /* @__PURE__ */ new Map([
   ["pull_request", pullRequestEvent],
   ["pull_request_target", pullRequestEvent],
-  ["push", pushEvent]
+  ["push", pushEvent],
+  ["merge_group", mergeGroupEvent]
 ]);
 function readEvent(name, payload) {
   const decoder = EVENT_DECODERS.get(name);
@@ -30285,7 +30297,7 @@ function toInvocation(inputs, event, env, context) {
   const eventText = event.kind === "other" ? `a ${event.name || "manual"} event` : `a ${event.kind} event`;
   const failures = [
     mode === void 0 && context.at("mode").fail(`is required for ${eventText}`),
-    inputs.mode !== void 0 && fromEvent !== void 0 && inputs.mode !== fromEvent.mode && context.at("mode").fail(`is ${inputs.mode}, but ${eventText} routes in ${fromEvent.mode} mode`),
+    inputs.mode !== void 0 && fromEvent !== void 0 && event.kind !== "merge_group" && inputs.mode !== fromEvent.mode && context.at("mode").fail(`is ${inputs.mode}, but ${eventText} routes in ${fromEvent.mode} mode`),
     inputs.files === "" && base === void 0 && context.at("base").fail(`is required for ${eventText} unless files is set`),
     inputs.files === "" && head === "" && context.at("head").fail(`is required for ${eventText} unless files is set`),
     inputs.files === "" && repository === "" && context.fail("GITHUB_REPOSITORY is not set, so the compare API cannot be called")
@@ -30297,6 +30309,7 @@ function toInvocation(inputs, event, env, context) {
     mode,
     range: { base: base ?? null, head },
     explicitHead,
+    requireBaseAncestor: event.kind === "merge_group" && mode === "pr",
     ...pullRequest === void 0 ? {} : { pullRequest },
     source: inputs.files === "" ? {
       kind: "compare",
@@ -30317,6 +30330,8 @@ function eventDefaults(event) {
       return { mode: "pr", base: event.base, head: event.head };
     case "push":
       return { mode: "push", base: event.before, head: event.after };
+    case "merge_group":
+      return { mode: "push", base: event.base, head: event.head };
     case "other":
       return void 0;
     default: {
@@ -30388,7 +30403,7 @@ async function requestFor(invocation, head) {
   }
   const changes = source.kind === "files" ? () => Promise.resolve(source.files) : async (requested) => github.compare(requested, {
     mode,
-    requireBaseAncestor: pullRequest !== void 0 && !branchDiff,
+    requireBaseAncestor: invocation.requireBaseAncestor || pullRequest !== void 0 && !branchDiff,
     expectedCount: branchDiff ? source.expectedCount : null,
     resolveBase: (ref) => repo.resolve(ref),
     under: await under(),

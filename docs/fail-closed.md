@@ -23,6 +23,8 @@ It also runs every lane when it cannot trust the list of changed files. Then `co
 
 A push is routed from `before` to `after`, and the compare API lists the change from the merge base of the two. After a force push the merge base is not `before`, so the listing leaves out what the dropped commits changed. In push mode lane-router trusts the listing only when the compare API reports `ahead` or `identical` and the merge base is the base commit. That holds for a `base` input in push mode too. A `mode` input that contradicts its event fails the step, so a push cannot opt out of this rule.
 
+A merge group compares its payload base and head, or supplied revisions, with the same checkout and ancestry rules. A queue base must be an ancestor in either mode.
+
 On either pull request event, a PR head checkout uses the diff from the merge base, even with a custom base. Routing the proposed change on the default `pull_request_target` base-tip checkout also uses the diff from the merge base. Other PR checkouts require the base to be an ancestor. With `base` omitted, a checkout with exactly two parents and the PR head as its second parent uses its first parent. If that shape cannot be verified, the ancestry check uses the payload base. See the [checkout and input tables](action.md#inputs).
 
 A capped listing can use local Git when both compare revisions are available. The local merge base must match the API response. Every listed path, including old rename paths, must appear in the local diff. When the PR count check applies, the complete path count must match the payload. A path outside the routed root still makes the plan incomplete, including when local Git finds it beyond the cap.

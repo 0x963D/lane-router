@@ -53,7 +53,7 @@ const mutations = [
     "judge a custom PR checkout from a nonancestor",
     "pr-custom-nonancestor",
     "action.ts",
-    "requireBaseAncestor: pullRequest !== undefined && !branchDiff",
+    "requireBaseAncestor: invocation.requireBaseAncestor || (pullRequest !== undefined && !branchDiff)",
     "requireBaseAncestor: false",
   ],
   [

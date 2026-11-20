@@ -65,31 +65,35 @@ Pin `actions/checkout` and this action to full commit SHAs, following [GitHub's 
 
 ## Inputs
 
-| Input               | Default               | Meaning                                                                                                                            |
-| ------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `config`            | `.github/lanes.yml`   | The routing config, relative to `working-directory`.                                                                               |
-| `working-directory` | `.`                   | The repository root to read the config and the workspace from.                                                                     |
-| `base`, `head`      | see below             | The revisions to compare. A supplied `head` must resolve to the checked-out commit.                                                |
-| `files`             | empty                 | Newline-separated changed paths, relative to `working-directory`. They are trusted as complete, and the compare API is not called. |
-| `token`             | `${{ github.token }}` | The token for the compare endpoint.                                                                                                |
-| `mode`              | from the event        | `pr` or `push`. Must match a `pull_request`, `pull_request_target` or `push` event. Required for any other event.                  |
+| Input               | Default               | Meaning                                                                                                                                                                    |
+| ------------------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `config`            | `.github/lanes.yml`   | The routing config, relative to `working-directory`.                                                                                                                       |
+| `working-directory` | `.`                   | The repository root to read the config and the workspace from.                                                                                                             |
+| `base`, `head`      | see below             | The revisions to compare. A supplied `head` must resolve to the checked-out commit.                                                                                        |
+| `files`             | empty                 | Newline-separated changed paths, relative to `working-directory`. They are trusted as complete, and the compare API is not called.                                         |
+| `token`             | `${{ github.token }}` | The token for the compare endpoint.                                                                                                                                        |
+| `mode`              | from the event        | `pr` or `push`. Must match a `pull_request`, `pull_request_target` or `push` event. A `merge_group` defaults to `push` and accepts either mode. Required for other events. |
 
 The token needs only `contents: read`, which the compare endpoint requires.
 
 The Action reads the config and workspace from the checkout. With `files` empty and `head` omitted, it selects the compare range from this table.
 
-| Event                                                  | Checkout                                   | Default base                                           | Compare head                                                     | Base must be an ancestor |
-| ------------------------------------------------------ | ------------------------------------------ | ------------------------------------------------------ | ---------------------------------------------------------------- | ------------------------ |
-| `pull_request`                                         | PR head                                    | `pull_request.base.sha`                                | Checkout                                                         | No                       |
-| `pull_request`                                         | Test merge (`GITHUB_SHA`)                  | First parent if verified, else `pull_request.base.sha` | Checkout                                                         | Yes                      |
-| `pull_request`                                         | Any other commit                           | `pull_request.base.sha`                                | Runs every lane and asks for `head`                              | Yes with `head`          |
-| `pull_request_target`                                  | PR head                                    | `pull_request.base.sha`                                | Checkout                                                         | No                       |
-| `pull_request_target`                                  | Base tip (`GITHUB_SHA`)                    | `pull_request.base.sha`                                | PR head, to route the proposed PR change with the base workspace | No                       |
-| `pull_request_target`                                  | Any other commit, including the test merge | First parent if verified, else `pull_request.base.sha` | Checkout                                                         | Yes                      |
-| `push`                                                 | Event `after`                              | Event `before`                                         | Checkout                                                         | Yes                      |
-| `push`                                                 | Any other commit                           | Event `before`                                         | Runs every lane and asks for `head` or the event checkout        | Yes with `head`          |
-| `workflow_dispatch`, `merge_group`, or any other event | `GITHUB_SHA`                               | Set `base`                                             | Checkout                                                         | In `push` mode           |
-| `workflow_dispatch`, `merge_group`, or any other event | Any other commit                           | Set `base`                                             | Runs every lane and asks for `head` or the event checkout        | In `push` mode           |
+| Event                                  | Checkout                                   | Default base                                           | Compare head                                                     | Base must be an ancestor |
+| -------------------------------------- | ------------------------------------------ | ------------------------------------------------------ | ---------------------------------------------------------------- | ------------------------ |
+| `pull_request`                         | PR head                                    | `pull_request.base.sha`                                | Checkout                                                         | No                       |
+| `pull_request`                         | Test merge (`GITHUB_SHA`)                  | First parent if verified, else `pull_request.base.sha` | Checkout                                                         | Yes                      |
+| `pull_request`                         | Any other commit                           | `pull_request.base.sha`                                | Runs every lane and asks for `head`                              | Yes with `head`          |
+| `pull_request_target`                  | PR head                                    | `pull_request.base.sha`                                | Checkout                                                         | No                       |
+| `pull_request_target`                  | Base tip (`GITHUB_SHA`)                    | `pull_request.base.sha`                                | PR head, to route the proposed PR change with the base workspace | No                       |
+| `pull_request_target`                  | Any other commit, including the test merge | First parent if verified, else `pull_request.base.sha` | Checkout                                                         | Yes                      |
+| `push`                                 | Event `after`                              | Event `before`                                         | Checkout                                                         | Yes                      |
+| `push`                                 | Any other commit                           | Event `before`                                         | Runs every lane and asks for `head` or the event checkout        | Yes with `head`          |
+| `merge_group`                          | Queue commit from `merge_group.head_sha`   | `merge_group.base_sha`                                 | Checkout                                                         | Yes                      |
+| `merge_group`                          | Any other commit                           | `merge_group.base_sha`                                 | Runs every lane and asks for `head` or the event checkout        | Yes with `head`          |
+| `workflow_dispatch` or any other event | `GITHUB_SHA`                               | Set `base`                                             | Checkout                                                         | In `push` mode           |
+| `workflow_dispatch` or any other event | Any other commit                           | Set `base`                                             | Runs every lane and asks for `head` or the event checkout        | In `push` mode           |
+
+For a merge queue, add `merge_group` to the workflow trigger and use the queue commit in the plan and lane jobs. The Action reads the two SHAs from the event payload. Omit `base`, `head` and `mode` for the default queue comparison. A configured `mode: pr` remains accepted and also requires an ancestor base. [Merge group workflow event](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#merge_group).
 
 The Action verifies a PR merge by reading the checkout's commit object. It must record exactly two parents, with `pull_request.head.sha` second. The first parent is the base branch commit used to create the tested merge. The payload's base SHA can differ from that commit. A supplied `head` that matches the merge still allows this default base.
 
