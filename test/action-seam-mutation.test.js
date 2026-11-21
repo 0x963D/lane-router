@@ -124,6 +124,13 @@ describe("Action inputs and compare responses", () => {
     expect(request.mock.calls[0][0]).toMatch(new RegExp(base + "\\.\\.\\." + head + "$"));
   });
 
+  it("requires the compare base to be an ancestor of the PR merge checkout", async () => {
+    request.mockResolvedValue(Response.json({ ...listed, status: "diverged", merge_base_commit: { sha: stale } }));
+    const result = await action({ event: pr });
+    expectLanes(result, all, false);
+    expect(result.annotations[0].message).toContain("does not extend its compare base");
+  });
+
   it("falls back to the payload base for a one-parent checkout", async () => {
     git.mockImplementation((input, ...args) =>
       args[0] === "cat-file" && args[1] === "commit"
@@ -218,13 +225,22 @@ describe("Action inputs and compare responses", () => {
       { event: { ...push, payload: { before: base, after: incoming } } },
       "does not match the event",
     ],
+    ["PR checkout mismatch", { event: pr, sha: stale }, "matches neither the pull request merge commit nor its head"],
     ["head input/checkout mismatch", { inputs: { head: base } }, "does not match the checkout"],
     ["missing head ref", { inputs: { head: "missing" } }, "cannot resolve the head input"],
-    ["new branch", { event: { ...push, payload: { before: "0".repeat(40), after: head } } }, "no base commit"],
   ])("runs all lanes on %s", async (_label, options, reason) => {
     const result = await action(options);
     expectLanes(result, all, false);
     expect(result.annotations[0].message).toContain(reason);
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("runs all lanes on a new branch without a Git checkout or listed paths", async () => {
+    git.mockReset();
+    const result = await action({ event: { ...push, payload: { before: "0".repeat(40), after: head } } });
+    expectLanes(result, all, false);
+    expect(result.annotations[0].message).toContain("no base commit");
+    expect(result.summary).toContain("0 files listed");
     expect(request).not.toHaveBeenCalled();
   });
 
@@ -272,6 +288,13 @@ describe("Action inputs and compare responses", () => {
     request.mockResolvedValueOnce(Response.json({ ...listed, base_commit: undefined }));
     expectLanes(await action({ inputs: { base: "local~2" } }), selected, true);
     expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["ref-" + base, base + "-ref"])("rejects a compare base SHA with extra characters (%s)", async (sha) => {
+    request.mockResolvedValue(Response.json({ ...listed, base_commit: { sha }, merge_base_commit: { sha } }));
+    const result = await action({ inputs: { base: "unavailable" } });
+    expectLanes(result, all, false);
+    expect(result.annotations[0].message).toContain("did not resolve the base to a full SHA");
   });
 
   it("fails a conflicting mode before making a request", async () => {
@@ -341,7 +364,7 @@ describe("capped compare recovery", () => {
       },
       paths: capped,
     },
-    { label: "a PR count below the cap", options: branchPr(299), paths: capped },
+    { label: "a PR count below the cap", options: branchPr(299), paths: [...capped, "../outside.js"] },
     { label: "a different PR count above the cap", options: branchPr(301), paths: capped },
     { label: "an unavailable local diff" },
     {
@@ -355,6 +378,14 @@ describe("capped compare recovery", () => {
         files: [...cappedReply.files.slice(1), cappedReply.files[1]],
       },
       paths: capped,
+    },
+    {
+      label: "a short local diff with normalized duplicate names",
+      reply: {
+        ...cappedReply,
+        files: [...cappedReply.files.slice(0, -1), { filename: "./" + capped[0] }],
+      },
+      paths: capped.slice(0, -1),
     },
     {
       label: "an oversized API response",
