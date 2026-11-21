@@ -49,7 +49,7 @@ The campaign on the source and tests released as `v0.2.0` scored 76.05%. It asse
 - `src/adapters/github.ts`
 - `src/core/change.ts`
 
-4 survivors were judged equivalent for the supported entry points. The other survivors remain unclassified.
+The release campaign judged 4 survivors equivalent for the supported entry points. The [range and completeness follow-up](verification/seam-regressions.md) classifies 10 more.
 
 - #67 in `src/action.ts:131` (ObjectLiteral) is equivalent because the input map is built from the declared keys before decoding.
 - #68 in `src/action.ts:131` (StringLiteral) is equivalent because the input map is built from the declared keys before decoding.
